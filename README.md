@@ -8,6 +8,7 @@ Sift - Unit and UI Tests Parallelization
 
 
 .config - path to config file (JSON format)
+
 	{
 		"xctestrunPath": "path to .xctestrun, this file generate by Xcode when make a build for test",
 		"outputDirectoryPath": "path where tests results will be collected",
