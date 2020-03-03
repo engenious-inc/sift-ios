@@ -1,0 +1,40 @@
+import Foundation
+
+public class ActionTestActivitySummary: Codable {
+    public let title: String
+    public let activityType: String
+    public let uuid: String
+    public let start: Date?
+    public let finish: Date?
+    public let attachments: [ActionTestAttachment]
+    public let subactivities: [ActionTestActivitySummary]
+
+    enum ActionTestActivitySummaryCodingKeys: String, CodingKey {
+        case title
+        case activityType
+        case uuid
+        case start
+        case finish
+        case attachments
+        case subactivities
+    }
+
+     required public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: ActionTestActivitySummaryCodingKeys.self)
+        title = try container.decodeXCResultType(forKey: .title)
+        activityType = try container.decodeXCResultType(forKey: .activityType)
+        uuid = try container.decodeXCResultType(forKey: .uuid)
+        start = try container.decodeXCResultTypeIfPresent(forKey: .start)
+        finish = try container.decodeXCResultTypeIfPresent(forKey: .finish)
+        attachments = try container.decodeXCResultArray(forKey: .attachments)
+        subactivities = try container.decodeXCResultArray(forKey: .subactivities)
+    }
+}
+
+public enum ActionTestActivityType : String {
+    case attachmentContainer = "com.apple.dt.xctest.activity-type.attachmentContainer"
+    case deletedAttachment = "com.apple.dt.xctest.activity-type.deletedAttachment"
+    case `internal` = "com.apple.dt.xctest.activity-type.internal"
+    case testAssertionFailure = "com.apple.dt.xctest.activity-type.testAssertionFailure"
+    case userCreated = "com.apple.dt.xctest.activity-type.userCreated"
+}
