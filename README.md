@@ -32,5 +32,7 @@ Sift - Unit and UI Tests Parallelization
 	}
 
 Requirements:
+	
 	Xcode 11+
+	
 	brew install coreutils (for timeout command)
