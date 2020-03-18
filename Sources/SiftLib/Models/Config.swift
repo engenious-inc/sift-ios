@@ -6,6 +6,8 @@ public struct Config: Codable {
     public var rerunFailedTest: Int
     public var testsBucket: Int
     public var testsExecutionTimeout: Int
+    public var setUpScriptPath: String?
+    public var tearDownScriptPath: String?
     public var nodes: [NodeConfig]
     
     public init(data: Data) throws {
@@ -22,7 +24,7 @@ extension Config {
     public struct NodeConfig: Codable {
         public let name: String
         public let host: String
-        public let port: Int
+        public let port: Int32
         public let username: String
         public let password: String
         public let deploymentPath: String
