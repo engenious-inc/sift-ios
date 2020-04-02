@@ -15,7 +15,8 @@ Sift - Unit and UI Tests Parallelization
 		"rerunFailedTest": 1, // attempts for retry
 		"testsBucket": 1, // number of tests which will be send on each executor at the same time
 		"testsExecutionTimeout": 120, // timeout
-
+          "setUpScriptPath": "script will execute on node before each tests bucket", // can be null
+          "tearDownScriptPath": "script will execute on node after each tests bucket", // can be null
 		"nodes": [ // array of nodes (mac)
 			{
 				"name": "Node-1",
@@ -24,7 +25,10 @@ Sift - Unit and UI Tests Parallelization
 				"username": "node-1",
 				"password": "password",
 				"deploymentPath": "path where all necessary stuff will be stored on the node",
-				"UDID": ["884F84A3-F901-4FEC-9A81-D59F0BC1A353"], // udid of simulators or devices. Can be an array for each node
+				"UDID": {
+                            "devices": ["devices udid, can be null"],
+                            "simulators": ["simulators udid, can be null"]
+                          }
 				"xcodePath": "/Applications/Xcode.app", // path to xcode
 				"environmentVariables": null // inject env if need
 			}
@@ -34,5 +38,5 @@ Sift - Unit and UI Tests Parallelization
 Requirements:
 	
 	Xcode 11+
-	
+	brew install libssh2
 	brew install coreutils (for timeout command)

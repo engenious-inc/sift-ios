@@ -3,7 +3,7 @@ import Foundation
 enum Scripts {
     static func zip(workdirectory: String, zipName: String, files: [String?]) -> String {
         return "cd \(workdirectory)\n" +
-                "zip -r -X -q " +
+                "zip -r -X -q -0 " +
                 "\(zipName) " +
                 files.compactMap {
                     guard let file = $0 else { return nil }

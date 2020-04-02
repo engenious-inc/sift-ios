@@ -5,12 +5,12 @@ public class Controller {
     private let config: Config
     private let xctestrun: XCTestRun
     private var runners: [Runner] = []
-    public var testsNames: [String]
+    public let testsNames: [String]
     private var testsForRerun: [String] = []
     private var testsLaunchCounter: [String: Int] = [:]
     private var testsIterator: IndexingIterator<[String]>
     private let shell: ShellExecutor
-    private let serialQueue: Queue
+    private let queue: Queue
     private let time = Date.timeIntervalSinceReferenceDate
     private var zipBuildPath: String? = nil
     private var xcresultFiles: [String] = []
@@ -31,17 +31,16 @@ public class Controller {
             }
         }
         
-        self.testsNames = tests != nil && !tests!.isEmpty ? tests! : bundleTests
-        self.testsNames.shuffle()
+        self.testsNames = (tests != nil && !tests!.isEmpty ? tests! : bundleTests).shuffled()
         self.testsIterator = self.testsNames.makeIterator()
         self.shell = shell
-        self.serialQueue = .init(type: .serial, name: "TestsProcessorSerialQueue")
+        self.queue = .init(type: .concurrent, name: "TestsProcessorSerialQueue")
         
         log("Total tests for execution: \(self.testsNames.count)")
     }
     
     public func start() {
-        self.serialQueue.async {
+        self.queue.async {
             do {
                 _ = try? self.shell.run("mkdir \(self.config.outputDirectoryPath)")
                 _ = try? self.shell.run("rm -r \(self.config.outputDirectoryPath)/*")
@@ -123,7 +122,7 @@ extension Controller {
         do {
             let uuid = UUID().uuidString
             let unzipFolderPath = "\(self.config.outputDirectoryPath)/\(uuid)"
-            try self.shell.run("unzip \"\(path)\" -d \(unzipFolderPath)")
+            try self.shell.run("unzip -o -q \"\(path)\" -d \(unzipFolderPath)")
             let files = try self.shell.run("ls -1 \(unzipFolderPath) | grep -E '.\\.xcresult$'").output
             let xcresultFiles =  files.components(separatedBy: "\n")
             guard let xcresultFileName = (xcresultFiles.filter { $0.contains(".xcresult") }.sorted { $0 > $1 }).first else {
@@ -176,13 +175,13 @@ extension Controller {
 //MARK: - TestsRunnerDelegate implementation
 extension Controller: RunnerDelegate {
     public func runnerFinished(runner: Runner) {
-        self.serialQueue.async {
+        self.queue.async {
             self.checkout(runner: runner)
         }
     }
     
     public func handleTestsResults(runner: Runner, tests: [String], pathToResults: String?) {
-        self.serialQueue.async {
+        self.queue.async(flags: .barrier) {
             guard let pathToResults = pathToResults,
                   let xcresult = self.getXCResult(path: pathToResults) else {
                     self.printUnknown(runnerName: runner.name, tests: tests)
@@ -209,15 +208,15 @@ extension Controller: RunnerDelegate {
     }
     
     public func XCTestRun() -> XCTestRun {
-        return self.serialQueue.sync { self.xctestrun }
+        return self.queue.sync { self.xctestrun }
     }
     
     public func buildPath() -> String {
-        return self.serialQueue.sync { self.zipBuildPath! }
+        return self.queue.sync { self.zipBuildPath! }
     }
     
     public func getTests() -> [String] {
-        return self.serialQueue.sync {
+        return self.queue.sync(flags: .barrier) {
             var tests: [String] = []
             for _ in 1...self.config.testsBucket {
                 guard let test = self.testsIterator.next() else {
