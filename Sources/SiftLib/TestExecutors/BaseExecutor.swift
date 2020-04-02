@@ -21,7 +21,7 @@ class BaseExecutor {
             self.queue.async(flags: .barrier) { self._finished = newValue }
         }
     }
-    
+
     init(UDID: String,
          config: Config.NodeConfig,
          xctestrunPath: String,

@@ -81,5 +81,6 @@ extension Device: TestExecutor {
     func reset(completion: ((Result<TestExecutor, Error>) -> Void)? = nil) {
         completion?(.success(self))
     }
+
     func deleteApp(bundleId: String) {}
 }
