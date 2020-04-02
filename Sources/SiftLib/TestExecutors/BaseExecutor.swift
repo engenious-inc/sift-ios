@@ -42,7 +42,8 @@ class BaseExecutor {
     func executeShellScript(path: String?, testNameEnv: String) throws -> Int32? {
         if let scriptPath = path {
             let script = try String(contentsOfFile: scriptPath, encoding: .utf8)
-            let env = "export TEST_NAME='\(testNameEnv)'\n"
+            let env = "export TEST_NAME='\(testNameEnv)'\n" +
+                      "export UDID='\(UDID)'\n"
             let scriptExecutionResult = try self.ssh.run(env + script)
             return scriptExecutionResult.status
         }
