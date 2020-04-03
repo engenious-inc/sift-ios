@@ -54,7 +54,7 @@ extension Simulator: TestExecutor {
                                                          executorType: self.type,
                                                          UDID: self.UDID,
                                                          xctestrunPath: self.xctestrunPath,
-                                                         derivedDataPath: self.derivedDataPath,
+                                                         derivedDataPath: self.config.deploymentPath,
                                                          timeout: timeout)
                 
                 try self.executeShellScript(path: self.tearDownScriptPath, testNameEnv: tests.first ?? "")
@@ -82,7 +82,7 @@ extension Simulator: TestExecutor {
         self.serialQueue.async {
             do {
                 _ = try self.ssh.run("nohup /bin/sh -c '" +
-                    "export DEVELOPER_DIR=\(self.xcodePath)/Contents/Developer\n" +
+                    "export DEVELOPER_DIR=\(self.config.xcodePath)/Contents/Developer\n" +
                     "xcrun simctl shutdown \(self.UDID)\n" +
                     "xcrun simctl erase \(self.UDID)\n" +
                     "xcrun simctl boot \(self.UDID)' &").output

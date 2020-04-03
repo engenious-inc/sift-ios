@@ -54,7 +54,7 @@ extension Device: TestExecutor {
                                                          executorType: self.type,
                                                          UDID: self.UDID,
                                                          xctestrunPath: self.xctestrunPath,
-                                                         derivedDataPath: self.derivedDataPath,
+                                                         derivedDataPath: self.config.deploymentPath,
                                                          timeout: timeout)
                 
                 try self.executeShellScript(path: self.tearDownScriptPath, testNameEnv: tests.first ?? "")
