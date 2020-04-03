@@ -54,7 +54,7 @@ extension Simulator: TestExecutor {
                                                          executorType: self.type,
                                                          UDID: self.UDID,
                                                          xctestrunPath: self.xctestrunPath,
-                                                         derivedDataPath: self.derivedDataPath,
+                                                         derivedDataPath: self.config.deploymentPath,
                                                          timeout: timeout)
                 
                 try self.executeShellScript(path: self.tearDownScriptPath, testNameEnv: tests.first ?? "")
@@ -81,7 +81,7 @@ extension Simulator: TestExecutor {
     func reset(completion: ((Result<TestExecutor, Error>) -> Void)? = nil) {
         self.queue.async(flags: .barrier) {
             var commands = "/bin/sh -c '" +
-                           "export DEVELOPER_DIR=\(self.xcodePath)/Contents/Developer\n" +
+                "export DEVELOPER_DIR=\(self.config.xcodePath)/Contents/Developer\n" +
                            "xcrun simctl shutdown \(self.UDID)\n" +
                            "xcrun simctl erase \(self.UDID)\n" +
                            "xcrun simctl boot \(self.UDID)'"
