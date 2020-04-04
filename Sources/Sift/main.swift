@@ -79,7 +79,7 @@ let _ = Command(usage: "list",
         quiet = true
         let config = try Config.init(path: path)
         let testsProcessor = try Controller(config: config)
-        testsProcessor.testsNames.forEach {
+        testsProcessor.testsNames.sorted().forEach {
             print($0)
         }
     } catch let err {

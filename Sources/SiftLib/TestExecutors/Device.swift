@@ -24,7 +24,7 @@ class Device: BaseExecutor {
 extension Device: TestExecutor {
 
     func ready(completion: @escaping (Bool) -> Void) {
-        self.serialQueue.async {
+        self.queue.async(flags: .barrier) {
             guard let output = try? self.ssh.run("instruments -s devices").output,
                   output.contains(self.UDID) else {
                 error("Device: \(self.UDID) is not connected.")
@@ -38,9 +38,9 @@ extension Device: TestExecutor {
     func run(tests: [String],
              timeout: Int,
              completion: ((TestExecutor, Result<[String], TestExecutorError>) -> Void)? = nil) {
-        self.serialQueue.async {
+        self.queue.async(flags: .barrier) {
             if tests.isEmpty {
-                self._finished = true
+                self.finished = true
                 completion?(self, .failure(.noTestsForExecution))
                 return
             }
@@ -63,21 +63,24 @@ extension Device: TestExecutor {
                     completion?(self, .success(tests))
                     return
                 }
-                // timeout
-                if result.status == 143 {
-                    self.reset()
-                    sleep(3)
+                
+                self.reset { _ in
+                    completion?(self, .failure(.executionError(description: "Device: \(self.UDID) " +
+                        "- status \(result.status) " +
+                        "\(result.status == 143 ? "- timeout: \(timeout)" : "")",
+                        tests: tests)))
                 }
-                completion?(self, .failure(.executionError(description: "Device: \(self.UDID) " +
-                    "- status \(result.status) " +
-                    "\(result.status == 143 ? "- timeout: \(timeout)" : "")",
-                    tests: tests)))
             } catch let err {
-                completion?(self, .failure(.executionError(description: "Device: \(self.UDID) - \(err)", tests: tests)))
+                self.reset { _ in
+                    completion?(self, .failure(.executionError(description: "Device: \(self.UDID) - \(err)", tests: tests)))
+                }
             }
         }
     }
     
-    func reset(completion: ((TestExecutor, Error?) -> Void)? = nil) {}
+    func reset(completion: ((Result<TestExecutor, Error>) -> Void)? = nil) {
+        completion?(.success(self))
+    }
+
     func deleteApp(bundleId: String) {}
 }

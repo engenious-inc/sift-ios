@@ -24,7 +24,7 @@ class Simulator: BaseExecutor {
 extension Simulator: TestExecutor {
 
     func ready(completion: @escaping (Bool) -> Void) {
-        self.serialQueue.async {
+        self.queue.async(flags: .barrier) {
             guard let output = try? self.ssh.run("xcrun simctl list devices" +
                 " | grep \"(Booted)\" | grep -E -o -i \"([0-9a-f]{8}-([0-9a-f]{4}-){3}[0-9a-f]{12})\"").output else {
                 completion(false)
@@ -38,9 +38,9 @@ extension Simulator: TestExecutor {
     func run(tests: [String],
              timeout: Int,
              completion: ((TestExecutor, Result<[String], TestExecutorError>) -> Void)? = nil) {
-        self.serialQueue.async {
+        self.queue.async(flags: .barrier) {
             if tests.isEmpty {
-                self._finished = true
+                self.finished = true
                 completion?(self, .failure(.noTestsForExecution))
                 return
             }
@@ -63,38 +63,45 @@ extension Simulator: TestExecutor {
                     completion?(self, .success(tests))
                     return
                 }
-                // timeout
-                if result.status == 143 {
-                    self.reset()
-                    sleep(3)
-                }
-                completion?(self, .failure(.executionError(description: "Simulator: \(self.UDID) " +
+                
+                self.reset { _ in
+                    completion?(self, .failure(.executionError(description: "Simulator: \(self.UDID) " +
                     "- status \(result.status) " +
                     "\(result.status == 143 ? "- timeout: \(timeout)" : "")",
                     tests: tests)))
+                }
             } catch let err {
-                completion?(self, .failure(.executionError(description: "Simulator: \(self.UDID) - \(err)", tests: tests)))
+                self.reset { _ in
+                    completion?(self, .failure(.executionError(description: "Simulator: \(self.UDID) - \(err)", tests: tests)))
+                }
             }
         }
     }
     
-    func reset(completion: ((TestExecutor, Error?) -> Void)? = nil) {
-        self.serialQueue.async {
+    func reset(completion: ((Result<TestExecutor, Error>) -> Void)? = nil) {
+        self.queue.async(flags: .barrier) {
+            var commands = "/bin/sh -c '" +
+                "export DEVELOPER_DIR=\(self.config.xcodePath)/Contents/Developer\n" +
+                           "xcrun simctl shutdown \(self.UDID)\n" +
+                           "xcrun simctl erase \(self.UDID)\n" +
+                           "xcrun simctl boot \(self.UDID)'"
+            
+            // in case when completion is not set, run all commands in background
+            if completion == nil {
+                commands = "nohup \(commands) &"
+            }
+            
             do {
-                _ = try self.ssh.run("nohup /bin/sh -c '" +
-                    "export DEVELOPER_DIR=\(self.config.xcodePath)/Contents/Developer\n" +
-                    "xcrun simctl shutdown \(self.UDID)\n" +
-                    "xcrun simctl erase \(self.UDID)\n" +
-                    "xcrun simctl boot \(self.UDID)' &").output
-                completion?(self, nil)
+                _ = try self.ssh.run(commands).output
+                completion?(.success(self))
             } catch let err {
-                completion?(self, NSError(domain: "Simulator: \(self.UDID) - \(err)", code: 1, userInfo: nil))
+                completion?(.failure(NSError(domain: "Simulator: \(self.UDID) - \(err)", code: 1, userInfo: nil)))
             }
         }
     }
     
     func deleteApp(bundleId: String) {
-        self.serialQueue.async {
+        self.queue.async(flags: .barrier) {
             _ = try? self.ssh.run("xcrun simctl uninstall \(self.UDID) \(bundleId)").output
         }
     }

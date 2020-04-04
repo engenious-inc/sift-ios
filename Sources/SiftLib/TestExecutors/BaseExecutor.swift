@@ -4,34 +4,39 @@ class BaseExecutor {
 
     var ssh: SSHExecutor!
     let threadName: String
-    let serialQueue: Queue
+    let queue: Queue
     let config: Config.NodeConfig
     let xctestrunPath: String
     let setUpScriptPath: String?
     let tearDownScriptPath: String?
     var xcodebuild: Xcodebuild!
-    let _UDID: String
-    var _finished: Bool = false
-    
-    var UDID: String { self.serialQueue.sync { self._UDID } }
-    var finished: Bool { self.serialQueue.sync { self._finished } }
-    
+    let UDID: String
+    private var _finished: Bool = false
+    var finished: Bool {
+        get {
+            self.queue.sync { self._finished }
+        }
+        set {
+            self.queue.async(flags: .barrier) { self._finished = newValue }
+        }
+    }
+
     init(UDID: String,
          config: Config.NodeConfig,
          xctestrunPath: String,
          setUpScriptPath: String?,
          tearDownScriptPath: String?) throws {
 
-        self._UDID = UDID
+        self.UDID = UDID
         self.config = config
         self.xctestrunPath = xctestrunPath
         self.setUpScriptPath = setUpScriptPath
         self.tearDownScriptPath = tearDownScriptPath
         self.threadName = UDID
-        self.serialQueue = .init(type: .serial, name: self.threadName)
-        try self.serialQueue.sync {
+        self.queue = .init(type: .serial, name: self.threadName)
+        try self.queue.sync {
             self.ssh = try SSH(host: config.host, port: config.port)
-            try self.ssh.authenticate(username: config.username, password: config.password)
+            try self.ssh.authenticate(username: self.config.username, password: self.config.password)
             self.xcodebuild = Xcodebuild(xcodePath: self.config.xcodePath, shell: self.ssh)
         }
     }

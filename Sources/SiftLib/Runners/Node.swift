@@ -9,12 +9,21 @@ class Node {
     private let tearDownScriptPath: String?
     
     private var executors: [TestExecutor]
-    private let serialQueue: Queue
+    private let queue: Queue
     private var communication: Communication!
+    private var _finished: Bool = false
     
-    private let _name: String
-    private var _finished: Bool
-    private weak var _delegate: RunnerDelegate!
+    let name: String
+    weak var delegate: RunnerDelegate!
+    var finished: Bool {
+        get {
+            self.queue.sync { self._finished }
+        }
+        set {
+            self.queue.async(flags: .barrier) { self._finished = newValue }
+        }
+    }
+    
     
     init(config: Config.NodeConfig,
                 outputDirectoryPath: String,
@@ -28,23 +37,18 @@ class Node {
         self.setUpScriptPath = setUpScriptPath
         self.tearDownScriptPath = tearDownScriptPath
         self.executors = []
-        self.serialQueue = .init(type: .serial, name: config.name + "-" + config.host)
+        self.queue = .init(type: .concurrent, name: config.name + "-" + config.host)
         
-        self._name = config.name
-        self._finished = false
-        self._delegate = delegate
+        self.name = config.name
+        self.delegate = delegate
     }
 }
 
 // MARK: - Runner Protocol implementation
 
 extension Node: Runner {
-    var name: String { _name }
-    var finished: Bool { _finished }
-    var delegate: RunnerDelegate { _delegate }
-    
     func start() {
-        self.serialQueue.async {
+        self.queue.async {
             do {
                 self.communication = try SSHCommunication<SSH>(host: self.config.host,
                                                                port: self.config.port,
@@ -59,13 +63,17 @@ extension Node: Runner {
                 self.executors = self.createExecutors(xctestrunPath: xctestrunPath)
                 self.executors.forEach { executor in
                     executor.ready { result in
-                        if !result {
+                        if result == false {
+                            // if simulator is not ready try to reset and run tests
+                            // if device is not ready (doesn't plugin) - return
                             guard executor.type == .simulator else { return }
-                            executor.reset(completion: nil)
+                            executor.reset { _ in
+                                self.runTests(in: executor)
+                            }
+                        } else {
+                            self.runTests(in: executor)
                         }
-                        self.runTests(in: executor)
                     }
-                    
                 }
             } catch let err {
                 error("\(self.name): \(err)")
@@ -120,7 +128,7 @@ extension Node {
              .success - doesn't mean that tests is passed, just means that tests was successfully executed
              .failure - tests was not executed.
             */
-            self.serialQueue.async {
+            self.queue.async {
                 switch result {
                 case .success(let tests):
                     self.testExecutionSuccessFlow(tests, executor: executor)
@@ -138,12 +146,16 @@ extension Node {
             self.runTests(in: executor) // continue running next tests
         } catch let err {
             error("\(self.name): \(err)")
+            executor.reset { _ in
+                self.runTests(in: executor)
+            }
         }
     }
     
     private func testExecutionFailureFlow(_ simError: TestExecutorError, executor: TestExecutor) {
         switch simError {
         case .noTestsForExecution:
+            executor.reset(completion: nil)
             self.checkIfFinished()
         case .executionError(let description, let tests):
             error(description)
@@ -163,7 +175,6 @@ extension Node {
     private func checkIfFinished() {
         if (self.executors.filter { $0.finished == false }).count == 0 {
             self._finished = true
-            self.executors.forEach { $0.reset(completion: nil) }
             self.delegate.runnerFinished(runner: self)
         }
     }

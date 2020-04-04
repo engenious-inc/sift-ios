@@ -7,7 +7,7 @@ public protocol TestExecutor {
     
     func ready(completion: @escaping (Bool) -> Void)
     func run(tests: [String], timeout: Int, completion: ((TestExecutor, Result<[String], TestExecutorError>) -> Void)?)
-    func reset(completion: ((TestExecutor, Error?) -> Void)?)
+    func reset(completion: ((Result<TestExecutor, Error>) -> Void)?)
     func deleteApp(bundleId: String)
 }
 

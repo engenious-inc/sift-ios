@@ -11,6 +11,4 @@ public protocol SSHExecutor: ShellExecutor {
     func uploadFile(string: String, remotePath: String) throws -> Self
     @discardableResult
     func downloadFile(remotePath: String, localPath: String) throws -> Self
-    @discardableResult
-    func run(_ command: String) throws -> (status: Int32, output: String)
 }
