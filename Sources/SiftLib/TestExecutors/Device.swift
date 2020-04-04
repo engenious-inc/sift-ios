@@ -1,39 +1,28 @@
 import Foundation
 
-class Device {
+class Device: BaseExecutor {
 
     let type: TestExecutorType
-    private var ssh: SSHExecutor!
-    private let threadName: String
-    private let serialQueue: Queue
-    private let xcodePath: String
-    private let xctestrunPath: String
-    private let derivedDataPath: String
-    private var xcodebuild: Xcodebuild!
-    private let _UDID: String
-    private var _finished: Bool = false
-    
-    init(UDID: String, config: Config.NodeConfig, xctestrunPath: String) throws {
+
+    override init(UDID: String,
+         config: Config.NodeConfig,
+         xctestrunPath: String,
+         setUpScriptPath: String?,
+         tearDownScriptPath: String?) throws {
+
         self.type = .device
-        self._UDID = UDID
-        self.xcodePath = config.xcodePath
-        self.xctestrunPath = xctestrunPath
-        self.derivedDataPath = config.deploymentPath
-        self.threadName = UDID
-        self.serialQueue = .init(type: .serial, name: self.threadName)
-        try self.serialQueue.sync {
-            self.ssh = try SSH(host: config.host, port: 22)
-            try self.ssh.authenticate(username: config.username, password: config.password)
-            self.xcodebuild = Xcodebuild(xcodePath: self.xcodePath, shell: self.ssh)
-        }
+        try super.init(UDID: UDID,
+                   config: config,
+                   xctestrunPath: xctestrunPath,
+                   setUpScriptPath: setUpScriptPath,
+                   tearDownScriptPath: tearDownScriptPath)
     }
 }
 
 // MARK: - TestExecutor Protocol implementation
 
 extension Device: TestExecutor {
-    var UDID: String { self.serialQueue.sync { self._UDID } }
-    var finished: Bool { self.serialQueue.sync { self._finished } }
+
     func ready(completion: @escaping (Bool) -> Void) {
         self.serialQueue.async {
             guard let output = try? self.ssh.run("instruments -s devices").output,
@@ -56,12 +45,20 @@ extension Device: TestExecutor {
                 return
             }
             do {
+                if try self.executeShellScript(path: self.setUpScriptPath, testNameEnv: tests.first ?? "") == 1 {
+                    completion?(self, .failure(.testSkipped))
+                    return
+                }
+                
                 let result = try self.xcodebuild.execute(tests: tests,
                                                          executorType: self.type,
                                                          UDID: self.UDID,
                                                          xctestrunPath: self.xctestrunPath,
-                                                         derivedDataPath: self.derivedDataPath,
+                                                         derivedDataPath: self.config.deploymentPath,
                                                          timeout: timeout)
+                
+                try self.executeShellScript(path: self.tearDownScriptPath, testNameEnv: tests.first ?? "")
+                
                 if result.status == 0 || result.status == 65 {
                     completion?(self, .success(tests))
                     return
@@ -82,6 +79,5 @@ extension Device: TestExecutor {
     }
     
     func reset(completion: ((TestExecutor, Error?) -> Void)? = nil) {}
-    
     func deleteApp(bundleId: String) {}
 }

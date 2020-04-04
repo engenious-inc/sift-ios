@@ -5,6 +5,8 @@ class Node {
     private let config: Config.NodeConfig
     private let outputDirectoryPath: String
     private let testsExecutionTimeout: Int
+    private let setUpScriptPath: String?
+    private let tearDownScriptPath: String?
     
     private var executors: [TestExecutor]
     private let serialQueue: Queue
@@ -17,10 +19,14 @@ class Node {
     init(config: Config.NodeConfig,
                 outputDirectoryPath: String,
                 testsExecutionTimeout: Int,
+                setUpScriptPath: String?,
+                tearDownScriptPath: String?,
                 delegate: RunnerDelegate) throws {
         self.config = config
         self.outputDirectoryPath = outputDirectoryPath
         self.testsExecutionTimeout = testsExecutionTimeout
+        self.setUpScriptPath = setUpScriptPath
+        self.tearDownScriptPath = tearDownScriptPath
         self.executors = []
         self.serialQueue = .init(type: .serial, name: config.name + "-" + config.host)
         
@@ -41,7 +47,7 @@ extension Node: Runner {
         self.serialQueue.async {
             do {
                 self.communication = try SSHCommunication<SSH>(host: self.config.host,
-                                                               port: 22,
+                                                               port: self.config.port,
                                                            username: self.config.username,
                                                            password: self.config.password,
                                                runnerDeploymentPath: self.config.deploymentPath,
@@ -76,7 +82,11 @@ extension Node {
         if let simulators = self.config.UDID.simulators {
             return simulators.compactMap {
                 do {
-                    return try Simulator(UDID: $0, config: self.config, xctestrunPath: xctestrunPath)
+                    return try Simulator(UDID: $0,
+                                         config: self.config,
+                                         xctestrunPath: xctestrunPath,
+                                         setUpScriptPath: self.setUpScriptPath,
+                                         tearDownScriptPath: self.tearDownScriptPath)
                 } catch let err {
                     error("\(self.name): \(err)")
                     return nil
@@ -87,7 +97,11 @@ extension Node {
         if let devices = self.config.UDID.devices {
             return devices.compactMap {
                 do {
-                    return try Device(UDID: $0, config: self.config, xctestrunPath: xctestrunPath)
+                    return try Device(UDID: $0,
+                                      config: self.config,
+                                      xctestrunPath: xctestrunPath,
+                                      setUpScriptPath: self.setUpScriptPath,
+                                      tearDownScriptPath: self.tearDownScriptPath)
                 } catch let err {
                     error("\(self.name): \(err)")
                     return nil
@@ -134,6 +148,8 @@ extension Node {
         case .executionError(let description, let tests):
             error(description)
             self.delegate.handleTestsResults(runner: self, tests: tests, pathToResults: nil)
+            self.runTests(in: executor) // continue running next tests
+        case .testSkipped:
             self.runTests(in: executor) // continue running next tests
         }
     }

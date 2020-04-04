@@ -19,4 +19,5 @@ public enum TestExecutorType: String {
 public enum TestExecutorError: Error {
     case noTestsForExecution
     case executionError(description: String, tests: [String])
+    case testSkipped
 }

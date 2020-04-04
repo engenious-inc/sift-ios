@@ -1,39 +1,28 @@
 import Foundation
 
-class Simulator {
+class Simulator: BaseExecutor {
 
     let type: TestExecutorType
-    private var ssh: SSHExecutor
-    private let threadName: String
-    private let serialQueue: Queue
-    private let xcodePath: String
-    private let xctestrunPath: String
-    private let derivedDataPath: String
-    private var xcodebuild: Xcodebuild!
-    private let _UDID: String
-    private var _finished: Bool = false
-    
-    init(UDID: String, config: Config.NodeConfig, xctestrunPath: String) throws {
+
+    override init(UDID: String,
+         config: Config.NodeConfig,
+         xctestrunPath: String,
+         setUpScriptPath: String?,
+         tearDownScriptPath: String?) throws {
+
         self.type = .simulator
-        self._UDID = UDID
-        self.ssh = try SSH(host: config.host, port: 22)
-        self.xcodePath = config.xcodePath
-        self.xctestrunPath = xctestrunPath
-        self.derivedDataPath = config.deploymentPath
-        self.threadName = UDID
-        self.serialQueue = .init(type: .serial, name: self.threadName)
-        try self.serialQueue.sync {
-            try self.ssh.authenticate(username: config.username, password: config.password)
-            self.xcodebuild = Xcodebuild(xcodePath: self.xcodePath, shell: self.ssh)
-        }
+        try super.init(UDID: UDID,
+                   config: config,
+                   xctestrunPath: xctestrunPath,
+                   setUpScriptPath: setUpScriptPath,
+                   tearDownScriptPath: tearDownScriptPath)
     }
 }
 
 // MARK: - TestExecutor Protocol implementation
 
 extension Simulator: TestExecutor {
-    var UDID: String { self.serialQueue.sync { self._UDID } }
-    var finished: Bool { self.serialQueue.sync { self._finished } }
+
     func ready(completion: @escaping (Bool) -> Void) {
         self.serialQueue.async {
             guard let output = try? self.ssh.run("xcrun simctl list devices" +
@@ -56,12 +45,20 @@ extension Simulator: TestExecutor {
                 return
             }
             do {
+                if try self.executeShellScript(path: self.setUpScriptPath, testNameEnv: tests.first ?? "") == 1 {
+                    completion?(self, .failure(.testSkipped))
+                    return
+                }
+                
                 let result = try self.xcodebuild.execute(tests: tests,
                                                          executorType: self.type,
                                                          UDID: self.UDID,
                                                          xctestrunPath: self.xctestrunPath,
-                                                         derivedDataPath: self.derivedDataPath,
+                                                         derivedDataPath: self.config.deploymentPath,
                                                          timeout: timeout)
+                
+                try self.executeShellScript(path: self.tearDownScriptPath, testNameEnv: tests.first ?? "")
+                
                 if result.status == 0 || result.status == 65 {
                     completion?(self, .success(tests))
                     return
@@ -85,7 +82,7 @@ extension Simulator: TestExecutor {
         self.serialQueue.async {
             do {
                 _ = try self.ssh.run("nohup /bin/sh -c '" +
-                    "export DEVELOPER_DIR=\(self.xcodePath)/Contents/Developer\n" +
+                    "export DEVELOPER_DIR=\(self.config.xcodePath)/Contents/Developer\n" +
                     "xcrun simctl shutdown \(self.UDID)\n" +
                     "xcrun simctl erase \(self.UDID)\n" +
                     "xcrun simctl boot \(self.UDID)' &").output
