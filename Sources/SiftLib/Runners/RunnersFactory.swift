@@ -11,7 +11,7 @@ class RunnersFactory {
                                 tearDownScriptPath: config.tearDownScriptPath,
                                 delegate: delegate)
             } catch let err {
-                error("Cant initialize Runner: \($0.name)\n\(err)")
+                Log.error("Cant initialize Runner: \($0.name)\n\(err)")
                 return nil
             }
         }

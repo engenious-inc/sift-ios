@@ -35,8 +35,10 @@ class BaseExecutor {
         self.threadName = UDID
         self.queue = .init(type: .serial, name: self.threadName)
         try self.queue.sync {
+            Log.message(verboseMsg: "\(config.name) Open connection to: \"\(UDID)\"")
             self.ssh = try SSH(host: config.host, port: config.port)
             try self.ssh.authenticate(username: self.config.username, password: self.config.password)
+            Log.message(verboseMsg: "\(config.name) \"\(UDID)\" connection established")
             self.xcodebuild = Xcodebuild(xcodePath: self.config.xcodePath, shell: self.ssh)
         }
     }
@@ -44,6 +46,7 @@ class BaseExecutor {
     @discardableResult
     func executeShellScript(path: String?, testNameEnv: String) throws -> Int32? {
         if let scriptPath = path {
+            Log.message(verboseMsg: "\(self.config.name) \"\(self.UDID)\" executing \"\(scriptPath)\" script...")
             let script = try String(contentsOfFile: scriptPath, encoding: .utf8)
             let env = "export TEST_NAME='\(testNameEnv)'\n" +
                       "export UDID='\(UDID)'\n" +
@@ -52,6 +55,7 @@ class BaseExecutor {
                     .map { "export \($0.key)=\($0.value)" }
                     .joined(separator: "\n") ?? "")
             let scriptExecutionResult = try self.ssh.run(env + script)
+            Log.message(verboseMsg: "\(self.config.name) Device: \"\(self.UDID)\"\n\(scriptExecutionResult.output)")
             return scriptExecutionResult.status
         }
         return nil

@@ -25,12 +25,16 @@ extension Device: TestExecutor {
 
     func ready(completion: @escaping (Bool) -> Void) {
         self.queue.async(flags: .barrier) {
-            guard let output = try? self.ssh.run("instruments -s devices").output,
-                  output.contains(self.UDID) else {
-                error("Device: \(self.UDID) is not connected.")
+            Log.message(verboseMsg: "\(self.config.name): check Device \"\(self.UDID)\"")
+            let output = try? self.ssh.run("instruments -s devices").output
+            guard let outputUnwraped = output, outputUnwraped.contains(self.UDID) else {
+                let knownDevices = output?.components(separatedBy: "\n").joined(separator: "\r\t\t- ") ?? ""
+                Log.error("\(self.config.name) Device: \"\(self.UDID)\" is not plugged in")
+                Log.message(verboseMsg: "\(self.config.name) plugged in devices:\r\t\t- \(knownDevices)")
                 completion(false)
                 return
             }
+            Log.message(verboseMsg: "\(self.config.name) Device: \"\(self.UDID)\" ready")
             completion(true)
         }
     }
@@ -41,6 +45,7 @@ extension Device: TestExecutor {
         self.queue.async(flags: .barrier) {
             if tests.isEmpty {
                 self.finished = true
+                Log.message(verboseMsg: "\(self.config.name) \"\(self.UDID)\" finished")
                 completion?(self, .failure(.noTestsForExecution))
                 return
             }
@@ -50,12 +55,16 @@ extension Device: TestExecutor {
                     return
                 }
                 
+                Log.message(verboseMsg: "\(self.config.name) \"\(self.UDID)\" run tests:\n\t\t- " +
+                                        "\(tests.joined(separator: "\n\t\t- "))")
                 let result = try self.xcodebuild.execute(tests: tests,
                                                          executorType: self.type,
                                                          UDID: self.UDID,
                                                          xctestrunPath: self.xctestrunPath,
                                                          derivedDataPath: self.config.deploymentPath,
                                                          timeout: timeout)
+                Log.message(verboseMsg: "\(self.config.name) \"\(self.UDID)\" " +
+                                        "tests run finished with status: \(result.status)")
                 
                 try self.executeShellScript(path: self.tearDownScriptPath, testNameEnv: tests.first ?? "")
                 

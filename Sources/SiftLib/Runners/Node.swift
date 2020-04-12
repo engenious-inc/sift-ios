@@ -37,7 +37,7 @@ class Node {
         self.setUpScriptPath = setUpScriptPath
         self.tearDownScriptPath = tearDownScriptPath
         self.executors = []
-        self.queue = .init(type: .concurrent, name: config.name + "-" + config.host)
+        self.queue = .init(type: .concurrent, name: "io.engenious." + config.name + "." + config.host)
         
         self.name = config.name
         self.delegate = delegate
@@ -55,8 +55,10 @@ extension Node: Runner {
                                                            username: self.config.username,
                                                            password: self.config.password,
                                                runnerDeploymentPath: self.config.deploymentPath,
-                                               masterDeploymentPath: self.outputDirectoryPath)
+                                               masterDeploymentPath: self.outputDirectoryPath,
+                                                           nodeName: self.config.name)
                 try self.communication.getBuildOnRunner(buildPath: self.delegate.buildPath())
+                
                 let xctestrun = self.injectENVToXctestrun() // all env should be injected in to the .xctestrun file
                 let xctestrunPath = try self.communication.saveOnRunner(xctestrun: xctestrun) // save *.xctestrun file on Node side
                 
@@ -76,7 +78,7 @@ extension Node: Runner {
                     }
                 }
             } catch let err {
-                error("\(self.name): \(err)")
+                Log.error("\(self.name): \(err)")
                 return
             }
         }
@@ -96,7 +98,7 @@ extension Node {
                                          setUpScriptPath: self.setUpScriptPath,
                                          tearDownScriptPath: self.tearDownScriptPath)
                 } catch let err {
-                    error("\(self.name): \(err)")
+                    Log.error("\(self.name): \(err)")
                     return nil
                 }
             }
@@ -111,7 +113,7 @@ extension Node {
                                       setUpScriptPath: self.setUpScriptPath,
                                       tearDownScriptPath: self.tearDownScriptPath)
                 } catch let err {
-                    error("\(self.name): \(err)")
+                    Log.error("\(self.name): \(err)")
                     return nil
                 }
             }
@@ -142,10 +144,10 @@ extension Node {
     private func testExecutionSuccessFlow(_ tests: [String], executor: TestExecutor) {
         do {
             let pathToTestsResults = try self.communication.sendResultsToMaster(UDID: executor.UDID)
-            self.delegate.handleTestsResults(runner: self, tests: tests, pathToResults: pathToTestsResults)
+            self.delegate.handleTestsResults(runner: self, executedTests: tests, pathToResults: pathToTestsResults)
             self.runTests(in: executor) // continue running next tests
         } catch let err {
-            error("\(self.name): \(err)")
+            Log.error("\(self.name): \(err)")
             executor.reset { _ in
                 self.runTests(in: executor)
             }
@@ -158,8 +160,8 @@ extension Node {
             executor.reset(completion: nil)
             self.checkIfFinished()
         case .executionError(let description, let tests):
-            error(description)
-            self.delegate.handleTestsResults(runner: self, tests: tests, pathToResults: nil)
+            Log.error(description)
+            self.delegate.handleTestsResults(runner: self, executedTests: tests, pathToResults: nil)
             self.runTests(in: executor) // continue running next tests
         case .testSkipped:
             self.runTests(in: executor) // continue running next tests
@@ -175,6 +177,7 @@ extension Node {
     private func checkIfFinished() {
         if (self.executors.filter { $0.finished == false }).count == 0 {
             self._finished = true
+            Log.message(verboseMsg: "\(self.name): FINISHED")
             self.delegate.runnerFinished(runner: self)
         }
     }

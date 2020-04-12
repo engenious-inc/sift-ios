@@ -46,6 +46,7 @@ final class SSH: SSHExecutor, ShellExecutor {
         return self
     }
     
+    @discardableResult
     func run(_ command: String) throws -> (status: Int32, output: String) {
         try self.ssh.capture(command)
     }
