@@ -45,12 +45,15 @@ struct XCResultTool {
     
     @discardableResult
     func merge(inputPaths: [String], outputPath: String) throws -> String {
+        Log.message(verboseMsg: "Merging results...")
         if inputPaths.isEmpty {
             throw NSError(domain: "No tests results", code: 1, userInfo: nil)
         }
         let fullCommand = xcresulttool + "merge " +
                                       inputPaths.map{"\"\($0)\""}.joined(separator: " ") +
                                       " --output-path \(outputPath)"
-        return try shell.run(fullCommand).output
+        let output = try shell.run(fullCommand).output
+        Log.message(verboseMsg: "All results is merged: \(outputPath)")
+        return output
     }
 }
