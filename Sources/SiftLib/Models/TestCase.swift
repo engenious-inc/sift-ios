@@ -10,6 +10,8 @@ public struct TestCase: Hashable {
     public var name: String
     public var state: State
     public var launchCounter: Int
+    public var duration: Double
+    public var message: String
     
     public func hash(into hasher: inout Hasher) {
         hasher.combine(name)
@@ -19,8 +21,8 @@ public struct TestCase: Hashable {
 public struct TestCases {
     private var iterator: IndexingIterator<[(key: String, case: TestCase)]>
     private var failedTestsCache: [String] = []
-    private var cases: [String: TestCase]
     private let rerunLimit: Int
+    var cases: [String: TestCase]
     
     public var count: Int { cases.count }
     public var passed: [TestCase] { cases.values.filter { $0.state == .pass } }
@@ -30,7 +32,7 @@ public struct TestCases {
     
     public init(tests: [String], rerunLimit: Int) {
         let cases = tests.map {
-            (key: $0, case: TestCase(name: $0, state: .unexecuted, launchCounter: 0))
+            (key: $0, case: TestCase(name: $0, state: .unexecuted, launchCounter: 0, duration: 0.0, message: ""))
         }
         self.cases = Dictionary<String, TestCase>(uniqueKeysWithValues: cases)
         self.iterator = cases.makeIterator()
@@ -46,10 +48,12 @@ public struct TestCases {
         return test
     }
     
-    public mutating func update(test: String, state: TestCase.State) {
+    public mutating func update(test: String, state: TestCase.State, duration: Double, message: String = "") {
         guard cases[test] != nil else { return }
         cases[test]!.state = state
         cases[test]!.launchCounter += 1
+        cases[test]!.duration = duration
+        cases[test]!.message = message
         if state != .pass && cases[test]!.launchCounter <= self.rerunLimit {
             failedTestsCache.append(test)
         }
