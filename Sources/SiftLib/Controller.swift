@@ -102,8 +102,10 @@ extension Controller {
         if (self.runners.filter { $0.finished == false }).count == 0 {
             Log.message(verboseMsg: "All nodes finished")
             let mergedResultsPath = "'\(self.config.outputDirectoryPath)/final/final_result.xcresult'"
+            var JUnitReportUrl = URL(fileURLWithPath: "\(self.config.outputDirectoryPath)/final/final_result.xml")
             do {
                 try self.xcresulttool.merge(inputPaths: self.xcresultFiles, outputPath: mergedResultsPath)
+                JUnit().generate(tests: self.tests).write(to: JUnitReportUrl)
                 let reran = self.tests.reran
                 let failed = self.tests.failed
                 let unexecuted = self.tests.unexecuted
@@ -155,7 +157,7 @@ extension Controller: RunnerDelegate {
             guard let pathToResults = pathToResults,
                   let xcresult = self.getXCResult(path: pathToResults) else {
                     executedTests.forEach {
-                        self.tests.update(test: $0, state: .unexecuted)
+                        self.tests.update(test: $0, state: .unexecuted, duration: 0.0, message: "Was not executed")
                         Log.failed("\(runner.name): \($0) - Was not executed")
                     }
                 return
@@ -166,20 +168,32 @@ extension Controller: RunnerDelegate {
                     .reduce(into: [String: ActionTestMetadata]()) { dictionary, value in
                         dictionary[value.identifier] = value
                 }
-                executedTests.forEach {
+                try executedTests.forEach {
                     guard let testMetaData = testsMetadata[$0] else {
-                        self.tests.update(test: $0, state: .unexecuted)
+                        self.tests.update(test: $0, state: .unexecuted, duration: 0.0, message: "Was not executed")
                         Log.failed("\(runner.name): \($0) - Was not executed")
                         return
                     }
                     if testMetaData.testStatus == "Success" {
-                        self.tests.update(test: $0, state: .pass)
+                        self.tests.update(test: $0, state: .pass, duration: testMetaData.duration ?? 0.0)
                         Log.success("\(runner.name): \($0) " +
                         "- \(testMetaData.testStatus): \(String(format: "%.3f", testMetaData.duration ?? 0)) sec.")
                     } else {
-                        self.tests.update(test: $0, state: .failed)
+                        let summary: ActionTestSummary = try xcresult.modelFrom(reference: testMetaData.summaryRef!)
+                        var message = summary.failureSummaries.compactMap { $0.message }.joined(separator: " ")
+                        if message.isEmpty {
+                            message = summary.allChildActivitySummaries()
+                                .filter{$0.activityType == "com.apple.dt.xctest.activity-type.testAssertionFailure"}
+                                .map{ $0.title }
+                                .joined(separator: "\n")
+                        }
+                        self.tests.update(test: $0,
+                                          state: .failed,
+                                          duration: testMetaData.duration ?? 0.0,
+                                          message: message)
                         Log.failed("\(runner.name): \($0) " +
                         "- \(testMetaData.testStatus): \(String(format: "%.3f", testMetaData.duration ?? 0)) sec.")
+                        Log.message(verboseMsg: "\(runner.name): \($0) - \(testMetaData.testStatus):\n\t\t- \(message)")
                     }
                 }
             } catch let err {
