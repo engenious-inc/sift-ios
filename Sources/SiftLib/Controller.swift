@@ -102,10 +102,10 @@ extension Controller {
         if (self.runners.filter { $0.finished == false }).count == 0 {
             Log.message(verboseMsg: "All nodes finished")
             let mergedResultsPath = "'\(self.config.outputDirectoryPath)/final/final_result.xcresult'"
-            var JUnitReportUrl = URL(fileURLWithPath: "\(self.config.outputDirectoryPath)/final/final_result.xml")
+            let JUnitReportUrl = URL(fileURLWithPath: "\(self.config.outputDirectoryPath)/final/final_result.xml")
             do {
                 try self.xcresulttool.merge(inputPaths: self.xcresultFiles, outputPath: mergedResultsPath)
-                JUnit().generate(tests: self.tests).write(to: JUnitReportUrl)
+                try JUnit().generate(tests: self.tests).write(to: JUnitReportUrl, atomically: true, encoding: .utf8)
                 let reran = self.tests.reran
                 let failed = self.tests.failed
                 let unexecuted = self.tests.unexecuted

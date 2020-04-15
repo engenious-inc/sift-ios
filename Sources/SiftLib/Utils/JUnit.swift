@@ -11,7 +11,7 @@ class JUnit {
         tests.cases.values.forEach { test in
             var components = test.name.components(separatedBy: "/")
             let moduleName = components.removeFirst()
-            let testName = components.removeLast()
+            _ = components.removeLast()
             let className = components.joined(separator: "/")
             
             if self.testsuites[moduleName] != nil {
