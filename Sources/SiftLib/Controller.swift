@@ -99,6 +99,7 @@ extension Controller {
     }
     
     private func checkout(runner: Runner) {
+        runner.finished = true
         if (self.runners.filter { $0.finished == false }).count == 0 {
             Log.message(verboseMsg: "All nodes finished")
             let mergedResultsPath = "'\(self.config.outputDirectoryPath)/final/final_result.xcresult'"
@@ -146,7 +147,7 @@ extension Controller {
 //MARK: - TestsRunnerDelegate implementation
 extension Controller: RunnerDelegate {
     public func runnerFinished(runner: Runner) {
-        self.queue.async {
+        self.queue.async(flags: .barrier) {
             self.checkout(runner: runner)
         }
     }

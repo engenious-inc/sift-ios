@@ -10,6 +10,7 @@ class Node {
     
     private var executors: [TestExecutor]
     private let queue: Queue
+    private let serialQueue: Queue
     private var communication: Communication!
     private var _finished: Bool = false
     
@@ -17,7 +18,7 @@ class Node {
     weak var delegate: RunnerDelegate!
     var finished: Bool {
         get {
-            self.queue.sync { self._finished }
+            self.queue.sync(flags: .barrier) { self._finished }
         }
         set {
             self.queue.async(flags: .barrier) { self._finished = newValue }
@@ -38,7 +39,7 @@ class Node {
         self.tearDownScriptPath = tearDownScriptPath
         self.executors = []
         self.queue = .init(type: .concurrent, name: "io.engenious." + config.name + "." + config.host)
-        
+        self.serialQueue = .init(type: .serial, name: "io.engenious." + config.name + "." + config.host + ".serial")
         self.name = config.name
         self.delegate = delegate
     }
@@ -123,6 +124,10 @@ extension Node {
     
     private func runTests(in executor: TestExecutor) {
         let testsForExecution = self.delegate.getTests() // request tests for execution
+        if testsForExecution.isEmpty {
+            self.finish(executor)
+            return
+        }
         executor.run(tests: testsForExecution,
                    timeout: self.testsExecutionTimeout,
                 completion: { [unowned self] (executor, result) in
@@ -157,8 +162,7 @@ extension Node {
     private func testExecutionFailureFlow(_ simError: TestExecutorError, executor: TestExecutor) {
         switch simError {
         case .noTestsForExecution:
-            executor.reset(completion: nil)
-            self.checkIfFinished()
+            self.finish(executor)
         case .executionError(let description, let tests):
             Log.error(description)
             self.delegate.handleTestsResults(runner: self, executedTests: tests, pathToResults: nil)
@@ -174,11 +178,45 @@ extension Node {
         return xctestrun
     }
     
-    private func checkIfFinished() {
-        if (self.executors.filter { $0.finished == false }).count == 0 {
-            self._finished = true
-            Log.message(verboseMsg: "\(self.name): FINISHED")
-            self.delegate.runnerFinished(runner: self)
+    private func finish(_ executor: TestExecutor) {
+        self.serialQueue.async {
+            Log.message(verboseMsg: "\(self.name) Simulator: \"\(executor.UDID)\") finished")
+            executor.finished = true
+            if (self.executors.filter { $0.finished == false }).count == 0 {
+                self.killSimulators()
+                Log.message(verboseMsg: "\(self.name): FINISHED")
+                self.delegate.runnerFinished(runner: self)
+            }
+        }
+    }
+    
+    private func killSimulators() {
+        let simulators = self.executors.filter { $0.type == .simulator }
+        guard !simulators.isEmpty else { return }
+        
+        Log.message(verboseMsg: "\(self.name) kill simulator process...")
+        let prefixCommand = "export DEVELOPER_DIR=\(self.config.xcodePath)/Contents/Developer\n"
+        let killCommands = prefixCommand +
+        (self.getIdForProccess(name: "com.apple.CoreSimulator.CoreSimulatorService")?
+            .map { return "kill -9 \($0)" }
+            .joined(separator: "\n") ?? "")
+        let bootCommands = prefixCommand +
+            simulators
+            .map { return "xcrun simctl boot \($0.UDID)" }
+            .joined(separator: "\n")
+        _ = try? self.communication.executeOnRunner(command: killCommands)
+        sleep(5)
+        _ = try? self.communication.executeOnRunner(command: bootCommands)
+    }
+
+    private func getIdForProccess(name: String) -> [Int]? {
+        guard let result = try? self.communication.executeOnRunner(command: "ps ax | grep -E '\(name)'") else {
+            return nil
+        }
+        return result.output.components(separatedBy: "\n").compactMap {
+            let proccessNumber = $0.components(separatedBy: CharacterSet.decimalDigits.inverted)
+                .first { Int($0) != nil ? true : false }
+            return Int(proccessNumber ?? "")
         }
     }
 }

@@ -26,7 +26,8 @@ extension Device: TestExecutor {
     func ready(completion: @escaping (Bool) -> Void) {
         self.queue.async(flags: .barrier) {
             Log.message(verboseMsg: "\(self.config.name): check Device \"\(self.UDID)\"")
-            let output = try? self.ssh.run("instruments -s devices").output
+            let prefixCommand = "export DEVELOPER_DIR=\(self.config.xcodePath)/Contents/Developer\n"
+            let output = try? self.ssh.run(prefixCommand + "instruments -s devices").output
             guard let outputUnwraped = output, outputUnwraped.contains(self.UDID) else {
                 let knownDevices = output?.components(separatedBy: "\n").joined(separator: "\r\t\t- ") ?? ""
                 Log.error("\(self.config.name) Device: \"\(self.UDID)\" is not plugged in")
@@ -44,8 +45,6 @@ extension Device: TestExecutor {
              completion: ((TestExecutor, Result<[String], TestExecutorError>) -> Void)? = nil) {
         self.queue.async(flags: .barrier) {
             if tests.isEmpty {
-                self.finished = true
-                Log.message(verboseMsg: "\(self.config.name) \"\(self.UDID)\" finished")
                 completion?(self, .failure(.noTestsForExecution))
                 return
             }
@@ -54,7 +53,6 @@ extension Device: TestExecutor {
                     completion?(self, .failure(.testSkipped))
                     return
                 }
-                
                 Log.message(verboseMsg: "\(self.config.name) \"\(self.UDID)\" run tests:\n\t\t- " +
                                         "\(tests.joined(separator: "\n\t\t- "))")
                 let result = try self.xcodebuild.execute(tests: tests,
@@ -65,14 +63,13 @@ extension Device: TestExecutor {
                                                          timeout: timeout)
                 Log.message(verboseMsg: "\(self.config.name) \"\(self.UDID)\" " +
                                         "tests run finished with status: \(result.status)")
-                
                 try self.executeShellScript(path: self.tearDownScriptPath, testNameEnv: tests.first ?? "")
-                
                 if result.status == 0 || result.status == 65 {
                     completion?(self, .success(tests))
                     return
                 }
-                
+                Log.message(verboseMsg: "\(self.config.name) \"\(self.UDID)\" " +
+                "xcodebuild:\n \(result.output)")
                 self.reset { _ in
                     completion?(self, .failure(.executionError(description: "Device: \(self.UDID) " +
                         "- status \(result.status) " +

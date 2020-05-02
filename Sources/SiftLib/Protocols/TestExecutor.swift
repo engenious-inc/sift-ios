@@ -1,9 +1,9 @@
 import Foundation
 
-public protocol TestExecutor {
+public protocol TestExecutor: class {
     var type: TestExecutorType { get }
     var UDID: String { get }
-    var finished: Bool { get }
+    var finished: Bool { get set }
     
     func ready(completion: @escaping (Bool) -> Void)
     func run(tests: [String], timeout: Int, completion: ((TestExecutor, Result<[String], TestExecutorError>) -> Void)?)
