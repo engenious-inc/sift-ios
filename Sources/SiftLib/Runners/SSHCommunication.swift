@@ -73,4 +73,10 @@ class SSHCommunication<SSH: SSHExecutor>: Communication {
             return xctestrunPath
         }
     }
+    
+    func executeOnRunner(command: String) throws -> (status: Int32, output: String) {
+        try self.queue.sync {
+            return try self.ssh.run(command)
+        }
+    }
 }

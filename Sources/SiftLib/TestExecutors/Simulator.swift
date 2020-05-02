@@ -26,7 +26,9 @@ extension Simulator: TestExecutor {
     func ready(completion: @escaping (Bool) -> Void) {
         self.queue.async(flags: .barrier) {
             Log.message(verboseMsg: "\(self.config.name): check Simulator \"\(self.UDID)\"")
-            guard let output = try? self.ssh.run("xcrun simctl list devices" +
+            let prefixCommand = "export DEVELOPER_DIR=\(self.config.xcodePath)/Contents/Developer\n"
+            guard let output = try? self.ssh.run(prefixCommand +
+                "xcrun simctl list devices" +
                 " | grep \"(Booted)\" | grep -E -o -i \"([0-9a-f]{8}-([0-9a-f]{4}-){3}[0-9a-f]{12})\"").output else {
                 Log.message(verboseMsg: "\(self.config.name): Simulator \"\(self.UDID)\" is not booted.")
                 completion(false)
@@ -46,8 +48,6 @@ extension Simulator: TestExecutor {
              completion: ((TestExecutor, Result<[String], TestExecutorError>) -> Void)? = nil) {
         self.queue.async(flags: .barrier) {
             if tests.isEmpty {
-                self.finished = true
-                Log.message(verboseMsg: "\(self.config.name) Simulator: \"\(self.UDID)\") finished")
                 completion?(self, .failure(.noTestsForExecution))
                 return
             }
@@ -56,7 +56,6 @@ extension Simulator: TestExecutor {
                     completion?(self, .failure(.testSkipped))
                     return
                 }
-                
                 Log.message(verboseMsg: "\(self.config.name) Semulator: \"\(self.UDID)\") run tests:\n\t\t- " +
                                         "\(tests.joined(separator: "\n\t\t- "))")
                 let result = try self.xcodebuild.execute(tests: tests,
@@ -67,14 +66,13 @@ extension Simulator: TestExecutor {
                                                          timeout: timeout)
                 Log.message(verboseMsg: "\(self.config.name) Simulator: \"\(self.UDID)\") " +
                                         "tests run finished with status: \(result.status)")
-                
                 try self.executeShellScript(path: self.tearDownScriptPath, testNameEnv: tests.first ?? "")
-                
                 if result.status == 0 || result.status == 65 {
                     completion?(self, .success(tests))
                     return
                 }
-                
+                Log.message(verboseMsg: "\(self.config.name) \"\(self.UDID)\" " +
+                "xcodebuild:\n \(result.output)")
                 self.reset { _ in
                     completion?(self, .failure(.executionError(description: "Simulator: \(self.UDID) " +
                     "- status \(result.status) " +
@@ -96,6 +94,7 @@ extension Simulator: TestExecutor {
                 "export DEVELOPER_DIR=\(self.config.xcodePath)/Contents/Developer\n" +
                            "xcrun simctl shutdown \(self.UDID)\n" +
                            "xcrun simctl erase \(self.UDID)\n" +
+                           "xcrun simctl erase \(self.UDID)\n" + // doubled due to simulator bug
                            "xcrun simctl boot \(self.UDID)'"
             
             // in case when completion is not set, run all commands in background
@@ -115,7 +114,7 @@ extension Simulator: TestExecutor {
     
     func deleteApp(bundleId: String) {
         self.queue.async(flags: .barrier) {
-            try? self.ssh.run("xcrun simctl uninstall \(self.UDID) \(bundleId)")
+            _ = try? self.ssh.run("xcrun simctl uninstall \(self.UDID) \(bundleId)")
         }
     }
 }

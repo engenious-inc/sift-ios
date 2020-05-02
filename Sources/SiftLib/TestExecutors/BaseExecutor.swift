@@ -14,7 +14,7 @@ class BaseExecutor {
     private var _finished: Bool = false
     var finished: Bool {
         get {
-            self.queue.sync { self._finished }
+            self.queue.sync(flags: .barrier) { self._finished }
         }
         set {
             self.queue.async(flags: .barrier) { self._finished = newValue }
