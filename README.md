@@ -28,7 +28,7 @@
             "UDID": {
                         "devices": ["devices udid, can be null"],
                         "simulators": ["simulators udid, can be null"]
-                    }
+                    },
             "xcodePath": "/Applications/Xcode.app", // path to xcode
             "environmentVariables": ["env1": "value1"] // inject env if need, optional
         }

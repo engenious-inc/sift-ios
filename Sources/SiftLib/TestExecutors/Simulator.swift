@@ -103,6 +103,7 @@ extension Simulator: TestExecutor {
             
             do {
                 try self.ssh.run(commands)
+                sleep(45) // wait until simulators loading
                 Log.message(verboseMsg: "\(self.config.name) Simulator: \"\(self.UDID)\") reseted")
                 completion?(.success(self))
             } catch let err {
