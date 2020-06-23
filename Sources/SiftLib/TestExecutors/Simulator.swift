@@ -94,7 +94,6 @@ extension Simulator: TestExecutor {
                 "export DEVELOPER_DIR=\(self.config.xcodePath)/Contents/Developer\n" +
                            "xcrun simctl shutdown \(self.UDID)\n" +
                            "xcrun simctl erase \(self.UDID)\n" +
-                           "xcrun simctl erase \(self.UDID)\n" + // doubled due to simulator bug
                            "xcrun simctl boot \(self.UDID)'"
             
             // in case when completion is not set, run all commands in background
