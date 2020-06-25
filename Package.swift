@@ -6,7 +6,7 @@ import PackageDescription
 let package = Package(
     name: "Sift",
     dependencies: [
-        .package(url: "https://github.com/apple/swift-argument-parser", from: "0.2.0"),
+        .package(url: "https://github.com/apple/swift-argument-parser", from: "0.1.0"),
         .package(url: "https://github.com/onevcat/Rainbow", from: "3.1.5"),
         .package(url: "https://github.com/jakeheis/Shout", from: "0.5.5"),
         .package(url: "https://github.com/tuist/shell.git", .upToNextMajor(from: "2.2.0")),

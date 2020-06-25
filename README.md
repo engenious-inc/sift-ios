@@ -2,6 +2,11 @@
 ## Sift - Unit and UI Tests Parallelization
 
 ### How to use:
+
+### With Orchestrator:
+- `sift orchestartor --token 'your token' --test-plan 'name of testplan'` run tests for particular testplan
+
+### Standalone:
 - `sift run --config config.json` run tests
 - `sift list --config config.json` print all tests from the bundle
 

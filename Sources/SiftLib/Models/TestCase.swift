@@ -22,7 +22,7 @@ public struct TestCases {
     private var iterator: IndexingIterator<[(key: String, case: TestCase)]>
     private var failedTestsCache: [String] = []
     private let rerunLimit: Int
-    var cases: [String: TestCase]
+    public var cases: [String: TestCase]
     
     public var count: Int { cases.count }
     public var passed: [TestCase] { cases.values.filter { $0.state == .pass } }

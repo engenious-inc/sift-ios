@@ -14,10 +14,8 @@ public enum Log {
     }
 
     public static func error(before: String? = nil, _ msg: String) {
-        if !quiet {
-            let before = before ?? ""
-            print("\n" + before + " ⛔️ " + msg.red.bold + "\n")
-        }
+        let before = before ?? ""
+        print("\n" + before + " ⛔️ " + msg.red.bold + "\n")
     }
 
     public static func message(before: String? = nil, _ msg: String) {
