@@ -12,12 +12,13 @@ public class Controller {
     private var xcresultFiles: [String] = []
     private lazy var xcresulttool = XCResultTool(shell: self.shell)
     public var tests: TestCases
+    public let bundleTests: [String]
 
     public init(config: Config, tests: [String]? = nil, shell: ShellExecutor = Run()) throws {
         self.config = config
         self.xctestrun = try .init(path: config.xctestrunPath)
         
-        let bundleTests = self.xctestrun.testBundleExecPaths().flatMap { (key: String, value: String) -> [String] in
+        self.bundleTests = self.xctestrun.testBundleExecPaths().flatMap { (key: String, value: String) -> [String] in
             do {
                 let listOfTests: [String] = try TestsDump().dump(path: value, moduleName: key)
                 Log.message("\(key): \(listOfTests.count) tests")
@@ -31,13 +32,12 @@ public class Controller {
                                rerunLimit: config.rerunFailedTest)
         self.shell = shell
         self.queue = .init(type: .concurrent, name: "io.engenious.TestsProcessor")
-        
-        Log.message("Total tests for execution: \(self.tests.count)")
     }
     
     public func start() {
         self.queue.async {
             do {
+                Log.message("Total tests for execution: \(self.tests.count)")
                 Log.message(verboseMsg: "Clean: \(self.config.outputDirectoryPath)")
                 _ = try? self.shell.run("mkdir \(self.config.outputDirectoryPath)")
                 _ = try? self.shell.run("rm -r \(self.config.outputDirectoryPath)/*")

@@ -7,21 +7,75 @@ setbuf(__stdoutp, nil)
 struct Sift: ParsableCommand {
     static var configuration = CommandConfiguration(
         abstract: "A utility for parallel XCTest execution.",
-        subcommands: [Run.self, List.self],
+        subcommands: [Orchestrator.self, Run.self, List.self],
         defaultSubcommand: Run.self)
-    
-    struct Configure: ParsableArguments {
-        @Option(name: [.customShort("c"), .customLong("config")], help: "Path to the JSON config file.")
-        var path: String
-    }
 }
 
 extension Sift {
+
+    struct Orchestrator: ParsableCommand {
+        @Option(name: .shortAndLong, help: "Token for Orchestrator Auth.")
+        var token: String
+        
+        @Option(name: [.customShort("p"), .customLong("test-plan")], help: "Test plan for execution.")
+        var testPlan: String
+        
+        @Option(name: .shortAndLong, help: "API endpoint.")
+        var endpoint: String?
+        
+        @Flag(name: [.short, .customLong("verbose")], help: "Verbose mode.")
+        var verboseMode: Bool
+        
+        mutating func run() {
+            verbose = verboseMode
+            let orchestrator = OrchestratorAPI(endpoint: endpoint ?? "http://api.orchestrator.engenious.io", token: token)
+
+            //Get config for testplan
+            guard let config = orchestrator.get(testplan: testPlan, status: .enabled) else {
+                Log.error("Error: can't get config for TestPlan: \(testPlan)")
+                Sift.exit(withError: NSError(domain: "Error: can't get config for TestPlan: \(testPlan)", code: 1))
+            }
+            
+            // extract all tests from bundle
+            quiet = true
+            var testsFromBundle: [String] = []
+            do {
+                testsFromBundle = try Controller(config: config).bundleTests
+            } catch let error {
+                Log.error("\(error)")
+                Sift.exit(withError: error)
+            }
+            quiet = false
+
+            //Send all tests to Orchestrator for update
+            guard orchestrator.post(tests: testsFromBundle) else {
+                Log.error("Can't post new tests to Orchestrator")
+                Sift.exit(withError: NSError(domain: "Can't post new tests to Orchestrator", code: 1))
+            }
+            
+            
+            //Get tests for execution
+            guard let tests = orchestrator.get(testplan: testPlan, status: .enabled)?.tests else {
+                Log.error("Error: can't get config for TestPlan: \(testPlan)")
+                Sift.exit(withError: NSError(domain: "Error: can't get config for TestPlan: \(testPlan)", code: 1))
+            }
+            
+            do {
+                try Controller(config: config, tests: tests).start()
+            } catch let error {
+                Log.error("\(error)")
+                Sift.exit(withError: error)
+            }
+
+            dispatchMain()
+        }
+    }
+
     struct Run: ParsableCommand {
         static var configuration = CommandConfiguration(abstract: "Test execution command.")
 
-        @OptionGroup()
-        var configure: Configure
+        @Option(name: [.customShort("c"), .customLong("config")], help: "Path to the JSON config file.")
+        var path: String
 
         @Option(name: [.short, .customLong("tests-path")], help: "Path to a text file with list of tests for execution.")
         var testsPath: String?
@@ -41,40 +95,40 @@ extension Sift {
                     tests = try String(contentsOfFile: testsPath)
                                 .components(separatedBy: "\n")
                                 .filter { !$0.isEmpty }
-                } catch let err {
-                    Log.error("\(err)")
-                    Sift.exit(withError: NSError())
+                } catch let error {
+                    Log.error("\(error)")
+                    Sift.exit(withError: error)
                 }
             }
 
             do {
-                let config = try Config(path: configure.path)
-                let testsProcessor = try Controller(config: config, tests: tests)
-                testsProcessor.start()
-                
-                dispatchMain()
-            } catch let err {
-                Log.error("\(err)")
-                Sift.exit(withError: NSError())
+                let config = try Config(path: path)
+                let testsController = try Controller(config: config, tests: tests)
+                testsController.start()
+            } catch let error {
+                Log.error("\(error)")
+                Sift.exit(withError: error)
             }
+
+            dispatchMain()
         }
     }
 
     struct List: ParsableCommand {
         static var configuration = CommandConfiguration(abstract: "Print all tests in bundles")
 
-        @OptionGroup()
-        var configure: Configure
+        @Option(name: [.customShort("c"), .customLong("config")], help: "Path to the JSON config file.")
+        var path: String
 
         mutating func run() {
             do {
                 quiet = true
-                let config = try Config.init(path: configure.path)
-                let testsProcessor = try Controller(config: config)
-                print(testsProcessor.tests)
-            } catch let err {
-                Log.error("\(err)")
-                Sift.exit(withError: NSError())
+                let config = try Config(path: path)
+                let testsController = try Controller(config: config)
+                print(testsController.tests)
+            } catch let error {
+                Log.error("\(error)")
+                Sift.exit(withError: error)
             }
         }
     }
