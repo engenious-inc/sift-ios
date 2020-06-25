@@ -1,99 +1,83 @@
+import ArgumentParser
 import Foundation
 import SiftLib
-import Guaka
 
 setbuf(__stdoutp, nil)
-let path = Flag(shortName: "c",
-                longName: "config",
-                type: String.self,
-                description: "Path to the JSON config file.",
-                required: true,
-                inheritable: false)
 
-let onlyTesting = Flag(shortName: "o",
-                       longName: "only-testing",
-                       type: [String].self,
-                       description: "Tests for execution.",
-                       required: false,
-                       inheritable: false)
+struct Sift: ParsableCommand {
+    static var configuration = CommandConfiguration(
+        abstract: "A utility for parallel XCTest execution.",
+        subcommands: [Run.self, List.self],
+        defaultSubcommand: Run.self)
+    
+    struct Configure: ParsableArguments {
+        @Option(name: [.customShort("c"), .customLong("config")], help: "Path to the JSON config file.")
+        var path: String
+    }
+}
 
-let testsPath = Flag(shortName: "t",
-                     longName: "tests-path",
-                     type: String.self,
-                     description: "Path to tests for execution.",
-                     required: false,
-                     inheritable: false)
+extension Sift {
+    struct Run: ParsableCommand {
+        static var configuration = CommandConfiguration(abstract: "Test execution command.")
 
-let verboseMode = Flag(shortName: "v",
-                       longName: "verbose",
-                       value: false,
-                       description: "Verbose mode.")
+        @OptionGroup()
+        var configure: Configure
 
-let rootCommand = Command(usage: "Sift",
-                          shortMessage: "",
-                          flags: [],
-                          example: nil,
-                          parent: nil,
-                          aliases: [])
+        @Option(name: [.short, .customLong("tests-path")], help: "Path to a text file with list of tests for execution.")
+        var testsPath: String?
 
-let _ = Command(usage: "run",
-                shortMessage: "Execute tests",
-                flags: [path, onlyTesting, testsPath, verboseMode],
-                example: nil,
-                parent: rootCommand,
-                aliases: []) { flags, args in
+        @Option(name: [.short, .customLong("only-testing")], help: "Test for execution.")
+        var onlyTesting: [String]
+
+        @Flag(name: [.short, .customLong("verbose")], help: "Verbose mode.")
+        var verboseMode: Bool
+
+        mutating func run() {
+            verbose = verboseMode
+            var tests: [String] = onlyTesting
+  
+            if let testsPath = testsPath {
+                do {
+                    tests = try String(contentsOfFile: testsPath)
+                                .components(separatedBy: "\n")
+                                .filter { !$0.isEmpty }
+                } catch let err {
+                    Log.error("\(err)")
+                    Sift.exit(withError: NSError())
+                }
+            }
+
+            do {
+                let config = try Config(path: configure.path)
+                let testsProcessor = try Controller(config: config, tests: tests)
+                testsProcessor.start()
                 
-    guard let path = flags.get(name: "config", type: String.self) else {
-        fatalError("No path to the config file")
-    }
-                    
-    if let verboseMode = flags.getBool(name: "verbose") {
-        verbose = verboseMode
-    }
-
-    var tests = flags.get(name: "only-testing", type: [String].self)
-    if let testsPath = flags.get(name: "tests-path", type: String.self) {
-        do {
-            tests = try String(contentsOfFile: testsPath)
-                        .components(separatedBy: "\n")
-                        .filter { !$0.isEmpty }
-        } catch let err {
-            Log.error("\(err)")
-            exit(1)
+                dispatchMain()
+            } catch let err {
+                Log.error("\(err)")
+                Sift.exit(withError: NSError())
+            }
         }
     }
 
-    do {
-        let config = try Config(path: path)
-        let testsProcessor = try Controller(config: config, tests: tests)
-        testsProcessor.start()
-        
-        dispatchMain()
-    } catch let err {
-        Log.error("\(err)")
-        exit(1)
+    struct List: ParsableCommand {
+        static var configuration = CommandConfiguration(abstract: "Print all tests in bundles")
+
+        @OptionGroup()
+        var configure: Configure
+
+        mutating func run() {
+            do {
+                quiet = true
+                let config = try Config.init(path: configure.path)
+                let testsProcessor = try Controller(config: config)
+                print(testsProcessor.tests)
+            } catch let err {
+                Log.error("\(err)")
+                Sift.exit(withError: NSError())
+            }
+        }
     }
 }
 
-let _ = Command(usage: "list",
-                shortMessage: "Print all tests in bundles",
-                flags: [path],
-                example: nil,
-                parent: rootCommand,
-                aliases: ["list-tests"]) { flags, args in
-    guard let path = flags.get(name: "config", type: String.self) else {
-        fatalError("No path to the config file")
-    }
-    
-    do {
-        quiet = true
-        let config = try Config.init(path: path)
-        let testsProcessor = try Controller(config: config)
-        print(testsProcessor.tests)
-    } catch let err {
-        Log.error("\(err)")
-        exit(1)
-    }
-}
-
-rootCommand.execute()
+Sift.main()
