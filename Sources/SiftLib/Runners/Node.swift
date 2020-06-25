@@ -182,8 +182,9 @@ extension Node {
         self.serialQueue.async {
             Log.message(verboseMsg: "\(self.name) Simulator: \"\(executor.UDID)\") finished")
             executor.finished = true
+            executor.reset(completion: nil)
             if (self.executors.filter { $0.finished == false }).count == 0 {
-                self.killSimulators()
+                //self.killSimulators()
                 Log.message(verboseMsg: "\(self.name): FINISHED")
                 self.delegate.runnerFinished(runner: self)
             }
@@ -195,28 +196,25 @@ extension Node {
         guard !simulators.isEmpty else { return }
         
         Log.message(verboseMsg: "\(self.name) kill simulator process...")
+        guard let pid = self.getIdForProccess(name: "com.apple.CoreSimulator.CoreSimulatorService") else {
+            return
+        }
         let prefixCommand = "export DEVELOPER_DIR=\(self.config.xcodePath)/Contents/Developer\n"
-        let killCommands = prefixCommand +
-        (self.getIdForProccess(name: "com.apple.CoreSimulator.CoreSimulatorService")?
-            .map { return "kill -9 \($0)" }
-            .joined(separator: "\n") ?? "")
+        let killCommands = prefixCommand + "kill -3 \(pid)"
         let bootCommands = prefixCommand +
             simulators
             .map { return "xcrun simctl boot \($0.UDID)" }
             .joined(separator: "\n")
+        sleep(5)
         _ = try? self.communication.executeOnRunner(command: killCommands)
         sleep(5)
         _ = try? self.communication.executeOnRunner(command: bootCommands)
     }
 
-    private func getIdForProccess(name: String) -> [Int]? {
-        guard let result = try? self.communication.executeOnRunner(command: "ps ax | grep -E '\(name)'") else {
+    private func getIdForProccess(name: String) -> Int? {
+        guard let result = try? self.communication.executeOnRunner(command: "ps axc -o pid -o command | grep -E '\(name)' | grep -Eoi -m 1 '[0-9]' | tr -d '\n'") else {
             return nil
         }
-        return result.output.components(separatedBy: "\n").compactMap {
-            let proccessNumber = $0.components(separatedBy: CharacterSet.decimalDigits.inverted)
-                .first { Int($0) != nil ? true : false }
-            return Int(proccessNumber ?? "")
-        }
+        return Int(result.output)
     }
 }

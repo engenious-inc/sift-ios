@@ -162,7 +162,7 @@ public struct XCTestRun {
         }))
     }
     
-    mutating func addEnvironmentVariables(_ values: [String: String]) {
+    mutating func addEnvironmentVariables(_ values: [String: String?]) {
         for (key, _) in self.json {
             if key == "__xctestrun_metadata__" { continue }
             try? self.json[key]["EnvironmentVariables"].merge(with: JSON(values))

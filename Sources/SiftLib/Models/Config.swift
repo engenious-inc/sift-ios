@@ -30,7 +30,7 @@ extension Config {
         public let deploymentPath: String
         public let UDID: UDID
         public var xcodePath: String = "/Applications/Xcode.app"
-        public let environmentVariables: [String: String]?
+        public let environmentVariables: [String: String?]?
     }
 }
 

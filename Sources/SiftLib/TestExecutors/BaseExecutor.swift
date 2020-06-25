@@ -52,7 +52,7 @@ class BaseExecutor {
                       "export UDID='\(UDID)'\n" +
                 (self.config
                     .environmentVariables?
-                    .map { "export \($0.key)=\($0.value)" }
+                    .compactMap { $0.value != nil ? "export \($0.key)=\($0.value!)" : nil }
                     .joined(separator: "\n") ?? "")
             let scriptExecutionResult = try self.ssh.run(env + script)
             Log.message(verboseMsg: "\(self.config.name) Device: \"\(self.UDID)\"\n\(scriptExecutionResult.output)")
