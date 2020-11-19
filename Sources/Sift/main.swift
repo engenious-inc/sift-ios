@@ -18,17 +18,17 @@ extension Sift {
         var token: String
         
         @Option(name: [.customShort("p"), .customLong("test-plan")], help: "Test plan for execution.")
-        var testPlan: String
+        var testPlan: String = "default_ios_plan"
         
         @Option(name: .shortAndLong, help: "API endpoint.")
-        var endpoint: String?
+        var endpoint: String
         
         @Flag(name: [.short, .customLong("verbose")], help: "Verbose mode.")
-        var verboseMode: Bool
+        var verboseMode: Bool = false
         
         mutating func run() {
             verbose = verboseMode
-            let orchestrator = OrchestratorAPI(endpoint: endpoint ?? "http://api.orchestrator.engenious.io", token: token)
+            let orchestrator = OrchestratorAPI(endpoint: endpoint, token: token)
 
             //Get config for testplan
             guard let config = orchestrator.get(testplan: testPlan, status: .enabled) else {
@@ -53,7 +53,6 @@ extension Sift {
                 Sift.exit(withError: NSError(domain: "Can't post new tests to Orchestrator", code: 1))
             }
             
-            
             //Get tests for execution
             guard let tests = orchestrator.get(testplan: testPlan, status: .enabled)?.tests else {
                 Log.error("Error: can't get config for TestPlan: \(testPlan)")
@@ -61,13 +60,13 @@ extension Sift {
             }
             
             do {
-                try Controller(config: config, tests: tests).start()
+                let testsController = try Controller(config: config, tests: tests)
+                testsController.start()
+                dispatchMain()
             } catch let error {
                 Log.error("\(error)")
                 Sift.exit(withError: error)
             }
-
-            dispatchMain()
         }
     }
 
@@ -81,10 +80,10 @@ extension Sift {
         var testsPath: String?
 
         @Option(name: [.short, .customLong("only-testing")], help: "Test for execution.")
-        var onlyTesting: [String]
+        var onlyTesting: [String] = []
 
         @Flag(name: [.short, .customLong("verbose")], help: "Verbose mode.")
-        var verboseMode: Bool
+        var verboseMode: Bool = false
 
         mutating func run() {
             verbose = verboseMode
@@ -105,12 +104,11 @@ extension Sift {
                 let config = try Config(path: path)
                 let testsController = try Controller(config: config, tests: tests)
                 testsController.start()
+                dispatchMain()
             } catch let error {
                 Log.error("\(error)")
                 Sift.exit(withError: error)
             }
-
-            dispatchMain()
         }
     }
 

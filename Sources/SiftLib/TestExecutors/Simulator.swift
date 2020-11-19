@@ -96,7 +96,7 @@ extension Simulator: TestExecutor {
                            "xcrun simctl erase \(self.UDID)\n" +
                            "xcrun simctl boot \(self.UDID)'"
             
-            // in case when completion is not set, run all commands in background
+            // completion is not set, run all commands in background
             if completion == nil {
                 commands = "nohup \(commands) &"
             }

@@ -35,7 +35,7 @@ public class Controller {
     }
     
     public func start() {
-        self.queue.async {
+        self.queue.sync {
             do {
                 Log.message("Total tests for execution: \(self.tests.count)")
                 Log.message(verboseMsg: "Clean: \(self.config.outputDirectoryPath)")

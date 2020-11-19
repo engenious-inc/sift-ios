@@ -10,7 +10,6 @@ class Node {
     
     private var executors: [TestExecutor]
     private let queue: Queue
-    private let serialQueue: Queue
     private var communication: Communication!
     private var _finished: Bool = false
     
@@ -25,7 +24,6 @@ class Node {
         }
     }
     
-    
     init(config: Config.NodeConfig,
                 outputDirectoryPath: String,
                 testsExecutionTimeout: Int,
@@ -39,7 +37,6 @@ class Node {
         self.tearDownScriptPath = tearDownScriptPath
         self.executors = []
         self.queue = .init(type: .concurrent, name: "io.engenious." + config.name + "." + config.host)
-        self.serialQueue = .init(type: .serial, name: "io.engenious." + config.name + "." + config.host + ".serial")
         self.name = config.name
         self.delegate = delegate
     }
@@ -179,7 +176,7 @@ extension Node {
     }
     
     private func finish(_ executor: TestExecutor) {
-        self.serialQueue.async {
+        self.queue.async(flags: .barrier) {
             Log.message(verboseMsg: "\(self.name) Simulator: \"\(executor.UDID)\") finished")
             executor.finished = true
             executor.reset(completion: nil)
