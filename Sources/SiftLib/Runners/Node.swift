@@ -10,6 +10,7 @@ class Node {
     
     private var executors: [TestExecutor]
     private let queue: Queue
+    private let serialQueue: Queue
     private var communication: Communication!
     private var _finished: Bool = false
     
@@ -37,6 +38,7 @@ class Node {
         self.tearDownScriptPath = tearDownScriptPath
         self.executors = []
         self.queue = .init(type: .concurrent, name: "io.engenious." + config.name + "." + config.host)
+        self.serialQueue = .init(type: .serial, name: "io.engenious." + config.name + "." + config.host + ".serial")
         self.name = config.name
         self.delegate = delegate
     }
@@ -87,7 +89,7 @@ extension Node: Runner {
 
 extension Node {
     private func createExecutors(xctestrunPath: String) -> [TestExecutor] {
-        if let simulators = self.config.UDID.simulators {
+        if let simulators = self.config.UDID.simulators, !simulators.isEmpty {
             return simulators.compactMap {
                 do {
                     return try Simulator(UDID: $0,
@@ -171,15 +173,15 @@ extension Node {
     
     private func injectENVToXctestrun() -> XCTestRun {
         var xctestrun = self.delegate.XCTestRun()
-        xctestrun.addEnvironmentVariables(self.config.environmentVariables ?? [:])
+        xctestrun.addEnvironmentVariables(self.config.environmentVariables)
         return xctestrun
     }
     
     private func finish(_ executor: TestExecutor) {
-        self.queue.async(flags: .barrier) {
+        executor.reset(completion: nil)
+        self.serialQueue.async {
             Log.message(verboseMsg: "\(self.name) Simulator: \"\(executor.UDID)\") finished")
             executor.finished = true
-            executor.reset(completion: nil)
             if (self.executors.filter { $0.finished == false }).count == 0 {
                 //self.killSimulators()
                 Log.message(verboseMsg: "\(self.name): FINISHED")

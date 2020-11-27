@@ -1,10 +1,19 @@
 
 ## Sift - Unit and UI Tests Parallelization
 
+### Requirements:
+ - `Xcode 12`
+
+### Install:
+- `sh make.sh`
+
+### How to Build:
+- `swift build -c release`
+
 ### How to use:
 
 ### With Orchestrator:
-- `sift orchestartor --token 'your token' --test-plan 'name of testplan'` run tests for particular testplan
+- `sift orchestartor --token 'your token' --test-plan 'name of testplan'`
 
 ### Standalone:
 - `sift run --config config.json` run tests
@@ -40,13 +49,3 @@
     ]
 }
 ```
-
-### Requirements:
- - `Xcode 11+`
- - `brew install libssh2`
- - `brew install coreutils` (for timeout command)
-
-### How to Build:
-- `swift build -c release`
-
-> Path to Binary: .build/x86_64-apple-macosx/release/Sift

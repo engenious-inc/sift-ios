@@ -66,6 +66,9 @@ extension Simulator: TestExecutor {
                                                          timeout: timeout)
                 Log.message(verboseMsg: "\(self.config.name) Simulator: \"\(self.UDID)\") " +
                                         "tests run finished with status: \(result.status)")
+                if result.status != 0 {
+                    Log.message(verboseMsg: result.output)
+                }
                 try self.executeShellScript(path: self.tearDownScriptPath, testNameEnv: tests.first ?? "")
                 if result.status == 0 || result.status == 65 {
                     completion?(self, .success(tests))
@@ -88,22 +91,22 @@ extension Simulator: TestExecutor {
     }
     
     func reset(completion: ((Result<TestExecutor, Error>) -> Void)? = nil) {
-        self.queue.async(flags: .barrier) {
+        self.queue.async {
             Log.message(verboseMsg: "\(self.config.name) Simulator: \"\(self.UDID)\") reseting...")
-            var commands = "/bin/sh -c '" +
+            let commands = "/bin/sh -c '" +
                 "export DEVELOPER_DIR=\(self.config.xcodePath)/Contents/Developer\n" +
                            "xcrun simctl shutdown \(self.UDID)\n" +
                            "xcrun simctl erase \(self.UDID)\n" +
                            "xcrun simctl boot \(self.UDID)'"
             
-            // completion is not set, run all commands in background
-            if completion == nil {
-                commands = "nohup \(commands) &"
-            }
-            
             do {
+                // completion is not set, run all commands in background
+                if completion == nil {
+                    try self.ssh.run("nohup \(commands) &")
+                    return
+                }
+                
                 try self.ssh.run(commands)
-                sleep(45) // wait until simulators loading
                 Log.message(verboseMsg: "\(self.config.name) Simulator: \"\(self.UDID)\") reseted")
                 completion?(.success(self))
             } catch let err {
