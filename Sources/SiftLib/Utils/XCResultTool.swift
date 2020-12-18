@@ -11,7 +11,6 @@ struct XCResultTool {
         case directory = "directory"
     }
     
-    let shell: ShellExecutor
     let xcresulttool = "xcrun xcresulttool "
     
     @discardableResult
@@ -22,7 +21,7 @@ struct XCResultTool {
                                       "--output-path \(outputPath) " +
                                       "--path \(xcresultPath) " +
                                       "--type \(type.rawValue) "
-        return try shell.run(fullCommand).output
+        return try Run().run(fullCommand).output
     }
     
     @discardableResult
@@ -32,7 +31,7 @@ struct XCResultTool {
                                       "--format \(format.rawValue) " +
                                       unwrapedId +
                                       "--path '\(xcresultPath)'"
-        return try shell.run(fullCommand).output
+        return try Run().run(fullCommand).output
     }
     
     @discardableResult
@@ -40,20 +39,22 @@ struct XCResultTool {
         let fullCommand = xcresulttool + "graph " +
                                       "--id \(id) " +
                                       "--path \(xcresultPath)"
-        return try shell.run(fullCommand).output
+        return try Run().run(fullCommand).output
     }
     
     @discardableResult
-    func merge(inputPaths: [String], outputPath: String) throws -> String {
-        Log.message(verboseMsg: "Merging results...")
+    func merge(inputPaths: [String], outputPath: String) throws -> (status: Int32, output: String) {
         if inputPaths.isEmpty {
-            throw NSError(domain: "No tests results", code: 1, userInfo: nil)
+            return (0, "")
         }
+        
+        guard inputPaths.count > 1 else {
+            return try Run().run("mv \(inputPaths.first!) \(outputPath)")
+        }
+        
         let fullCommand = xcresulttool + "merge " +
                                       inputPaths.map{"\"\($0)\""}.joined(separator: " ") +
                                       " --output-path \(outputPath)"
-        let output = try shell.run(fullCommand).output
-        Log.message(verboseMsg: "All results is merged: \(outputPath)")
-        return output
+        return try Run().run(fullCommand)
     }
 }

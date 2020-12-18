@@ -1,6 +1,6 @@
 import Foundation
 
-class XCResult {
+struct XCResult {
     var path: String
     private var tool: XCResultTool
     private var _actionsInvocationRecord: ActionsInvocationRecord?
@@ -23,7 +23,7 @@ class XCResult {
 }
 
 extension XCResult {
-    func actionsInvocationRecord() throws -> ActionsInvocationRecord {
+    mutating func actionsInvocationRecord() throws -> ActionsInvocationRecord {
         if let _actionsInvocationRecord = self._actionsInvocationRecord {
             return _actionsInvocationRecord
         }
@@ -33,7 +33,7 @@ extension XCResult {
         return self._actionsInvocationRecord!
     }
     
-    func actionTestableSummary() throws -> [ActionTestableSummary] {
+    mutating func actionTestableSummary() throws -> [ActionTestableSummary] {
         if let _actionTestableSummary = self._actionTestableSummary {
             return _actionTestableSummary
         }
@@ -48,7 +48,7 @@ extension XCResult {
         return self._actionTestableSummary!
     }
     
-    func testsMetadata() throws -> [ActionTestMetadata] {
+    mutating func testsMetadata() throws -> [ActionTestMetadata] {
         if let _testsMetadata = self._testsMetadata {
             return _testsMetadata
         }
@@ -62,7 +62,7 @@ extension XCResult {
         return self._testsMetadata!
     }
     
-    func failedTests() throws -> [ActionTestSummary] {
+    mutating func failedTests() throws -> [ActionTestSummary] {
         if let _failedTests = self._failedTests {
             return _failedTests
         }
@@ -83,7 +83,7 @@ extension XCResult {
         return self._failedTests!
     }
     
-    func reran() throws -> [String: Int] {
+    mutating func reran() throws -> [String: Int] {
         if let _reran = self._reran {
             return _reran
         }

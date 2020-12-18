@@ -5,16 +5,15 @@ public class Controller {
     private let config: Config
     private let xctestrun: XCTestRun
     private var runners: [Runner] = []
-    private let shell: ShellExecutor
     private let queue: Queue
     private let time = Date.timeIntervalSinceReferenceDate
     private var zipBuildPath: String? = nil
     private var xcresultFiles: [String] = []
-    private lazy var xcresulttool = XCResultTool(shell: self.shell)
+    private var xcresulttool: XCResultTool!
     public var tests: TestCases
     public let bundleTests: [String]
 
-    public init(config: Config, tests: [String]? = nil, shell: ShellExecutor = Run()) throws {
+    public init(config: Config, tests: [String]? = nil) throws {
         self.config = config
         self.xctestrun = try .init(path: config.xctestrunPath)
         
@@ -30,17 +29,18 @@ public class Controller {
         }
         self.tests = TestCases(tests: (tests != nil && !tests!.isEmpty ? tests! : bundleTests).shuffled(),
                                rerunLimit: config.rerunFailedTest)
-        self.shell = shell
-        self.queue = .init(type: .concurrent, name: "io.engenious.TestsProcessor")
+        self.queue = .init(type: .serial, name: "io.engenious.TestsProcessor")
     }
     
     public func start() {
-        self.queue.async {
+        self.queue.sync {
             do {
+                let shell = Run()
+                self.xcresulttool = XCResultTool()
                 Log.message("Total tests for execution: \(self.tests.count)")
                 Log.message(verboseMsg: "Clean: \(self.config.outputDirectoryPath)")
-                _ = try? self.shell.run("mkdir \(self.config.outputDirectoryPath)")
-                _ = try? self.shell.run("rm -r \(self.config.outputDirectoryPath)/*")
+                _ = try? shell.run("mkdir \(self.config.outputDirectoryPath)")
+                _ = try? shell.run("rm -r \(self.config.outputDirectoryPath)/*")
                 try self.zipBuildPath = self.zipBuild()
                 self.runners = RunnersFactory.create(config: self.config, delegate: self)
                 self.runners.forEach {
@@ -61,7 +61,7 @@ extension Controller {
         }
         filesToZip.append(config.xctestrunPath.replacingOccurrences(of: self.xctestrun.testRootPath + "/", with: ""))
         Log.message(verboseMsg: "Start zip dependent files: \n\t\t- " + filesToZip.joined(separator: "\n\t\t- "))
-        try self.shell.run(Scripts.zip(workdirectory: self.xctestrun.testRootPath,
+        try Run().run(Scripts.zip(workdirectory: self.xctestrun.testRootPath,
                                        zipName: "build.zip",
                                        files: filesToZip))
         let zipPath = "\(self.xctestrun.testRootPath)/build.zip"
@@ -71,10 +71,11 @@ extension Controller {
     
     private func getXCResult(path: String) -> XCResult? {
         do {
+            let shell = Run()
             let uuid = UUID().uuidString
             let unzipFolderPath = "\(self.config.outputDirectoryPath)/\(uuid)"
-            try self.shell.run("unzip -o -q \"\(path)\" -d \(unzipFolderPath)")
-            let files = try self.shell.run("ls -1 \(unzipFolderPath) | grep -E '.\\.xcresult$'").output
+            try shell.run("unzip -o -q \"\(path)\" -d \(unzipFolderPath)")
+            let files = try shell.run("ls -1 \(unzipFolderPath) | grep -E '.\\.xcresult$'").output
             let xcresultFiles =  files.components(separatedBy: "\n")
             guard let xcresultFileName = (xcresultFiles.filter { $0.contains(".xcresult") }.sorted { $0 > $1 }).first else {
                 Log.error("*.xcresult files was not found: \(unzipFolderPath)")
@@ -82,14 +83,14 @@ extension Controller {
             }
             
             let xcresultAbsolutePath = "\(unzipFolderPath)/\(xcresultFileName)"
-            _ = try? self.shell.run("mkdir \(self.config.outputDirectoryPath)/final")
-            try self.shell.run("cp -R '\(xcresultAbsolutePath)' " +
+            _ = try? shell.run("mkdir \(self.config.outputDirectoryPath)/final")
+            try shell.run("cp -R '\(xcresultAbsolutePath)' " +
                                "'\(self.config.outputDirectoryPath)/final/\(uuid).xcresult'")
             self.xcresultFiles.append("\(self.config.outputDirectoryPath)/final/\(uuid).xcresult")
             let xcresult = XCResult(path: "\(self.config.outputDirectoryPath)/final/\(uuid).xcresult",
                 tool: xcresulttool)
-            _ = try? self.shell.run("rm -r '\(unzipFolderPath)'")
-            _ = try? self.shell.run("rm -r '\(path)'")
+            _ = try? shell.run("rm -r '\(unzipFolderPath)'")
+            _ = try? shell.run("rm -r '\(path)'")
             
             return xcresult
         } catch let err {
@@ -105,7 +106,12 @@ extension Controller {
             let mergedResultsPath = "'\(self.config.outputDirectoryPath)/final/final_result.xcresult'"
             let JUnitReportUrl = URL(fileURLWithPath: "\(self.config.outputDirectoryPath)/final/final_result.xml")
             do {
-                try self.xcresulttool.merge(inputPaths: self.xcresultFiles, outputPath: mergedResultsPath)
+                Log.message(verboseMsg: "Merging results...")
+                if let mergeXCResult = try? self.xcresulttool.merge(inputPaths: self.xcresultFiles, outputPath: mergedResultsPath), mergeXCResult.status != 0 {
+                    Log.message(verboseMsg: mergeXCResult.output)
+                } else {
+                    Log.message(verboseMsg: "All results is merged: \(mergedResultsPath)")
+                }
                 try JUnit().generate(tests: self.tests).write(to: JUnitReportUrl, atomically: true, encoding: .utf8)
                 let reran = self.tests.reran
                 let failed = self.tests.failed
@@ -147,20 +153,20 @@ extension Controller {
 //MARK: - TestsRunnerDelegate implementation
 extension Controller: RunnerDelegate {
     public func runnerFinished(runner: Runner) {
-        self.queue.async(flags: .barrier) {
+        self.queue.async {
             self.checkout(runner: runner)
         }
     }
     
     public func handleTestsResults(runner: Runner, executedTests: [String], pathToResults: String?) {
-        self.queue.async(flags: .barrier) {
+        self.queue.async {
             Log.message(verboseMsg: "Parse test results from \(runner.name)")
             guard let pathToResults = pathToResults,
-                  let xcresult = self.getXCResult(path: pathToResults) else {
-                    executedTests.forEach {
-                        self.tests.update(test: $0, state: .unexecuted, duration: 0.0, message: "Was not executed")
-                        Log.failed("\(runner.name): \($0) - Was not executed")
-                    }
+                  var xcresult = self.getXCResult(path: pathToResults) else {
+                executedTests.forEach {
+                    self.tests.update(test: $0, state: .unexecuted, duration: 0.0, message: "Was not executed")
+                    Log.failed("\(runner.name): \($0) - Was not executed")
+                }
                 return
             }
            
@@ -212,7 +218,7 @@ extension Controller: RunnerDelegate {
     }
     
     public func getTests() -> [String] {
-        self.queue.sync(flags: .barrier) {
+        self.queue.sync {
             var testsForExecution = self.tests.next(amount: self.config.testsBucket)
             if testsForExecution.isEmpty, let testForRerun = self.tests.nextForRerun() {
                 testsForExecution.append(testForRerun)

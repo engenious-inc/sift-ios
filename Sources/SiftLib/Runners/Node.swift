@@ -25,7 +25,6 @@ class Node {
         }
     }
     
-    
     init(config: Config.NodeConfig,
                 outputDirectoryPath: String,
                 testsExecutionTimeout: Int,
@@ -90,7 +89,7 @@ extension Node: Runner {
 
 extension Node {
     private func createExecutors(xctestrunPath: String) -> [TestExecutor] {
-        if let simulators = self.config.UDID.simulators {
+        if let simulators = self.config.UDID.simulators, !simulators.isEmpty {
             return simulators.compactMap {
                 do {
                     return try Simulator(UDID: $0,
@@ -174,15 +173,15 @@ extension Node {
     
     private func injectENVToXctestrun() -> XCTestRun {
         var xctestrun = self.delegate.XCTestRun()
-        xctestrun.addEnvironmentVariables(self.config.environmentVariables ?? [:])
+        xctestrun.addEnvironmentVariables(self.config.environmentVariables)
         return xctestrun
     }
     
     private func finish(_ executor: TestExecutor) {
+        executor.reset(completion: nil)
         self.serialQueue.async {
             Log.message(verboseMsg: "\(self.name) Simulator: \"\(executor.UDID)\") finished")
             executor.finished = true
-            executor.reset(completion: nil)
             if (self.executors.filter { $0.finished == false }).count == 0 {
                 //self.killSimulators()
                 Log.message(verboseMsg: "\(self.name): FINISHED")

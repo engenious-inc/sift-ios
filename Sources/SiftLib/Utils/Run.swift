@@ -1,7 +1,7 @@
 import Foundation
 import Shell
 
-public final class Run: ShellExecutor {
+public struct Run: ShellExecutor {
     
     let shell = Shell()
     
