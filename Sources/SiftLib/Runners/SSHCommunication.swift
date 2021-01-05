@@ -11,7 +11,10 @@ class SSHCommunication<SSH: SSHExecutor>: Communication {
     init(host: String,
          port: Int32 = 22,
          username: String,
-         password: String,
+         password: String?,
+         privateKey: String?,
+         publicKey: String?,
+         passphrase: String?,
          runnerDeploymentPath: String,
          masterDeploymentPath: String,
          nodeName: String) throws {
@@ -22,7 +25,11 @@ class SSHCommunication<SSH: SSHExecutor>: Communication {
         try self.queue.sync {
             Log.message(verboseMsg: "Connecting to: \(nodeName) (\(host):\(port))...")
             self.ssh = try SSH(host: host, port: port)
-            try self.ssh.authenticate(username: username, password: password)
+            try self.ssh.authenticate(username: username,
+                                      password: password,
+                                      privateKey: privateKey,
+                                      publicKey: publicKey,
+                                      passphrase: passphrase)
             Log.message(verboseMsg: "\(nodeName): Connection successfully established")
         }
         

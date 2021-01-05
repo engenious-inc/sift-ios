@@ -37,7 +37,11 @@ class BaseExecutor {
         try self.queue.sync {
             Log.message(verboseMsg: "\(config.name) Open connection to: \"\(UDID)\"")
             self.ssh = try SSH(host: config.host, port: config.port)
-            try self.ssh.authenticate(username: self.config.username, password: self.config.password)
+            try self.ssh.authenticate(username: self.config.username,
+                                      password: self.config.password,
+                                      privateKey: self.config.privateKey,
+                                      publicKey: self.config.publicKey,
+                                      passphrase: self.config.passphrase)
             Log.message(verboseMsg: "\(config.name) \"\(UDID)\" connection established")
             self.xcodebuild = Xcodebuild(xcodePath: self.config.xcodePath, shell: self.ssh)
         }
