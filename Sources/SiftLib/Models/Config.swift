@@ -29,7 +29,10 @@ extension Config {
         public var host: String
         public var port: Int32
         public var username: String
-        public var password: String
+        public var password: String?
+        public var privateKey: String?
+        public var publicKey: String?
+        public var passphrase: String?
         public var deploymentPath: String
         public var UDID: UDID
         public var xcodePath: String = "/Applications/Xcode.app"

@@ -5,8 +5,6 @@ final class SSH: SSHExecutor, ShellExecutor {
     private let ssh: Shout.SSH
     private let host: String
     private let port: Int32
-    private var username: String!
-    private var password: String!
     private var sftp: SFTP!
     
     init(host: String, port: Int32 = 22) throws {
@@ -15,10 +13,14 @@ final class SSH: SSHExecutor, ShellExecutor {
         self.port = port
     }
     
-    func authenticate(username: String, password: String) throws {
-        try ssh.authenticate(username: username, password: password)
-        self.username = username
-        self.password = password
+    func authenticate(username: String, password: String?, privateKey: String?, publicKey: String?, passphrase: String?) throws {
+        if let password = password {
+            try ssh.authenticate(username: username, password: password)
+        } else if let privateKey = privateKey {
+            try ssh.authenticate(username: username, privateKey: privateKey, publicKey: publicKey, passphrase: passphrase)
+        } else {
+            try ssh.authenticateByAgent(username: username)
+        }
         self.sftp = try ssh.openSftp()
     }
     

@@ -2,7 +2,7 @@ import Foundation
 
 public protocol SSHExecutor: ShellExecutor {
     init(host: String, port: Int32) throws
-    func authenticate(username: String, password: String) throws
+    func authenticate(username: String, password: String?, privateKey: String?, publicKey: String?, passphrase: String?) throws
     @discardableResult
     func uploadFile(localPath: String, remotePath: String) throws -> Self
     @discardableResult
