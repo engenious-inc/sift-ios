@@ -16,6 +16,20 @@ public struct TestCase: Hashable {
     public func hash(into hasher: inout Hasher) {
         hasher.combine(name)
     }
+    
+    public func resultFormatted() -> String {
+        if launchCounter > 1 && state == .pass {
+            return "passed_after_rerun"
+        }
+        switch state {
+        case .pass:
+            return "passed"
+        case .failed:
+            return "failed"
+        case .unexecuted:
+            return "skipped"
+        }
+    }
 }
 
 public struct TestCases {
@@ -29,7 +43,7 @@ public struct TestCases {
     public var reran: [TestCase] { cases.values.filter { $0.launchCounter > 1 } }
     public var failed: [TestCase] { cases.values.filter { $0.state == .failed } }
     public var unexecuted: [TestCase] { cases.values.filter { $0.state == .unexecuted } }
-    
+
     public init(tests: [String], rerunLimit: Int) {
         let cases = tests.map {
             (key: $0, case: TestCase(name: $0, state: .unexecuted, launchCounter: 0, duration: 0.0, message: ""))

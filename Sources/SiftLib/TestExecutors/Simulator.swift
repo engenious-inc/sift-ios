@@ -56,7 +56,7 @@ extension Simulator: TestExecutor {
                     completion?(self, .failure(.testSkipped))
                     return
                 }
-                Log.message(verboseMsg: "\(self.config.name) Semulator: \"\(self.UDID)\") run tests:\n\t\t- " +
+                Log.message(verboseMsg: "\(self.config.name) Simulator: \"\(self.UDID)\") run tests:\n\t\t- " +
                                         "\(tests.joined(separator: "\n\t\t- "))")
                 let result = try self.xcodebuild.execute(tests: tests,
                                                          executorType: self.type,

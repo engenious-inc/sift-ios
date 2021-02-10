@@ -12,11 +12,14 @@ public class Controller {
     private var xcresulttool: XCResultTool!
     public var tests: TestCases
     public let bundleTests: [String]
+    private var testRunID: Int?
+    private let orchestrator: OrchestratorAPI?
 
-    public init(config: Config, tests: [String]? = nil) throws {
+    public init(config: Config, tests: [String]? = nil, orchestrator: OrchestratorAPI? = nil) throws {
         self.config = config
         self.xctestrun = try .init(path: config.xctestrunPath)
-        
+
+        self.orchestrator = orchestrator
         self.bundleTests = self.xctestrun.testBundleExecPaths().flatMap { (key: String, value: String) -> [String] in
             do {
                 let listOfTests: [String] = try TestsDump().dump(path: value, moduleName: key)
@@ -137,7 +140,22 @@ extension Controller {
                 Log.message("Done: in \(String(format: "%.3f", seconds)) seconds")
                 print()
                 Log.message("####################################")
-                
+
+                if let orchestrator = self.orchestrator {
+                    let testRun = orchestrator.postRun(testplan: orchestrator.testPlan)
+
+                    guard let runID = testRun?.numberOfRun else {
+                        Log.error("Run ID was not found")
+                        return
+                    }
+                    Log.message("Creating test run for orchestrator ...")
+
+                    if orchestrator.postResults(testResults: formResults(numberOfRun: runID)) {
+                        Log.message("Results posted successfully!")
+                    } else {
+                        Log.error("Faild to post results.")
+                    }
+                }
                 if failed.count == 0 && unexecuted.count == 0 {
                     exit(0)
                 }
@@ -225,5 +243,11 @@ extension Controller: RunnerDelegate {
             }
             return testsForExecution
         }
+    }
+    
+    public func formResults(numberOfRun: Int) -> TestResults {
+        let results =  self.tests.cases.map { TestResults.TestResult(testId:  config.getTestId(testName: $0.value.name) ?? 0,
+                                                                     result: $0.value.resultFormatted(), errorMessage: "")} // TODO: parse error message
+        return TestResults(numberOfRun: numberOfRun, testResults: results)
     }
 }

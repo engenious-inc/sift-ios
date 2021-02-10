@@ -28,7 +28,7 @@ extension Sift {
         
         mutating func run() {
             verbose = verboseMode
-            let orchestrator = OrchestratorAPI(endpoint: endpoint, token: token)
+            let orchestrator = OrchestratorAPI(endpoint: endpoint, token: token, testPlan: testPlan)
 
             //Get config for testplan
             guard let config = orchestrator.get(testplan: testPlan, status: .enabled) else {
@@ -58,9 +58,11 @@ extension Sift {
                 Log.error("Error: can't get config for TestPlan: \(testPlan)")
                 Sift.exit(withError: NSError(domain: "Error: can't get config for TestPlan: \(testPlan)", code: 1))
             }
-            
+
+            let testsStrings = tests.map { $0.testName }
+
             do {
-                let testsController = try Controller(config: config, tests: tests)
+                let testsController = try Controller(config: config, tests: testsStrings, orchestrator: orchestrator)
                 testsController.start()
                 dispatchMain()
             } catch let error {
