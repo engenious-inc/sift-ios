@@ -247,7 +247,8 @@ extension Controller: RunnerDelegate {
     
     public func formResults(numberOfRun: Int) -> TestResults {
         let results =  self.tests.cases.map { TestResults.TestResult(testId:  config.getTestId(testName: $0.value.name) ?? 0,
-                                                                     result: $0.value.resultFormatted(), errorMessage: "")} // TODO: parse error message
+                                                                     result: $0.value.resultFormatted(),
+                                                                     errorMessage: $0.value.message)}
         return TestResults(numberOfRun: numberOfRun, testResults: results)
     }
 }
