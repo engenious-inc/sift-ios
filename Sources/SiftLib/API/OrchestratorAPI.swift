@@ -139,7 +139,8 @@ public class OrchestratorAPI {
     
     public func postResults(testResults: TestResults) -> Bool {
         guard let url = URL(string: endpoint + "/v1/sift/result")?
-                .appending("platform", value: "IOS") else {
+                .appending("platform", value: "IOS")?
+                .appending("testplan", value: testPlan) else {
             Log.error("Can't resolve URL endpoint")
             return false
         }

@@ -3,7 +3,7 @@ import Foundation
 public struct TestRun: Codable {
     public var testPlan: TestPlan?
     public var link: String?
-    public var numberOfRun: Int?
+    public var runIndex: Int?
     public var date: String?
     
     public init(data: Data) throws {

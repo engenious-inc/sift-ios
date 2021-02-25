@@ -1,7 +1,7 @@
 import Foundation
 
 public struct TestResults: Codable {
-    public var numberOfRun: Int
+    public var runIndex: Int
     public var testResults: [TestResult]?
 }
 

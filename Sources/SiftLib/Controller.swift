@@ -144,13 +144,13 @@ extension Controller {
                 if let orchestrator = self.orchestrator {
                     let testRun = orchestrator.postRun(testplan: orchestrator.testPlan)
 
-                    guard let runID = testRun?.numberOfRun else {
+                    guard let runID = testRun?.runIndex else {
                         Log.error("Run ID was not found")
                         return
                     }
                     Log.message("Creating test run for orchestrator ...")
 
-                    if orchestrator.postResults(testResults: formResults(numberOfRun: runID)) {
+                    if orchestrator.postResults(testResults: formResults(runIndex: runID)) {
                         Log.message("Results posted successfully!")
                     } else {
                         Log.error("Faild to post results.")
@@ -175,7 +175,7 @@ extension Controller: RunnerDelegate {
             self.checkout(runner: runner)
         }
     }
-    
+
     public func handleTestsResults(runner: Runner, executedTests: [String], pathToResults: String?) {
         self.queue.async {
             Log.message(verboseMsg: "Parse test results from \(runner.name)")
@@ -193,6 +193,8 @@ extension Controller: RunnerDelegate {
                     .reduce(into: [String: ActionTestMetadata]()) { dictionary, value in
                         dictionary[value.identifier] = value
                 }
+                let failedTests = try xcresult.failedTests()
+                failedTests.map { $0.activitySummaries.map( { print($0.attachments) })}
                 try executedTests.forEach {
                     guard let testMetaData = testsMetadata[$0] else {
                         self.tests.update(test: $0, state: .unexecuted, duration: 0.0, message: "Was not executed")
@@ -245,10 +247,10 @@ extension Controller: RunnerDelegate {
         }
     }
     
-    public func formResults(numberOfRun: Int) -> TestResults {
+    public func formResults(runIndex: Int) -> TestResults {
         let results =  self.tests.cases.map { TestResults.TestResult(testId:  config.getTestId(testName: $0.value.name) ?? 0,
                                                                      result: $0.value.resultFormatted(),
                                                                      errorMessage: $0.value.message)}
-        return TestResults(numberOfRun: numberOfRun, testResults: results)
+        return TestResults(runIndex: runIndex, testResults: results)
     }
 }
