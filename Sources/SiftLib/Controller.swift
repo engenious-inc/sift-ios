@@ -193,8 +193,6 @@ extension Controller: RunnerDelegate {
                     .reduce(into: [String: ActionTestMetadata]()) { dictionary, value in
                         dictionary[value.identifier] = value
                 }
-                let failedTests = try xcresult.failedTests()
-                failedTests.map { $0.activitySummaries.map( { print($0.attachments) })}
                 try executedTests.forEach {
                     guard let testMetaData = testsMetadata[$0] else {
                         self.tests.update(test: $0, state: .unexecuted, duration: 0.0, message: "Was not executed")
