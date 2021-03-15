@@ -2,7 +2,7 @@ import Foundation
 import AppKit
 
 public class Controller {
-    private let config: Config
+    private var config: Config
     private let xctestrun: XCTestRun
     private var runners: [Runner] = []
     private let queue: Queue
