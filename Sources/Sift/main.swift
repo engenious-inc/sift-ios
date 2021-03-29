@@ -21,7 +21,7 @@ extension Sift {
         var testPlan: String = "default_ios_plan"
         
         @Option(name: .shortAndLong, help: "API endpoint.")
-        var endpoint: String
+        var endpoint: String = "https://api.orchestrator.engenious.io"
         
         @Flag(name: [.short, .customLong("verbose")], help: "Verbose mode.")
         var verboseMode: Bool = false
