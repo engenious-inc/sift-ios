@@ -31,7 +31,7 @@ extension Sift {
             let orchestrator = OrchestratorAPI(endpoint: endpoint, token: token, testPlan: testPlan)
 
             //Get config for testplan
-            guard let config = orchestrator.get(testplan: testPlan, status: .enabled) else {
+            guard let config = orchestrator.get(status: .enabled) else {
                 Log.error("Error: can't get config for TestPlan: \(testPlan)")
                 Sift.exit(withError: NSError(domain: "Error: can't get config for TestPlan: \(testPlan)", code: 1))
             }
@@ -40,7 +40,7 @@ extension Sift {
             quiet = true
             var testsFromBundle: [String] = []
             do {
-                testsFromBundle = try Controller(config: config).bundleTests
+                testsFromBundle = try Controller.bundleTests(xctestrunPath: config.xctestrunPath)
             } catch let error {
                 Log.error("\(error)")
                 Sift.exit(withError: error)
@@ -54,15 +54,13 @@ extension Sift {
             }
             
             //Get tests for execution
-            guard let tests = orchestrator.get(testplan: testPlan, status: .enabled)?.tests else {
+            guard let newConfig = orchestrator.get(status: .enabled) else {
                 Log.error("Error: can't get config for TestPlan: \(testPlan)")
                 Sift.exit(withError: NSError(domain: "Error: can't get config for TestPlan: \(testPlan)", code: 1))
             }
 
-            let testsStrings = tests.map { $0.testName }
-
             do {
-                let testsController = try Controller(config: config, tests: testsStrings, orchestrator: orchestrator)
+                let testsController = try Controller(config: newConfig, orchestrator: orchestrator)
                 testsController.start()
                 dispatchMain()
             } catch let error {
@@ -124,8 +122,8 @@ extension Sift {
             do {
                 quiet = true
                 let config = try Config(path: path)
-                let testsController = try Controller(config: config)
-                print(testsController.tests)
+                let tests = try Controller.bundleTests(xctestrunPath: config.xctestrunPath)
+                print(tests)
             } catch let error {
                 Log.error("\(error)")
                 Sift.exit(withError: error)

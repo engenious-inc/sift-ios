@@ -1,11 +1,11 @@
 import Foundation
 
-public struct TestResults: Codable {
+public struct OrchestratorTestResults: Codable {
     public var runIndex: Int
     public var testResults: [TestResult]?
 }
 
-extension TestResults {
+extension OrchestratorTestResults {
     public struct TestResult: Codable {
         public var testId: Int
         public var result: String

@@ -11,7 +11,11 @@ public class OrchestratorAPI {
     private let endpoint: String
     private let token: String
     private let session = URLSession.shared
-    public let testPlan: String
+    private let testPlan: String
+    
+    private let path = "/v1/sift"
+    private let pathRun = "/v1/sift/run"
+    private let pathResult = "/v1/sift/result"
 
     public init(endpoint: String, token: String, testPlan: String) {
         self.endpoint = endpoint
@@ -19,10 +23,10 @@ public class OrchestratorAPI {
         self.testPlan = testPlan
     }
 
-    public func get(testplan: String, status: Status, platform: String = "IOS") -> Config? {
+    public func get(status: Status, platform: String = "IOS") -> Config? {
         
-        guard let url = URL(string: endpoint + "/v1/sift")?
-            .appending("testplan", value: testplan)?
+        guard let url = URL(string: endpoint + path)?
+            .appending("testplan", value: testPlan)?
             .appending("status", value: status.rawValue.uppercased())?
             .appending("platform", value: platform) else {
             Log.error("Can't resolve URL endpoint")
@@ -63,7 +67,7 @@ public class OrchestratorAPI {
     }
     
     public func post(tests: [String], platform: String = "IOS") -> Bool {
-        guard let url = URL(string: endpoint + "/v1/sift")?
+        guard let url = URL(string: endpoint + path)?
                 .appending("platform", value: platform) else {
             Log.error("Can't resolve URL endpoint")
             return false
@@ -93,9 +97,9 @@ public class OrchestratorAPI {
         return true
     }
     
-    public func postRun(testplan: String) -> TestRun? {
-        guard let url = URL(string: endpoint + "/v1/sift/run")?
-                .appending("testplan", value: testplan)?
+    public func postRun() -> OrchestratorTestRun? {
+        guard let url = URL(string: endpoint + pathRun)?
+                .appending("testplan", value: testPlan)?
                 .appending("platform", value: "IOS")
         else {
             Log.error("Can't resolve URL endpoint")
@@ -130,15 +134,15 @@ public class OrchestratorAPI {
         }
 
         do {
-            return try JSONDecoder().decode(TestRun.self, from: data)
+            return try JSONDecoder().decode(OrchestratorTestRun.self, from: data)
         } catch {
             Log.error("JSON parse error: \(error.localizedDescription)")
             return nil
         }
     }
     
-    public func postResults(testResults: TestResults) -> Bool {
-        guard let url = URL(string: endpoint + "/v1/sift/result")?
+    public func postResults(testResults: OrchestratorTestResults) -> Bool {
+        guard let url = URL(string: endpoint + pathResult)?
                 .appending("platform", value: "IOS")?
                 .appending("testplan", value: testPlan) else {
             Log.error("Can't resolve URL endpoint")

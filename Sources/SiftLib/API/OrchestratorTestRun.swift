@@ -1,17 +1,17 @@
 import Foundation
 
-public struct TestRun: Codable {
+public struct OrchestratorTestRun: Codable {
     public var testPlan: TestPlan?
     public var link: String?
     public var runIndex: Int?
     public var date: String?
     
     public init(data: Data) throws {
-        self = try JSONDecoder().decode(TestRun.self, from: data)
+        self = try JSONDecoder().decode(OrchestratorTestRun.self, from: data)
     }
 }
 
-extension  TestRun {
+extension  OrchestratorTestRun {
     public struct TestPlan: Codable {
         public var id: Int?
         public var name: String?
@@ -21,7 +21,7 @@ extension  TestRun {
     }
 }
 
-extension  TestRun {
+extension  OrchestratorTestRun {
     public struct Test: Codable {
         public var id: Int?
         public var status: Int?

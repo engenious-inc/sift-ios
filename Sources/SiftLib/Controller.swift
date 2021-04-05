@@ -10,27 +10,44 @@ public class Controller {
     private var zipBuildPath: String? = nil
     private var xcresultFiles: [String] = []
     private var xcresulttool: XCResultTool!
-    public var tests: TestCases
-    public let bundleTests: [String]
+    private(set) var tests: TestCases
     private var testRunID: Int?
-    private let orchestrator: OrchestratorAPI?
-
-    public init(config: Config, tests: [String]? = nil, orchestrator: OrchestratorAPI? = nil) throws {
-        self.config = config
-        self.xctestrun = try .init(path: config.xctestrunPath)
-
-        self.orchestrator = orchestrator
-        self.bundleTests = self.xctestrun.testBundleExecPaths().flatMap { (key: String, value: String) -> [String] in
+    private var orchestrator: OrchestratorAPI?
+    
+    @discardableResult
+    public static func bundleTests(xctestrunPath: String, block: ((String, Int)->Void)? = nil) throws -> [String] {
+        try SiftLib.XCTestRun(path: xctestrunPath)
+            .testBundleExecPaths().flatMap { (key: String, value: String) -> [String] in
             do {
                 let listOfTests: [String] = try TestsDump().dump(path: value, moduleName: key)
-                Log.message("\(key): \(listOfTests.count) tests")
+                block?(key, listOfTests.count)
                 return listOfTests
             } catch let err {
                 Log.error("\(err)")
                 return []
             }
         }
+    }
+    
+    public init(config: Config, tests: [String]? = nil) throws {
+        self.config = config
+        self.xctestrun = try .init(path: config.xctestrunPath)
+        let bundleTests = try Self.bundleTests(xctestrunPath: config.xctestrunPath) {
+            Log.message("\($0): \($1) tests")
+        }
         self.tests = TestCases(tests: (tests != nil && !tests!.isEmpty ? tests! : bundleTests).shuffled(),
+                               rerunLimit: config.rerunFailedTest)
+        self.queue = .init(type: .serial, name: "io.engenious.TestsProcessor")
+    }
+
+    public init(config: Config, orchestrator: OrchestratorAPI) throws {
+        self.config = config
+        self.orchestrator = orchestrator
+        self.xctestrun = try .init(path: config.xctestrunPath)
+        try Self.bundleTests(xctestrunPath: config.xctestrunPath) {
+            Log.message("\($0): \($1) tests")
+        }
+        self.tests = TestCases(tests: config.tests?.shuffled() ?? [],
                                rerunLimit: config.rerunFailedTest)
         self.queue = .init(type: .serial, name: "io.engenious.TestsProcessor")
     }
@@ -142,7 +159,7 @@ extension Controller {
                 Log.message("####################################")
 
                 if let orchestrator = self.orchestrator {
-                    let testRun = orchestrator.postRun(testplan: orchestrator.testPlan)
+                    let testRun = orchestrator.postRun()
 
                     guard let runID = testRun?.runIndex else {
                         Log.error("Run ID was not found")
@@ -245,10 +262,12 @@ extension Controller: RunnerDelegate {
         }
     }
     
-    public func formResults(runIndex: Int) -> TestResults {
-        let results =  self.tests.cases.map { TestResults.TestResult(testId:  config.getTestId(testName: $0.value.name) ?? 0,
-                                                                     result: $0.value.resultFormatted(),
-                                                                     errorMessage: $0.value.message)}
-        return TestResults(runIndex: runIndex, testResults: results)
+    public func formResults(runIndex: Int) -> OrchestratorTestResults {
+        let results =  self.tests.cases.map {
+            OrchestratorTestResults.TestResult(testId: $0.value.id ?? 0,
+                                               result: $0.value.resultFormatted(),
+                                               errorMessage: $0.value.message)
+        }
+        return OrchestratorTestResults(runIndex: runIndex, testResults: results)
     }
 }
