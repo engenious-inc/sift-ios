@@ -13,6 +13,7 @@ public struct TestCase: Hashable {
     public var launchCounter: Int
     public var duration: Double
     public var message: String
+    public var screenshotID: String?
     
     public func hash(into hasher: inout Hasher) {
         hasher.combine(name)
@@ -70,12 +71,13 @@ public struct TestCases {
         return test
     }
     
-    public mutating func update(test: String, state: TestCase.State, duration: Double, message: String = "") {
+    public mutating func update(test: String, state: TestCase.State, duration: Double, message: String = "", screenshotID: String? = nil) {
         guard cases[test] != nil else { return }
         cases[test]!.state = state
         cases[test]!.launchCounter += 1
         cases[test]!.duration = duration
         cases[test]!.message = message
+        cases[test]!.screenshotID = screenshotID
         if state != .pass && cases[test]!.launchCounter <= self.rerunLimit {
             failedTestsCache.append(test)
         }

@@ -152,7 +152,6 @@ public class OrchestratorAPI {
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue(token, forHTTPHeaderField: "token")
-        request.setValue("*/*", forHTTPHeaderField: "accept:")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         
         let jsonEncoder = JSONEncoder()
@@ -174,6 +173,51 @@ public class OrchestratorAPI {
            return false
         }
         
+        return true
+    }
+    
+    // single file upload
+    public func postImage(runIndex: Int, testID: Int, fileName: String) -> Bool {
+        let shell = Run()
+        do {
+            let response = try shell.run("curl -X POST \"\(endpoint + "/v1/sift/upload")" +
+                "?platform=IOS" +
+                "&testplan=\(testPlan)\"" +
+                " -H \"accept: */*\"" +
+                " -H \"token: \(token)\"" +
+                " -H \"test-id: \(testID)\"" +
+                " -H \"run-index: \(runIndex)\"" +
+                " -H \"Content-Type: multipart/form-data\"" +
+                " -H \"User-Agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 11_0_1) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/88.0.4324.192 Safari/537.36\"" +
+                " -F \"file=@\(fileName.replacingOccurrences(of: "\'", with: ""));type=image/png\"").output
+            print(response)
+        } catch {
+            Log.error("Can not post failure images to testRun")
+            return false
+        }
+        return true
+    }
+
+    // multi-upload upload; curl TODO: check response output -i
+    public func postImages(runIndex: Int, fileNames: [String]) -> Bool {
+        let fileObjects = fileNames.map { "-F \"file=@\($0.replacingOccurrences(of: "'", with: ""))\"" }.joined(separator: " ")
+        print(fileObjects)
+        let shell = Run()
+        do {
+            try shell.run("curl -X POST \"\(endpoint + "/v1/sift/multi-upload")" +
+                "?platform=IOS" +
+                "&testplan=\(testPlan)\"" +
+                " -H \"accept: */*\"" +
+                " -H \"token: \(token)\"" +
+                " -H \"run-index: \(runIndex)\"" +
+                " -H \"Content-Type: multipart/form-data\"" +
+                " -H \"User-Agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 11_0_1) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/88.0.4324.192 Safari/537.36\" " +
+                " \(fileObjects)")
+        } catch {
+            Log.error("Can not post failure images to testRun")
+            Log.message(verboseMsg: "\(error)")
+            return false
+        }
         return true
     }
 }

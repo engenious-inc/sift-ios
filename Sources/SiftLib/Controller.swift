@@ -1,8 +1,8 @@
 import Foundation
-
+import AppKit
 
 public class Controller {
-    private let config: Config
+    private var config: Config
     private let xctestrun: XCTestRun
     private var runners: [Runner] = []
     private let queue: Queue
@@ -161,16 +161,29 @@ extension Controller {
                 if let orchestrator = self.orchestrator {
                     let testRun = orchestrator.postRun()
 
-                    guard let runID = testRun?.runIndex else {
+                    guard let runIndex = testRun?.runIndex else {
                         Log.error("Run ID was not found")
                         return
                     }
                     Log.message("Creating test run for orchestrator ...")
 
-                    if orchestrator.postResults(testResults: formResults(runIndex: runID)) {
+                    if orchestrator.postResults(testResults: formResults(runIndex: runIndex)) {
                         Log.message("Results posted successfully!")
                     } else {
                         Log.error("Faild to post results.")
+                    }
+
+                    var snapshots: [String] = []
+                    for test in self.tests.failed {
+                        if let screenshotID = test.screenshotID {
+                            let extractedPng = extractImage(xcresultPath: mergedResultsPath, testName: test.name, screenshotID: screenshotID)
+                            snapshots.append(extractedPng)
+                        }
+                    }
+                    if orchestrator.postImages(runIndex: runIndex, fileNames: snapshots) {
+                        Log.message("Screenshots posted successfully!")
+                    } else {
+                        Log.error("Faild to post screenshots.")
                     }
                 }
                 if failed.count == 0 && unexecuted.count == 0 {
@@ -210,6 +223,8 @@ extension Controller: RunnerDelegate {
                     .reduce(into: [String: ActionTestMetadata]()) { dictionary, value in
                         dictionary[value.identifier] = value
                 }
+                let failedTests = try xcresult.failedTests()
+                let failedTestScreenshotIDs = self.prepareImages(failedTestSummaries: failedTests)
                 try executedTests.forEach {
                     guard let testMetaData = testsMetadata[$0] else {
                         self.tests.update(test: $0, state: .unexecuted, duration: 0.0, message: "Was not executed")
@@ -232,7 +247,9 @@ extension Controller: RunnerDelegate {
                         self.tests.update(test: $0,
                                           state: .failed,
                                           duration: testMetaData.duration ?? 0.0,
-                                          message: message)
+                                          message: message,
+                                          screenshotID: failedTestScreenshotIDs?[$0]
+                        )
                         Log.failed("\(runner.name): \($0) " +
                         "- \(testMetaData.testStatus): \(String(format: "%.3f", testMetaData.duration ?? 0)) sec.")
                         Log.message(verboseMsg: "\(runner.name): \($0) - \(testMetaData.testStatus):\n\t\t- \(message)")
@@ -269,5 +286,54 @@ extension Controller: RunnerDelegate {
                                                errorMessage: $0.value.message)
         }
         return OrchestratorTestResults(runIndex: runIndex, testResults: results)
+    }
+    
+    private func prepareImages(failedTestSummaries: [ActionTestSummary]) -> [String: String]? {
+        var snapshotIDs: [String : String] = [:]
+
+        for testSummary in failedTestSummaries {
+            guard let testName = testSummary.identifier else {
+                Log.error("Test Summary does not contain name")
+                return nil
+            }
+
+            for activity in testSummary.allChildActivitySummaries() {
+                if !activity.attachments.isEmpty {
+                    for attachment in activity.attachments {
+                        if let snapshotID = attachment.payloadRef?.id, attachment.uniformTypeIdentifier == "public.jpeg" {
+                            // todo: Add png, heic support
+                            snapshotIDs.updateValue(snapshotID, forKey: testName)
+                        }
+                    }
+                }
+            }
+        }
+        return snapshotIDs
+    }
+    
+    func extractImage(xcresultPath: String, testName: String, screenshotID: String) -> String {
+        let directory = xcresultPath.split(separator: "/").dropLast(1).map(String.init).joined(separator: "/") + "/"
+        
+        let shell = Run()
+        let fileName = testName.replacingOccurrences(of: "/", with: "")
+                               .replacingOccurrences(of: "()", with: "")
+                               .appending(".jpeg")
+        let fileLocation = "\(directory)\(fileName)\'"
+        // Extract files
+        do {
+            try shell.run("xcrun xcresulttool export --path \(xcresultPath)" +
+                          " --output-path \(fileLocation)" +
+                          " --id \(screenshotID) --type file")
+        } catch {
+            Log.error("Can not extract data from xcresult")
+        }
+        // Convert to .PNG
+        let pngFileLocation = "\(directory)\(config.getTestId(testName: testName) ?? 0).png\'"
+        do {
+            try shell.run("sips -s format png \(fileLocation) --out \(pngFileLocation)")
+        } catch {
+            Log.error("Error while converting .jpeg to .png")
+        }
+        return pngFileLocation
     }
 }

@@ -24,6 +24,29 @@ public struct Config: Codable {
     public func getTestId(testName: String) -> Int? {
         return self.tests?.first(where: {$0.testName == testName} )?.testID
     }
+    
+    public mutating func injectedEnvVariables() -> Self{
+        injectPathVariables(pathName: &outputDirectoryPath)
+        injectPathVariables(pathName: &xctestrunPath)
+        return self
+    }
+    
+    private func injectPathVariables(pathName: inout String)  {
+        let matches = pathName.regexMatches(for: "\\$\\{?[A-Z0-9_\\}?]+")
+        var envVariables: [String : String] = [:]
+        let shell = Run()
+
+        for match in matches {
+            let value = try? shell.run("echo \(match)").output.replacingOccurrences(of: "\n", with: "")
+            if value == nil || value == "" {
+                Log.error("Variable value not found for \(match)")
+            }
+            envVariables[match] = value
+        }
+        for (key, value) in envVariables {
+            pathName = pathName.replacingOccurrences(of: key, with: value)
+        }
+    }
 }
 
 extension Config {

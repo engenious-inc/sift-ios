@@ -21,21 +21,24 @@ extension Sift {
         var testPlan: String = "default_ios_plan"
         
         @Option(name: .shortAndLong, help: "API endpoint.")
-        var endpoint: String
+        var endpoint: String = "https://api.orchestrator.engenious.io"
         
         @Flag(name: [.short, .customLong("verbose")], help: "Verbose mode.")
         var verboseMode: Bool = false
-        
+
+        @Flag(name: [.short, .customLong("init")], help: "Init tests for orchestrator.")
+        var initMode: Bool = false
+
         mutating func run() {
             verbose = verboseMode
             let orchestrator = OrchestratorAPI(endpoint: endpoint, token: token, testPlan: testPlan)
 
             //Get config for testplan
-            guard let config = orchestrator.get(status: .enabled) else {
+            guard var config = orchestrator.get(status: .enabled) else {
                 Log.error("Error: can't get config for TestPlan: \(testPlan)")
                 Sift.exit(withError: NSError(domain: "Error: can't get config for TestPlan: \(testPlan)", code: 1))
             }
-            
+            config = config.injectedEnvVariables()
             // extract all tests from bundle
             quiet = true
             var testsFromBundle: [String] = []
@@ -52,7 +55,10 @@ extension Sift {
                 Log.error("Can't post new tests to Orchestrator")
                 Sift.exit(withError: NSError(domain: "Can't post new tests to Orchestrator", code: 1))
             }
-            
+            if initMode {
+                Log.message("Tests posted to orchestrator.")
+                Sift.exit()
+            }
             //Get tests for execution
             guard let newConfig = orchestrator.get(status: .enabled) else {
                 Log.error("Error: can't get config for TestPlan: \(testPlan)")
