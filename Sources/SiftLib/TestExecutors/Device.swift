@@ -2,20 +2,19 @@ import Foundation
 
 class Device: BaseExecutor {
 
-    let type: TestExecutorType
+	override init(type: TestExecutorType,
+				  UDID: String,
+				  config: Config.NodeConfig,
+				  xctestrunPath: String,
+				  setUpScriptPath: String?,
+				  tearDownScriptPath: String?) throws {
 
-    override init(UDID: String,
-         config: Config.NodeConfig,
-         xctestrunPath: String,
-         setUpScriptPath: String?,
-         tearDownScriptPath: String?) throws {
-
-        self.type = .device
-        try super.init(UDID: UDID,
-                   config: config,
-                   xctestrunPath: xctestrunPath,
-                   setUpScriptPath: setUpScriptPath,
-                   tearDownScriptPath: tearDownScriptPath)
+		try super.init(type: type,
+					   UDID: UDID,
+					   config: config,
+					   xctestrunPath: xctestrunPath,
+					   setUpScriptPath: setUpScriptPath,
+					   tearDownScriptPath: tearDownScriptPath)
     }
 }
 

@@ -2,16 +2,15 @@ import Foundation
 
 class Simulator: BaseExecutor {
 
-    let type: TestExecutorType
-
-    override init(UDID: String,
+    override init(type: TestExecutorType,
+				  UDID: String,
                   config: Config.NodeConfig,
                   xctestrunPath: String,
                   setUpScriptPath: String?,
                   tearDownScriptPath: String?) throws {
 
-        self.type = .simulator
-        try super.init(UDID: UDID,
+		try super.init(type: type,
+					   UDID: UDID,
                        config: config,
                        xctestrunPath: xctestrunPath,
                        setUpScriptPath: setUpScriptPath,

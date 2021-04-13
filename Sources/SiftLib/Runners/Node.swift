@@ -95,7 +95,8 @@ extension Node {
         if let simulators = self.config.UDID.simulators, !simulators.isEmpty {
             return simulators.compactMap {
                 do {
-                    return try Simulator(UDID: $0,
+					return try Simulator(type: .simulator,
+										 UDID: $0,
                                          config: self.config,
                                          xctestrunPath: xctestrunPath,
                                          setUpScriptPath: self.setUpScriptPath,
@@ -110,7 +111,8 @@ extension Node {
         if let devices = self.config.UDID.devices {
             return devices.compactMap {
                 do {
-                    return try Device(UDID: $0,
+					return try Device(type: .device,
+									  UDID: $0,
                                       config: self.config,
                                       xctestrunPath: xctestrunPath,
                                       setUpScriptPath: self.setUpScriptPath,
@@ -121,6 +123,22 @@ extension Node {
                 }
             }
         }
+		
+		if let mac = self.config.UDID.mac {
+			return mac.compactMap {
+				do {
+					return try Device(type: .macOS,
+									  UDID: $0,
+									  config: self.config,
+									  xctestrunPath: xctestrunPath,
+									  setUpScriptPath: self.setUpScriptPath,
+									  tearDownScriptPath: self.tearDownScriptPath)
+				} catch let err {
+					Log.error("\(self.name): \(err)")
+					return nil
+				}
+			}
+		}
         return []
     }
     

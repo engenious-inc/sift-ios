@@ -14,6 +14,7 @@ public protocol TestExecutor: class {
 public enum TestExecutorType: String {
     case simulator = "iOS Simulator"
     case device = "iOS"
+	case macOS = "macOS"
 }
 
 public enum TestExecutorError: Error {

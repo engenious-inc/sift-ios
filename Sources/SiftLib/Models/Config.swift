@@ -36,7 +36,7 @@ extension Config {
         public var deploymentPath: String
         public var UDID: UDID
         public var xcodePath: String = "/Applications/Xcode.app"
-        public var environmentVariables: [String: String?]?
+        public var environmentVariables: [String: String]?
     }
 }
 
@@ -44,5 +44,6 @@ extension Config.NodeConfig {
     public struct UDID: Codable {
         public var simulators: [String]?
         public var devices: [String]?
+		public var mac: [String]?
     }
 }

@@ -10,6 +10,7 @@ class BaseExecutor {
     let setUpScriptPath: String?
     let tearDownScriptPath: String?
     var xcodebuild: Xcodebuild!
+	let type: TestExecutorType
     let UDID: String
     private var _finished: Bool = false
     var finished: Bool {
@@ -21,12 +22,14 @@ class BaseExecutor {
         }
     }
 
-    init(UDID: String,
+    init(type: TestExecutorType,
+		 UDID: String,
          config: Config.NodeConfig,
          xctestrunPath: String,
          setUpScriptPath: String?,
          tearDownScriptPath: String?) throws {
 
+		self.type = type
         self.UDID = UDID
         self.config = config
         self.xctestrunPath = xctestrunPath
@@ -56,7 +59,7 @@ class BaseExecutor {
                       "export UDID='\(UDID)'\n" +
                 (self.config
                     .environmentVariables?
-                    .compactMap { $0.value != nil ? "export \($0.key)=\($0.value!)" : nil }
+					.map { "export \($0.key)=\($0.value)" }
                     .joined(separator: "\n") ?? "")
             let scriptExecutionResult = try self.ssh.run(env + script)
             Log.message(verboseMsg: "\(self.config.name) Device: \"\(self.UDID)\"\n\(scriptExecutionResult.output)")

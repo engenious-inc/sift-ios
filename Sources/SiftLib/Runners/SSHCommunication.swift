@@ -70,11 +70,8 @@ class SSHCommunication<SSH: SSHExecutor>: Communication {
     func saveOnRunner(xctestrun: XCTestRun) throws -> String {
         try self.queue.sync {
             let data = try xctestrun.data()
-            guard let xctestrunFileName = xctestrun.path.components(separatedBy: "/").last else {
-                throw NSError(domain: "xctestrun source file was not found - \(xctestrun.path)", code: 1, userInfo: nil)
-            }
-            let xctestrunPath = "\(self.runnerDeploymentPath)/\(xctestrunFileName)"
-            Log.message(verboseMsg: "Uploading parsed .xctestrun file to \(self.nodeName): \(xctestrunFileName)")
+            let xctestrunPath = "\(self.runnerDeploymentPath)/\(xctestrun.xctestrunFileName)"
+            Log.message(verboseMsg: "Uploading parsed .xctestrun file to \(self.nodeName): \(xctestrun.xctestrunFileName)")
             try self.ssh.uploadFile(data: data, remotePath: xctestrunPath)
             Log.message(verboseMsg: "\(self.nodeName) .xctestrun file uploaded successfully: \(xctestrunPath)")
             return xctestrunPath

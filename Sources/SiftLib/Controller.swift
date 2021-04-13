@@ -15,12 +15,12 @@ public class Controller {
 
     public init(config: Config, tests: [String]? = nil) throws {
         self.config = config
-        self.xctestrun = try .init(path: config.xctestrunPath)
+        self.xctestrun = try XCTestRunFactory.init(path: config.xctestrunPath)
         
-        self.bundleTests = self.xctestrun.testBundleExecPaths().flatMap { (key: String, value: String) -> [String] in
+        self.bundleTests = self.xctestrun.testBundleExecPaths.flatMap { bundle -> [String] in
             do {
-                let listOfTests: [String] = try TestsDump().dump(path: value, moduleName: key)
-                Log.message("\(key): \(listOfTests.count) tests")
+				let listOfTests: [String] = try TestsDump().dump(path: bundle.path, moduleName: bundle.target)
+                Log.message("\(bundle.target): \(listOfTests.count) tests")
                 return listOfTests
             } catch let err {
                 Log.error("\(err)")
@@ -56,10 +56,14 @@ public class Controller {
 //MARK: - private methods
 extension Controller {
     private func zipBuild() throws -> String {
-        var filesToZip: [String] = self.xctestrun.dependentProductPathsCuted().compactMap { (path) -> String? in
-            path.replacingOccurrences(of: self.xctestrun.testRootPath + "/", with: "")
+        let filesToZip: [String] = self.xctestrun.dependentProductPaths.compactMap { (path) -> String? in
+			var path = path
+			if path.contains("-Runner.app") {
+				path = path.components(separatedBy: "-Runner.app").dropLast().joined() + "-Runner.app"
+			}
+			return path.replacingOccurrences(of: self.xctestrun.testRootPath + "/", with: "")
         }
-        filesToZip.append(config.xctestrunPath.replacingOccurrences(of: self.xctestrun.testRootPath + "/", with: ""))
+        //filesToZip.append(config.xctestrunPath.replacingOccurrences(of: self.xctestrun.testRootPath + "/", with: ""))
         Log.message(verboseMsg: "Start zip dependent files: \n\t\t- " + filesToZip.joined(separator: "\n\t\t- "))
         try Run().run(Scripts.zip(workdirectory: self.xctestrun.testRootPath,
                                        zipName: "build.zip",
@@ -169,14 +173,15 @@ extension Controller: RunnerDelegate {
                 }
                 return
             }
-           
+            
             do {
                 let testsMetadata = try xcresult.testsMetadata()
                     .reduce(into: [String: ActionTestMetadata]()) { dictionary, value in
                         dictionary[value.identifier] = value
                 }
                 try executedTests.forEach {
-                    guard let testMetaData = testsMetadata[$0] else {
+					let executedTest = $0.suffix(2) != "()" ? "\($0)()" : $0
+                    guard let testMetaData = testsMetadata[executedTest] else {
                         self.tests.update(test: $0, state: .unexecuted, duration: 0.0, message: "Was not executed")
                         Log.failed("\(runner.name): \($0) - Was not executed")
                         return
