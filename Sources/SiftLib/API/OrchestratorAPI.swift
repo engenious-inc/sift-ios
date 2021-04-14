@@ -59,7 +59,7 @@ public class OrchestratorAPI {
         }
 
         do {
-            return try JSONDecoder().decode(Config.self, from: data)
+            return try Config(data: data)
         } catch {
             Log.error("JSON parse error: \(error.localizedDescription)")
             return nil
@@ -175,28 +175,6 @@ public class OrchestratorAPI {
         
         return true
     }
-    
-    // single file upload
-    public func postImage(runIndex: Int, testID: Int, fileName: String) -> Bool {
-        let shell = Run()
-        do {
-            let response = try shell.run("curl -X POST \"\(endpoint + "/v1/sift/upload")" +
-                "?platform=IOS" +
-                "&testplan=\(testPlan)\"" +
-                " -H \"accept: */*\"" +
-                " -H \"token: \(token)\"" +
-                " -H \"test-id: \(testID)\"" +
-                " -H \"run-index: \(runIndex)\"" +
-                " -H \"Content-Type: multipart/form-data\"" +
-                " -H \"User-Agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 11_0_1) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/88.0.4324.192 Safari/537.36\"" +
-                " -F \"file=@\(fileName.replacingOccurrences(of: "\'", with: ""));type=image/png\"").output
-            print(response)
-        } catch {
-            Log.error("Can not post failure images to testRun")
-            return false
-        }
-        return true
-    }
 
     // multi-upload upload; curl TODO: check response output -i
     public func postImages(runIndex: Int, fileNames: [String]) -> Bool {
@@ -211,7 +189,7 @@ public class OrchestratorAPI {
                 " -H \"token: \(token)\"" +
                 " -H \"run-index: \(runIndex)\"" +
                 " -H \"Content-Type: multipart/form-data\"" +
-                " -H \"User-Agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 11_0_1) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/88.0.4324.192 Safari/537.36\" " +
+                " -H \"User-Agent: Sift iOS" +
                 " \(fileObjects)")
         } catch {
             Log.error("Can not post failure images to testRun")

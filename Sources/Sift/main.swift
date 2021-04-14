@@ -34,11 +34,10 @@ extension Sift {
             let orchestrator = OrchestratorAPI(endpoint: endpoint, token: token, testPlan: testPlan)
 
             //Get config for testplan
-            guard var config = orchestrator.get(status: .enabled) else {
+            guard let config = orchestrator.get(status: .enabled) else {
                 Log.error("Error: can't get config for TestPlan: \(testPlan)")
                 Sift.exit(withError: NSError(domain: "Error: can't get config for TestPlan: \(testPlan)", code: 1))
             }
-            config = config.injectedEnvVariables()
             // extract all tests from bundle
             quiet = true
             var testsFromBundle: [String] = []

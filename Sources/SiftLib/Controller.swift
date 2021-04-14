@@ -1,8 +1,7 @@
 import Foundation
-import AppKit
 
 public class Controller {
-    private var config: Config
+    private let config: Config
     private let xctestrun: XCTestRun
     private var runners: [Runner] = []
     private let queue: Queue
@@ -223,8 +222,7 @@ extension Controller: RunnerDelegate {
                     .reduce(into: [String: ActionTestMetadata]()) { dictionary, value in
                         dictionary[value.identifier] = value
                 }
-                let failedTests = try xcresult.failedTests()
-                let failedTestScreenshotIDs = self.prepareImages(failedTestSummaries: failedTests)
+
                 try executedTests.forEach {
                     guard let testMetaData = testsMetadata[$0] else {
                         self.tests.update(test: $0, state: .unexecuted, duration: 0.0, message: "Was not executed")
@@ -238,21 +236,24 @@ extension Controller: RunnerDelegate {
                     } else {
                         let summary: ActionTestSummary = try xcresult.modelFrom(reference: testMetaData.summaryRef!)
                         var message = summary.failureSummaries.compactMap { $0.message }.joined(separator: " ")
+                        let allChildActivities = summary.allChildActivitySummaries().filter {$0.activityType == "com.apple.dt.xctest.activity-type.testAssertionFailure"}
+                        
                         if message.isEmpty {
-                            message = summary.allChildActivitySummaries()
-                                .filter{$0.activityType == "com.apple.dt.xctest.activity-type.testAssertionFailure"}
-                                .map{ $0.title }
-                                .joined(separator: "\n")
+                            message = allChildActivities.map { $0.title }.joined(separator: "\n")
                         }
+                        
+                        Log.failed("\(runner.name): \($0) " +
+                        "- \(testMetaData.testStatus): \(String(format: "%.3f", testMetaData.duration ?? 0)) sec.")
+                        Log.message(verboseMsg: "\(runner.name): \($0) - \(testMetaData.testStatus):\n\t\t- \(message)")
+                        
+                        let screenshotID = allChildActivities.flatMap { $0.attachments }.last?.payloadRef?.id
+                        
                         self.tests.update(test: $0,
                                           state: .failed,
                                           duration: testMetaData.duration ?? 0.0,
                                           message: message,
-                                          screenshotID: failedTestScreenshotIDs?[$0]
+                                          screenshotID: screenshotID
                         )
-                        Log.failed("\(runner.name): \($0) " +
-                        "- \(testMetaData.testStatus): \(String(format: "%.3f", testMetaData.duration ?? 0)) sec.")
-                        Log.message(verboseMsg: "\(runner.name): \($0) - \(testMetaData.testStatus):\n\t\t- \(message)")
                     }
                 }
             } catch let err {
@@ -288,29 +289,6 @@ extension Controller: RunnerDelegate {
         return OrchestratorTestResults(runIndex: runIndex, testResults: results)
     }
     
-    private func prepareImages(failedTestSummaries: [ActionTestSummary]) -> [String: String]? {
-        var snapshotIDs: [String : String] = [:]
-
-        for testSummary in failedTestSummaries {
-            guard let testName = testSummary.identifier else {
-                Log.error("Test Summary does not contain name")
-                return nil
-            }
-
-            for activity in testSummary.allChildActivitySummaries() {
-                if !activity.attachments.isEmpty {
-                    for attachment in activity.attachments {
-                        if let snapshotID = attachment.payloadRef?.id, attachment.uniformTypeIdentifier == "public.jpeg" {
-                            // todo: Add png, heic support
-                            snapshotIDs.updateValue(snapshotID, forKey: testName)
-                        }
-                    }
-                }
-            }
-        }
-        return snapshotIDs
-    }
-    
     func extractImage(xcresultPath: String, testName: String, screenshotID: String) -> String {
         let directory = xcresultPath.split(separator: "/").dropLast(1).map(String.init).joined(separator: "/") + "/"
         
@@ -321,9 +299,7 @@ extension Controller: RunnerDelegate {
         let fileLocation = "\(directory)\(fileName)\'"
         // Extract files
         do {
-            try shell.run("xcrun xcresulttool export --path \(xcresultPath)" +
-                          " --output-path \(fileLocation)" +
-                          " --id \(screenshotID) --type file")
+            try xcresulttool.export(id: screenshotID, outputPath: fileLocation, xcresultPath: xcresultPath, type: .file)
         } catch {
             Log.error("Can not extract data from xcresult")
         }

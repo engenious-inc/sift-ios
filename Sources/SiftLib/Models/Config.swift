@@ -14,37 +14,27 @@ public struct Config: Codable {
     
     public init(data: Data) throws {
         self = try JSONDecoder().decode(Config.self, from: data)
+        injectPathVariables(pathName: &outputDirectoryPath)
+        injectPathVariables(pathName: &xctestrunPath)
     }
     
     public init(path: String) throws {
         let json = try Data(contentsOf: URL(fileURLWithPath: path))
         try self.init(data: json)
     }
-
+    
     public func getTestId(testName: String) -> Int? {
         return self.tests?.first(where: {$0.testName == testName} )?.testID
     }
     
-    public mutating func injectedEnvVariables() -> Self{
-        injectPathVariables(pathName: &outputDirectoryPath)
-        injectPathVariables(pathName: &xctestrunPath)
-        return self
-    }
-    
     private func injectPathVariables(pathName: inout String)  {
-        let matches = pathName.regexMatches(for: "\\$\\{?[A-Z0-9_\\}?]+")
-        var envVariables: [String : String] = [:]
-        let shell = Run()
-
-        for match in matches {
-            let value = try? shell.run("echo \(match)").output.replacingOccurrences(of: "\n", with: "")
-            if value == nil || value == "" {
-                Log.error("Variable value not found for \(match)")
+        pathName.regexMatches(for: "\\$\\{?[A-Z0-9_\\}?]+").forEach { match in
+            let envKey = String(match.dropLast().dropFirst(2))
+            if let value = ProcessInfo().environment[envKey], !value.isEmpty {
+                pathName = pathName.replacingOccurrences(of: match, with: value)
+            } else {
+                Log.error("ENV: '\(match)' was not found")
             }
-            envVariables[match] = value
-        }
-        for (key, value) in envVariables {
-            pathName = pathName.replacingOccurrences(of: key, with: value)
         }
     }
 }
