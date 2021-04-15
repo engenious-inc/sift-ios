@@ -179,10 +179,12 @@ extension Controller {
                             snapshots.append(extractedPng)
                         }
                     }
-                    if orchestrator.postImages(runIndex: runIndex, fileNames: snapshots) {
-                        Log.message("Screenshots posted successfully!")
-                    } else {
-                        Log.error("Faild to post screenshots.")
+                    if !snapshots.isEmpty {
+                        if orchestrator.postImages(runIndex: runIndex, fileNames: snapshots) {
+                            Log.message("Screenshots posted successfully!")
+                        } else {
+                            Log.error("Faild to post screenshots.")
+                        }
                     }
                 }
                 if failed.count == 0 && unexecuted.count == 0 {

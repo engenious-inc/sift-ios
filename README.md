@@ -13,7 +13,7 @@
 ### How to use:
 
 ### With Orchestrator:
-- `sift orchestartor --token 'your token' --test-plan 'name of testplan'`
+- `sift orchestrator --token 'your token' --test-plan 'name of testplan'`
 
 ### Standalone:
 - `sift run --config config.json` run tests

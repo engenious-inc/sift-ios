@@ -189,7 +189,7 @@ public class OrchestratorAPI {
                 " -H \"token: \(token)\"" +
                 " -H \"run-index: \(runIndex)\"" +
                 " -H \"Content-Type: multipart/form-data\"" +
-                " -H \"User-Agent: Sift iOS" +
+                " -H \"User-Agent: Sift iOS\"" +
                 " \(fileObjects)")
         } catch {
             Log.error("Can not post failure images to testRun")
