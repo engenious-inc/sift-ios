@@ -35,7 +35,8 @@ extension Config {
         public var passphrase: String?
         public var deploymentPath: String
         public var UDID: UDID
-        public var xcodePath: String = "/Applications/Xcode.app"
+		private var xcodePath: String
+		public var xcodePathSafe: String { xcodePath.replacingOccurrences(of: " ", with: "\\ ") }
         public var environmentVariables: [String: String]?
     }
 }

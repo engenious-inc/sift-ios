@@ -46,7 +46,7 @@ class BaseExecutor {
                                       publicKey: self.config.publicKey,
                                       passphrase: self.config.passphrase)
             Log.message(verboseMsg: "\(config.name) \"\(UDID)\" connection established")
-            self.xcodebuild = Xcodebuild(xcodePath: self.config.xcodePath, shell: self.ssh)
+            self.xcodebuild = Xcodebuild(xcodePath: self.config.xcodePathSafe, shell: self.ssh)
         }
     }
     

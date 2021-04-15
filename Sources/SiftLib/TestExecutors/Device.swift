@@ -25,7 +25,7 @@ extension Device: TestExecutor {
     func ready(completion: @escaping (Bool) -> Void) {
         self.queue.async(flags: .barrier) {
             Log.message(verboseMsg: "\(self.config.name): check Device \"\(self.UDID)\"")
-            let prefixCommand = "export DEVELOPER_DIR=\(self.config.xcodePath)/Contents/Developer\n"
+            let prefixCommand = "export DEVELOPER_DIR=\(self.config.xcodePathSafe)/Contents/Developer\n"
             let output = try? self.ssh.run(prefixCommand + "instruments -s devices").output
             guard let outputUnwraped = output, outputUnwraped.lowercased().contains(self.UDID.lowercased()) else {
                 let knownDevices = output?.components(separatedBy: "\n").joined(separator: "\r\t\t- ") ?? ""

@@ -219,7 +219,7 @@ extension Node {
         guard let pid = self.getIdForProccess(name: "com.apple.CoreSimulator.CoreSimulatorService") else {
             return
         }
-        let prefixCommand = "export DEVELOPER_DIR=\(self.config.xcodePath)/Contents/Developer\n"
+        let prefixCommand = "export DEVELOPER_DIR=\(self.config.xcodePathSafe)/Contents/Developer\n"
         let killCommands = prefixCommand + "kill -3 \(pid)"
         let bootCommands = prefixCommand +
             simulators
