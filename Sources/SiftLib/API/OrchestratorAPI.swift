@@ -5,7 +5,21 @@ public class OrchestratorAPI {
     public enum Status: String {
         case enabled
         case disabled
-        case quarantine
+        case quarantined
+        
+        public init(rawValue: String) {
+            switch rawValue.uppercased() {
+            case "ENABLED":
+                self = .enabled
+            case "DISABLED":
+                self = .disabled
+            case "QUARANTINE", "QUARANTINED":
+                self = .quarantined
+            default:
+                Log.error("Error: unknown status: \(rawValue)")
+                exit(1)
+            }
+        }
     }
 
     private let endpoint: String
