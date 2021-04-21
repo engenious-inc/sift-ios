@@ -1,6 +1,5 @@
 import Foundation
 
-
 public class Controller {
     private let config: Config
     private let xctestrun: XCTestRun
@@ -10,24 +9,44 @@ public class Controller {
     private var zipBuildPath: String? = nil
     private var xcresultFiles: [String] = []
     private var xcresulttool: XCResultTool!
-    public var tests: TestCases
-    public let bundleTests: [String]
-
-    public init(config: Config, tests: [String]? = nil) throws {
-        self.config = config
-        self.xctestrun = try .init(path: config.xctestrunPath)
-        
-        self.bundleTests = self.xctestrun.testBundleExecPaths().flatMap { (key: String, value: String) -> [String] in
+    private(set) var tests: TestCases
+    private var testRunID: Int?
+    private var orchestrator: OrchestratorAPI?
+    
+    @discardableResult
+    public static func bundleTests(xctestrunPath: String, block: ((String, Int)->Void)? = nil) throws -> [String] {
+        try SiftLib.XCTestRun(path: xctestrunPath)
+            .testBundleExecPaths().flatMap { (key: String, value: String) -> [String] in
             do {
                 let listOfTests: [String] = try TestsDump().dump(path: value, moduleName: key)
-                Log.message("\(key): \(listOfTests.count) tests")
+                block?(key, listOfTests.count)
                 return listOfTests
             } catch let err {
                 Log.error("\(err)")
                 return []
             }
         }
+    }
+    
+    public init(config: Config, tests: [String]? = nil) throws {
+        self.config = config
+        self.xctestrun = try .init(path: config.xctestrunPath)
+        let bundleTests = try Self.bundleTests(xctestrunPath: config.xctestrunPath) {
+            Log.message("\($0): \($1) tests")
+        }
         self.tests = TestCases(tests: (tests != nil && !tests!.isEmpty ? tests! : bundleTests).shuffled(),
+                               rerunLimit: config.rerunFailedTest)
+        self.queue = .init(type: .serial, name: "io.engenious.TestsProcessor")
+    }
+
+    public init(config: Config, orchestrator: OrchestratorAPI) throws {
+        self.config = config
+        self.orchestrator = orchestrator
+        self.xctestrun = try .init(path: config.xctestrunPath)
+        try Self.bundleTests(xctestrunPath: config.xctestrunPath) {
+            Log.message("\($0): \($1) tests")
+        }
+        self.tests = TestCases(tests: config.tests?.shuffled() ?? [],
                                rerunLimit: config.rerunFailedTest)
         self.queue = .init(type: .serial, name: "io.engenious.TestsProcessor")
     }
@@ -137,7 +156,37 @@ extension Controller {
                 Log.message("Done: in \(String(format: "%.3f", seconds)) seconds")
                 print()
                 Log.message("####################################")
-                
+
+                if let orchestrator = self.orchestrator {
+                    let testRun = orchestrator.postRun()
+
+                    guard let runIndex = testRun?.runIndex else {
+                        Log.error("Run ID was not found")
+                        return
+                    }
+                    Log.message("Creating test run for orchestrator ...")
+
+                    if orchestrator.postResults(testResults: formResults(runIndex: runIndex)) {
+                        Log.message("Results posted successfully!")
+                    } else {
+                        Log.error("Faild to post results.")
+                    }
+
+                    var snapshots: [String] = []
+                    for test in self.tests.failed {
+                        if let screenshotID = test.screenshotID {
+                            let extractedPng = extractImage(xcresultPath: mergedResultsPath, testName: test.name, screenshotID: screenshotID)
+                            snapshots.append(extractedPng)
+                        }
+                    }
+                    if !snapshots.isEmpty {
+                        if orchestrator.postImages(runIndex: runIndex, fileNames: snapshots) {
+                            Log.message("Screenshots posted successfully!")
+                        } else {
+                            Log.error("Faild to post screenshots.")
+                        }
+                    }
+                }
                 if failed.count == 0 && unexecuted.count == 0 {
                     exit(0)
                 }
@@ -157,7 +206,7 @@ extension Controller: RunnerDelegate {
             self.checkout(runner: runner)
         }
     }
-    
+
     public func handleTestsResults(runner: Runner, executedTests: [String], pathToResults: String?) {
         self.queue.async {
             Log.message(verboseMsg: "Parse test results from \(runner.name)")
@@ -175,6 +224,7 @@ extension Controller: RunnerDelegate {
                     .reduce(into: [String: ActionTestMetadata]()) { dictionary, value in
                         dictionary[value.identifier] = value
                 }
+
                 try executedTests.forEach {
                     guard let testMetaData = testsMetadata[$0] else {
                         self.tests.update(test: $0, state: .unexecuted, duration: 0.0, message: "Was not executed")
@@ -188,19 +238,24 @@ extension Controller: RunnerDelegate {
                     } else {
                         let summary: ActionTestSummary = try xcresult.modelFrom(reference: testMetaData.summaryRef!)
                         var message = summary.failureSummaries.compactMap { $0.message }.joined(separator: " ")
+                        let allChildActivities = summary.allChildActivitySummaries().filter {$0.activityType == "com.apple.dt.xctest.activity-type.testAssertionFailure"}
+                        
                         if message.isEmpty {
-                            message = summary.allChildActivitySummaries()
-                                .filter{$0.activityType == "com.apple.dt.xctest.activity-type.testAssertionFailure"}
-                                .map{ $0.title }
-                                .joined(separator: "\n")
+                            message = allChildActivities.map { $0.title }.joined(separator: "\n")
                         }
-                        self.tests.update(test: $0,
-                                          state: .failed,
-                                          duration: testMetaData.duration ?? 0.0,
-                                          message: message)
+                        
                         Log.failed("\(runner.name): \($0) " +
                         "- \(testMetaData.testStatus): \(String(format: "%.3f", testMetaData.duration ?? 0)) sec.")
                         Log.message(verboseMsg: "\(runner.name): \($0) - \(testMetaData.testStatus):\n\t\t- \(message)")
+                        
+                        let screenshotID = allChildActivities.flatMap { $0.attachments }.last?.payloadRef?.id
+                        
+                        self.tests.update(test: $0,
+                                          state: .failed,
+                                          duration: testMetaData.duration ?? 0.0,
+                                          message: message,
+                                          screenshotID: screenshotID
+                        )
                     }
                 }
             } catch let err {
@@ -225,5 +280,38 @@ extension Controller: RunnerDelegate {
             }
             return testsForExecution
         }
+    }
+    
+    public func formResults(runIndex: Int) -> OrchestratorTestResults {
+        let results =  self.tests.cases.map {
+            OrchestratorTestResults.TestResult(testId: $0.value.id ?? 0,
+                                               result: $0.value.resultFormatted(),
+                                               errorMessage: $0.value.message)
+        }
+        return OrchestratorTestResults(runIndex: runIndex, testResults: results)
+    }
+    
+    func extractImage(xcresultPath: String, testName: String, screenshotID: String) -> String {
+        let directory = xcresultPath.split(separator: "/").dropLast(1).map(String.init).joined(separator: "/") + "/"
+        
+        let shell = Run()
+        let fileName = testName.replacingOccurrences(of: "/", with: "")
+                               .replacingOccurrences(of: "()", with: "")
+                               .appending(".jpeg")
+        let fileLocation = "\(directory)\(fileName)\'"
+        // Extract files
+        do {
+            try xcresulttool.export(id: screenshotID, outputPath: fileLocation, xcresultPath: xcresultPath, type: .file)
+        } catch {
+            Log.error("Can not extract data from xcresult")
+        }
+        // Convert to .PNG
+        let pngFileLocation = "\(directory)\(config.getTestId(testName: testName) ?? 0).png\'"
+        do {
+            try shell.run("sips -s format png \(fileLocation) --out \(pngFileLocation)")
+        } catch {
+            Log.error("Error while converting .jpeg to .png")
+        }
+        return pngFileLocation
     }
 }

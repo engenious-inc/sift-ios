@@ -54,9 +54,9 @@ extension Node: Runner {
                                                                port: self.config.port,
                                                            username: self.config.username,
                                                            password: self.config.password,
-                                                         privateKey: self.config.privateKey,
-                                                          publicKey: self.config.publicKey,
-                                                         passphrase: self.config.passphrase,
+                                                         privateKey: self.config.pathToCertificate,
+                                                          publicKey: self.config.publicKey, // not implemented on backend
+                                                         passphrase: self.config.passphrase, // not implemented on backend
                                                runnerDeploymentPath: self.config.deploymentPath,
                                                masterDeploymentPath: self.outputDirectoryPath,
                                                            nodeName: self.config.name)

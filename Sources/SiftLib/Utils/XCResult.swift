@@ -37,7 +37,8 @@ extension XCResult {
         if let _actionTestableSummary = self._actionTestableSummary {
             return _actionTestableSummary
         }
-        self._actionTestableSummary = try self.actionsInvocationRecord().actions.compactMap { actionRecord throws -> ActionTestPlanRunSummaries? in
+        self._actionTestableSummary = try self.actionsInvocationRecord().actions
+        .compactMap { actionRecord throws -> ActionTestPlanRunSummaries? in
             guard let testRef = actionRecord.actionResult.testsRef else { return nil }
             return try? modelFrom(reference: testRef)
         }.flatMap { actionTestPlanRunSummaries -> [ActionTestPlanRunSummary] in
