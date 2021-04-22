@@ -38,6 +38,13 @@ extension Config {
 		private var xcodePath: String
 		public var xcodePathSafe: String { xcodePath.replacingOccurrences(of: " ", with: "\\ ") }
         public var environmentVariables: [String: String]?
+		public var arch: Arch?
+		
+		public enum Arch: String, Codable {
+			case i386
+			case x86_64
+			case arm64
+		}
     }
 }
 

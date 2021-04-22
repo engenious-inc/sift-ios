@@ -35,6 +35,28 @@ public struct XCTestRunV2: XCTestRun {
 			.map { $0.replacingOccurrences(of: "__TESTROOT__", with: self.testRootPath) }
 	}
 	
+	public var onlyTestIdentifiers: [String: [String]] {
+		self.testConfigurations
+			.compactMap { $0.testTargets }
+			.flatMap { $0 }
+			.reduce([String: [String]]()) { (result, target) -> [String: [String]] in
+				var result = result
+				result[target.productModuleName] = target.onlyTestIdentifiers ?? []
+				return result
+			}
+	}
+	
+	public var skipTestIdentifiers: [String: [String]] {
+		self.testConfigurations
+			.compactMap { $0.testTargets }
+			.flatMap { $0 }
+			.reduce([String: [String]]()) { (result, target) -> [String: [String]] in
+				var result = result
+				result[target.productModuleName] = target.skipTestIdentifiers ?? []
+				return result
+			}
+	}
+	
 	public func addEnvironmentVariables(_ values: [String: String]?) {
 		guard let values = values, !values.isEmpty else { return }
 		self.testConfigurations
@@ -88,6 +110,7 @@ extension XCTestRunV2 {
 		var uiTargetAppEnvironmentVariables: [String: String]?
 		var userAttachmentLifetime: String?
 		var	testHostPath: String
+		var onlyTestIdentifiers: [String]?
 		var skipTestIdentifiers: [String]?
 		var environmentVariables: [String: String]?
 		var commandLineArguments: [String]?
@@ -131,6 +154,7 @@ extension XCTestRunV2 {
 			case uiTargetAppEnvironmentVariables = "UITargetAppEnvironmentVariables"
 			case userAttachmentLifetime = "UserAttachmentLifetime"
 			case testHostPath = "TestHostPath"
+			case onlyTestIdentifiers = "OnlyTestIdentifiers"
 			case skipTestIdentifiers = "SkipTestIdentifiers"
 			case environmentVariables = "EnvironmentVariables"
 			case commandLineArguments = "CommandLineArguments"

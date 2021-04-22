@@ -5,6 +5,8 @@ public protocol XCTestRun: Codable {
 	var testRootPath: String { get }
 	var testBundleExecPaths: [(target: String, path: String)] { get }
 	var dependentProductPaths: [String] { get }
+	var onlyTestIdentifiers: [String: [String]] { get }
+	var skipTestIdentifiers: [String: [String]] { get }
 	
 	mutating func addEnvironmentVariables(_ values: [String: String]?)
 	func save(path: String) throws

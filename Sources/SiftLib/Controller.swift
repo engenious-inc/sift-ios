@@ -11,12 +11,12 @@ public class Controller {
     private var xcresultFiles: [String] = []
     private var xcresulttool: XCResultTool!
     public var tests: TestCases
-    public let bundleTests: [String]
+    public private(set) var bundleTests: [String]
 
     public init(config: Config, tests: [String]? = nil) throws {
         self.config = config
-        self.xctestrun = try XCTestRunFactory.init(path: config.xctestrunPath)
-        
+        let xctestrun = try XCTestRunFactory.init(path: config.xctestrunPath)
+		self.xctestrun = xctestrun
         self.bundleTests = self.xctestrun.testBundleExecPaths.flatMap { bundle -> [String] in
             do {
 				let listOfTests: [String] = try TestsDump().dump(path: bundle.path, moduleName: bundle.target)
@@ -26,7 +26,37 @@ public class Controller {
                 Log.error("\(err)")
                 return []
             }
-        }
+		}
+
+		if !xctestrun.onlyTestIdentifiers.isEmpty {
+			// remove tests which not included in xctestrun.onlyTestIdentifiers
+			self.bundleTests.removeAll {
+				var bundleTestComponents = $0.components(separatedBy: "/")
+				let moduleName = bundleTestComponents.removeFirst()
+				guard let moduleTest = xctestrun.onlyTestIdentifiers[moduleName], !moduleTest.isEmpty else { return false }
+				return moduleTest.first {
+					let isOnlyTestIdentifierContainsInBundleTests = $0.components(separatedBy: "/").enumerated().allSatisfy {
+						$0.element == bundleTestComponents[$0.offset].replacingOccurrences(of: "()", with: "")
+					}
+					return isOnlyTestIdentifierContainsInBundleTests
+				} == nil
+			}
+		}
+		
+		if !xctestrun.skipTestIdentifiers.isEmpty {
+			// remove tests which included in xctestrun.skipTestIdentifiers
+			self.bundleTests.removeAll {
+				var bundleTestComponents = $0.components(separatedBy: "/")
+				let moduleName = bundleTestComponents.removeFirst()
+				return xctestrun.skipTestIdentifiers[moduleName]?.first {
+					let isSkipTestIdentifiersContainsInBundleTests = $0.components(separatedBy: "/").enumerated().allSatisfy {
+						$0.element == bundleTestComponents[$0.offset].replacingOccurrences(of: "()", with: "")
+					}
+					return isSkipTestIdentifiersContainsInBundleTests
+				} != nil
+			}
+		}
+		
         self.tests = TestCases(tests: (tests != nil && !tests!.isEmpty ? tests! : bundleTests).shuffled(),
                                rerunLimit: config.rerunFailedTest)
         self.queue = .init(type: .serial, name: "io.engenious.TestsProcessor")

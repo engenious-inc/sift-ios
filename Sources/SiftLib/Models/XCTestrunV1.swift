@@ -42,6 +42,15 @@ public struct XCTestRunV1: XCTestRun {
 			.map { $0.stringValue.replacingOccurrences(of: "__TESTROOT__", with: self.testRootPath) }
 	}
 	
+	public var onlyTestIdentifiers: [String: [String]] {
+		return [:]
+	}
+	
+	// to do
+	public var skipTestIdentifiers: [String: [String]] {
+		return [:]
+	}
+	
 	public mutating func addEnvironmentVariables(_ values: [String: String]?) {
 		guard let values = values, !values.isEmpty else { return }
 		for (key, _) in self.json {

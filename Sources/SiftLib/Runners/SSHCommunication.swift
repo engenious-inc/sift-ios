@@ -17,14 +17,15 @@ class SSHCommunication<SSH: SSHExecutor>: Communication {
          passphrase: String?,
          runnerDeploymentPath: String,
          masterDeploymentPath: String,
-         nodeName: String) throws {
+         nodeName: String,
+		 arch: Config.NodeConfig.Arch?) throws {
         self.runnerDeploymentPath = runnerDeploymentPath
         self.masterDeploymentPath = masterDeploymentPath
         self.nodeName = nodeName
         self.queue = .init(type: .serial, name: "io.engenious.\(host).\(UUID().uuidString)")
         try self.queue.sync {
             Log.message(verboseMsg: "Connecting to: \(nodeName) (\(host):\(port))...")
-            self.ssh = try SSH(host: host, port: port)
+            self.ssh = try SSH(host: host, port: port, arch: arch)
             try self.ssh.authenticate(username: username,
                                       password: password,
                                       privateKey: privateKey,

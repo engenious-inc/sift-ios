@@ -39,7 +39,7 @@ class BaseExecutor {
         self.queue = .init(type: .serial, name: self.threadName)
         try self.queue.sync {
             Log.message(verboseMsg: "\(config.name) Open connection to: \"\(UDID)\"")
-            self.ssh = try SSH(host: config.host, port: config.port)
+			self.ssh = try SSH(host: config.host, port: config.port, arch: config.arch)
             try self.ssh.authenticate(username: self.config.username,
                                       password: self.config.password,
                                       privateKey: self.config.privateKey,
