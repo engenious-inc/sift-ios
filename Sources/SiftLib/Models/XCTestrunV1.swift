@@ -30,7 +30,8 @@ public struct XCTestRunV1: XCTestRun {
 				  let target = self.json[name]["ProductModuleName"].string else {
 				continue
 			}
-			results.append((target: target, path: "\(testBundlePath)/\(target)"))
+			let bundleName = testBundlePath.components(separatedBy: "/").last?.components(separatedBy: ".").first ?? target
+			results.append((target: target, path: "\(testBundlePath)/\(bundleName)"))
 		}
 		return results
 	}

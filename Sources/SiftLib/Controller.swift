@@ -19,7 +19,8 @@ public class Controller {
 		self.xctestrun = xctestrun
         self.bundleTests = self.xctestrun.testBundleExecPaths.flatMap { bundle -> [String] in
             do {
-				let listOfTests: [String] = try TestsDump().dump(path: bundle.path, moduleName: bundle.target)
+				let moduleName = bundle.path.components(separatedBy: "/").last ?? bundle.target
+				let listOfTests: [String] = try TestsDump().dump(path: bundle.path, moduleName: moduleName)
                 Log.message("\(bundle.target): \(listOfTests.count) tests")
                 return listOfTests
             } catch let err {

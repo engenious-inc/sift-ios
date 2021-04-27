@@ -136,7 +136,8 @@ extension XCTestRunV2 {
 		//Path to *.xctest/execution file
 		var testBundleExecPath: String? {
 			guard let platform = platform else { return nil }
-			let path = platform == "MacOSX" ? "\(testBundlePath)/Contents/MacOS/\(productModuleName)" : "\(testBundlePath)/\(productModuleName)"
+			let bundleName = testBundlePath.components(separatedBy: "/").last?.components(separatedBy: ".").first ?? productModuleName
+			let path = platform == "MacOSX" ? "\(testBundlePath)/Contents/MacOS/\(bundleName)" : "\(testBundlePath)/\(bundleName)"
 			return path.replacingOccurrences(of: "__TESTHOST__", with: testHostPath)
 		}
 		

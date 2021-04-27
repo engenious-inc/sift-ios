@@ -17,7 +17,7 @@ public struct Config: Codable {
     }
     
     public init(path: String) throws {
-        let json = try Data(contentsOf: URL(fileURLWithPath: path))
+        let json = try NSData(contentsOfFile: path) as Data
         try self.init(data: json)
     }
 }
