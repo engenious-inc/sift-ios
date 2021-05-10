@@ -151,7 +151,13 @@ extension Controller {
                 let reran = self.tests.reran
                 let failed = self.tests.failed
                 let unexecuted = self.tests.unexecuted
-                quiet = false
+                
+				_ = try? ("Total Tests: \(self.tests.count)\n" +
+				"Passed: \(self.tests.passed.count) tests\n" +
+				"Failed: \(failed.count) tests")
+					.write(toFile: "\(self.config.outputDirectoryPath)/final/final_result.txt", atomically: true, encoding: .utf8)
+				
+				quiet = false
                 print()
                 Log.message("####################################\n")
                 Log.message("Total Tests: \(self.tests.count)")
