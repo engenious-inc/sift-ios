@@ -48,40 +48,41 @@ class Node {
 
 extension Node: Runner {
     func start() {
-        self.queue.async {
+		self.queue.async { [unowned self] in
             do {
-                self.communication = try SSHCommunication<SSH>(host: self.config.host,
-                                                               port: self.config.port,
-                                                           username: self.config.username,
-                                                           password: self.config.password,
-                                                         privateKey: self.config.privateKey,
-                                                          publicKey: self.config.publicKey,
-                                                         passphrase: self.config.passphrase,
-                                               runnerDeploymentPath: self.config.deploymentPath,
-                                               masterDeploymentPath: self.outputDirectoryPath,
-                                                           nodeName: self.config.name)
-                try self.communication.getBuildOnRunner(buildPath: self.delegate.buildPath())
+                communication = try SSHCommunication<SSH>(host: config.host,
+                                                               port: config.port,
+                                                           username: config.username,
+                                                           password: config.password,
+                                                         privateKey: config.privateKey,
+                                                          publicKey: config.publicKey,
+                                                         passphrase: config.passphrase,
+                                               runnerDeploymentPath: config.deploymentPath,
+                                               masterDeploymentPath: outputDirectoryPath,
+														   nodeName: config.name,
+											                   arch: config.arch)
+                try communication.getBuildOnRunner(buildPath: delegate.buildPath())
                 
-                let xctestrun = self.injectENVToXctestrun() // all env should be injected in to the .xctestrun file
-                let xctestrunPath = try self.communication.saveOnRunner(xctestrun: xctestrun) // save *.xctestrun file on Node side
+                let xctestrun = injectENVToXctestrun() // all env should be injected in to the .xctestrun file
+                let xctestrunPath = try communication.saveOnRunner(xctestrun: xctestrun) // save *.xctestrun file on Node side
                 
-                self.executors = self.createExecutors(xctestrunPath: xctestrunPath)
-                self.executors.forEach { executor in
+                executors = createExecutors(xctestrunPath: xctestrunPath)
+                executors.forEach { executor in
                     executor.ready { result in
                         if result == false {
                             // if simulator is not ready try to reset and run tests
                             // if device is not ready (doesn't plugin) - return
                             guard executor.type == .simulator else { return }
                             executor.reset { _ in
-                                self.runTests(in: executor)
+                                runTests(in: executor)
                             }
                         } else {
-                            self.runTests(in: executor)
+                            runTests(in: executor)
                         }
                     }
                 }
             } catch let err {
-                Log.error("\(self.name): \(err)")
+                Log.error("\(name): \(err)")
                 return
             }
         }
@@ -95,7 +96,8 @@ extension Node {
         if let simulators = self.config.UDID.simulators, !simulators.isEmpty {
             return simulators.compactMap {
                 do {
-                    return try Simulator(UDID: $0,
+					return try Simulator(type: .simulator,
+										 UDID: $0,
                                          config: self.config,
                                          xctestrunPath: xctestrunPath,
                                          setUpScriptPath: self.setUpScriptPath,
@@ -110,7 +112,8 @@ extension Node {
         if let devices = self.config.UDID.devices {
             return devices.compactMap {
                 do {
-                    return try Device(UDID: $0,
+					return try Device(type: .device,
+									  UDID: $0,
                                       config: self.config,
                                       xctestrunPath: xctestrunPath,
                                       setUpScriptPath: self.setUpScriptPath,
@@ -121,6 +124,22 @@ extension Node {
                 }
             }
         }
+		
+		if let mac = self.config.UDID.mac {
+			return mac.compactMap {
+				do {
+					return try Device(type: .macOS,
+									  UDID: $0,
+									  config: self.config,
+									  xctestrunPath: xctestrunPath,
+									  setUpScriptPath: self.setUpScriptPath,
+									  tearDownScriptPath: self.tearDownScriptPath)
+				} catch let err {
+					Log.error("\(self.name): \(err)")
+					return nil
+				}
+			}
+		}
         return []
     }
     
@@ -201,7 +220,7 @@ extension Node {
         guard let pid = self.getIdForProccess(name: "com.apple.CoreSimulator.CoreSimulatorService") else {
             return
         }
-        let prefixCommand = "export DEVELOPER_DIR=\(self.config.xcodePath)/Contents/Developer\n"
+        let prefixCommand = "export DEVELOPER_DIR=\(self.config.xcodePathSafe)/Contents/Developer\n"
         let killCommands = prefixCommand + "kill -3 \(pid)"
         let bootCommands = prefixCommand +
             simulators

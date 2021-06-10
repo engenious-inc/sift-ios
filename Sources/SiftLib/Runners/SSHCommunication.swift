@@ -17,14 +17,15 @@ class SSHCommunication<SSH: SSHExecutor>: Communication {
          passphrase: String?,
          runnerDeploymentPath: String,
          masterDeploymentPath: String,
-         nodeName: String) throws {
+         nodeName: String,
+		 arch: Config.NodeConfig.Arch?) throws {
         self.runnerDeploymentPath = runnerDeploymentPath
         self.masterDeploymentPath = masterDeploymentPath
         self.nodeName = nodeName
         self.queue = .init(type: .serial, name: "io.engenious.\(host).\(UUID().uuidString)")
         try self.queue.sync {
             Log.message(verboseMsg: "Connecting to: \(nodeName) (\(host):\(port))...")
-            self.ssh = try SSH(host: host, port: port)
+            self.ssh = try SSH(host: host, port: port, arch: arch)
             try self.ssh.authenticate(username: username,
                                       password: password,
                                       privateKey: privateKey,
@@ -70,11 +71,8 @@ class SSHCommunication<SSH: SSHExecutor>: Communication {
     func saveOnRunner(xctestrun: XCTestRun) throws -> String {
         try self.queue.sync {
             let data = try xctestrun.data()
-            guard let xctestrunFileName = xctestrun.path.components(separatedBy: "/").last else {
-                throw NSError(domain: "xctestrun source file was not found - \(xctestrun.path)", code: 1, userInfo: nil)
-            }
-            let xctestrunPath = "\(self.runnerDeploymentPath)/\(xctestrunFileName)"
-            Log.message(verboseMsg: "Uploading parsed .xctestrun file to \(self.nodeName): \(xctestrunFileName)")
+            let xctestrunPath = "\(self.runnerDeploymentPath)/\(xctestrun.xctestrunFileName)"
+            Log.message(verboseMsg: "Uploading parsed .xctestrun file to \(self.nodeName): \(xctestrun.xctestrunFileName)")
             try self.ssh.uploadFile(data: data, remotePath: xctestrunPath)
             Log.message(verboseMsg: "\(self.nodeName) .xctestrun file uploaded successfully: \(xctestrunPath)")
             return xctestrunPath

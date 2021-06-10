@@ -11,22 +11,53 @@ public class Controller {
     private var xcresultFiles: [String] = []
     private var xcresulttool: XCResultTool!
     public var tests: TestCases
-    public let bundleTests: [String]
+    public private(set) var bundleTests: [String]
 
     public init(config: Config, tests: [String]? = nil) throws {
         self.config = config
-        self.xctestrun = try .init(path: config.xctestrunPath)
-        
-        self.bundleTests = self.xctestrun.testBundleExecPaths().flatMap { (key: String, value: String) -> [String] in
+        let xctestrun = try XCTestRunFactory.init(path: config.xctestrunPath)
+		self.xctestrun = xctestrun
+        self.bundleTests = self.xctestrun.testBundleExecPaths.flatMap { bundle -> [String] in
             do {
-                let listOfTests: [String] = try TestsDump().dump(path: value, moduleName: key)
-                Log.message("\(key): \(listOfTests.count) tests")
+				let moduleName = bundle.path.components(separatedBy: "/").last ?? bundle.target
+				let listOfTests: [String] = try TestsDump().dump(path: bundle.path, moduleName: moduleName)
+                Log.message("\(bundle.target): \(listOfTests.count) tests")
                 return listOfTests
             } catch let err {
                 Log.error("\(err)")
                 return []
             }
-        }
+		}
+
+		if !xctestrun.onlyTestIdentifiers.isEmpty {
+			// remove tests which not included in xctestrun.onlyTestIdentifiers
+			self.bundleTests.removeAll {
+				var bundleTestComponents = $0.components(separatedBy: "/")
+				let moduleName = bundleTestComponents.removeFirst()
+				guard let moduleTest = xctestrun.onlyTestIdentifiers[moduleName], !moduleTest.isEmpty else { return false }
+				return moduleTest.first {
+					let isOnlyTestIdentifierContainsInBundleTests = $0.components(separatedBy: "/").enumerated().allSatisfy {
+						$0.element == bundleTestComponents[$0.offset].replacingOccurrences(of: "()", with: "")
+					}
+					return isOnlyTestIdentifierContainsInBundleTests
+				} == nil
+			}
+		}
+		
+		if !xctestrun.skipTestIdentifiers.isEmpty {
+			// remove tests which included in xctestrun.skipTestIdentifiers
+			self.bundleTests.removeAll {
+				var bundleTestComponents = $0.components(separatedBy: "/")
+				let moduleName = bundleTestComponents.removeFirst()
+				return xctestrun.skipTestIdentifiers[moduleName]?.first {
+					let isSkipTestIdentifiersContainsInBundleTests = $0.components(separatedBy: "/").enumerated().allSatisfy {
+						$0.element == bundleTestComponents[$0.offset].replacingOccurrences(of: "()", with: "")
+					}
+					return isSkipTestIdentifiersContainsInBundleTests
+				} != nil
+			}
+		}
+		
         self.tests = TestCases(tests: (tests != nil && !tests!.isEmpty ? tests! : bundleTests).shuffled(),
                                rerunLimit: config.rerunFailedTest)
         self.queue = .init(type: .serial, name: "io.engenious.TestsProcessor")
@@ -56,10 +87,14 @@ public class Controller {
 //MARK: - private methods
 extension Controller {
     private func zipBuild() throws -> String {
-        var filesToZip: [String] = self.xctestrun.dependentProductPathsCuted().compactMap { (path) -> String? in
-            path.replacingOccurrences(of: self.xctestrun.testRootPath + "/", with: "")
+        let filesToZip: [String] = self.xctestrun.dependentProductPaths.compactMap { (path) -> String? in
+			var path = path
+			if path.contains("-Runner.app") {
+				path = path.components(separatedBy: "-Runner.app").dropLast().joined() + "-Runner.app"
+			}
+			return path.replacingOccurrences(of: self.xctestrun.testRootPath + "/", with: "")
         }
-        filesToZip.append(config.xctestrunPath.replacingOccurrences(of: self.xctestrun.testRootPath + "/", with: ""))
+        //filesToZip.append(config.xctestrunPath.replacingOccurrences(of: self.xctestrun.testRootPath + "/", with: ""))
         Log.message(verboseMsg: "Start zip dependent files: \n\t\t- " + filesToZip.joined(separator: "\n\t\t- "))
         try Run().run(Scripts.zip(workdirectory: self.xctestrun.testRootPath,
                                        zipName: "build.zip",
@@ -116,7 +151,13 @@ extension Controller {
                 let reran = self.tests.reran
                 let failed = self.tests.failed
                 let unexecuted = self.tests.unexecuted
-                quiet = false
+                
+				_ = try? ("Total Tests: \(self.tests.count)\n" +
+				"Passed: \(self.tests.passed.count) tests\n" +
+				"Failed: \(failed.count) tests")
+					.write(toFile: "\(self.config.outputDirectoryPath)/final/final_result.txt", atomically: true, encoding: .utf8)
+				
+				quiet = false
                 print()
                 Log.message("####################################\n")
                 Log.message("Total Tests: \(self.tests.count)")
@@ -169,14 +210,15 @@ extension Controller: RunnerDelegate {
                 }
                 return
             }
-           
+            
             do {
                 let testsMetadata = try xcresult.testsMetadata()
                     .reduce(into: [String: ActionTestMetadata]()) { dictionary, value in
                         dictionary[value.identifier] = value
                 }
                 try executedTests.forEach {
-                    guard let testMetaData = testsMetadata[$0] else {
+					let executedTest = $0.suffix(2) != "()" ? "\($0)()" : $0
+                    guard let testMetaData = testsMetadata[executedTest] else {
                         self.tests.update(test: $0, state: .unexecuted, duration: 0.0, message: "Was not executed")
                         Log.failed("\(runner.name): \($0) - Was not executed")
                         return

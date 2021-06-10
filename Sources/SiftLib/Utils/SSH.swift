@@ -6,11 +6,13 @@ final class SSH: SSHExecutor, ShellExecutor {
     private let host: String
     private let port: Int32
     private var sftp: SFTP!
+	private let arch: Config.NodeConfig.Arch?
     
-    init(host: String, port: Int32 = 22) throws {
+    init(host: String, port: Int32 = 22, arch: Config.NodeConfig.Arch? = nil) throws {
         self.ssh = try Shout.SSH(host: host, port: port)
         self.host = host
         self.port = port
+		self.arch = arch
     }
     
     func authenticate(username: String, password: String?, privateKey: String?, publicKey: String?, passphrase: String?) throws {
@@ -50,6 +52,7 @@ final class SSH: SSHExecutor, ShellExecutor {
     
     @discardableResult
     func run(_ command: String) throws -> (status: Int32, output: String) {
-        try self.ssh.capture(command)
+		let command = arch != nil ? "arch -\(arch!.rawValue) /bin/sh -c \"\(command)\"" : command
+		return try self.ssh.capture(command)
     }
 }

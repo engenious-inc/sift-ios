@@ -17,7 +17,7 @@ public struct Config: Codable {
     }
     
     public init(path: String) throws {
-        let json = try Data(contentsOf: URL(fileURLWithPath: path))
+        let json = try NSData(contentsOfFile: path) as Data
         try self.init(data: json)
     }
 }
@@ -35,8 +35,16 @@ extension Config {
         public var passphrase: String?
         public var deploymentPath: String
         public var UDID: UDID
-        public var xcodePath: String = "/Applications/Xcode.app"
-        public var environmentVariables: [String: String?]?
+		private var xcodePath: String
+		public var xcodePathSafe: String { xcodePath.replacingOccurrences(of: " ", with: "\\ ") }
+        public var environmentVariables: [String: String]?
+		public var arch: Arch?
+		
+		public enum Arch: String, Codable {
+			case i386
+			case x86_64
+			case arm64
+		}
     }
 }
 
@@ -44,5 +52,6 @@ extension Config.NodeConfig {
     public struct UDID: Codable {
         public var simulators: [String]?
         public var devices: [String]?
+		public var mac: [String]?
     }
 }

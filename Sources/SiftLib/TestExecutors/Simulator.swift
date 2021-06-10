@@ -2,16 +2,15 @@ import Foundation
 
 class Simulator: BaseExecutor {
 
-    let type: TestExecutorType
-
-    override init(UDID: String,
+    override init(type: TestExecutorType,
+				  UDID: String,
                   config: Config.NodeConfig,
                   xctestrunPath: String,
                   setUpScriptPath: String?,
                   tearDownScriptPath: String?) throws {
 
-        self.type = .simulator
-        try super.init(UDID: UDID,
+		try super.init(type: type,
+					   UDID: UDID,
                        config: config,
                        xctestrunPath: xctestrunPath,
                        setUpScriptPath: setUpScriptPath,
@@ -26,7 +25,7 @@ extension Simulator: TestExecutor {
     func ready(completion: @escaping (Bool) -> Void) {
         self.queue.async(flags: .barrier) {
             Log.message(verboseMsg: "\(self.config.name): check Simulator \"\(self.UDID)\"")
-            let prefixCommand = "export DEVELOPER_DIR=\(self.config.xcodePath)/Contents/Developer\n"
+            let prefixCommand = "export DEVELOPER_DIR=\(self.config.xcodePathSafe)/Contents/Developer\n"
             guard let output = try? self.ssh.run(prefixCommand +
                 "xcrun simctl list devices" +
                 " | grep \"(Booted)\" | grep -E -o -i \"([0-9a-f]{8}-([0-9a-f]{4}-){3}[0-9a-f]{12})\"").output else {
@@ -94,7 +93,7 @@ extension Simulator: TestExecutor {
         self.queue.async {
             Log.message(verboseMsg: "\(self.config.name) Simulator: \"\(self.UDID)\") reseting...")
             let commands = "/bin/sh -c '" +
-                "export DEVELOPER_DIR=\(self.config.xcodePath)/Contents/Developer\n" +
+                "export DEVELOPER_DIR=\(self.config.xcodePathSafe)/Contents/Developer\n" +
                            "xcrun simctl shutdown \(self.UDID)\n" +
                            "xcrun simctl erase \(self.UDID)\n" +
                            "xcrun simctl boot \(self.UDID)'"
