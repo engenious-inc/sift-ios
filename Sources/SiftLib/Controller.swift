@@ -15,7 +15,7 @@ public class Controller {
 
     public init(config: Config, tests: [String]? = nil) throws {
         self.config = config
-        let xctestrun = try XCTestRunFactory.init(path: config.xctestrunPath)
+        let xctestrun = try XCTestRunFactory.create(path: config.xctestrunPath)
 		self.xctestrun = xctestrun
         self.bundleTests = self.xctestrun.testBundleExecPaths.flatMap { bundle -> [String] in
             do {
