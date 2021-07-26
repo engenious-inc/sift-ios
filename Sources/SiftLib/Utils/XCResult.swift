@@ -97,10 +97,10 @@ extension XCResult {
         return self._reran ?? [:]
     }
     
-    func modelFrom<T: Codable>(reference: Reference) throws -> T {
+    func modelFrom<T: AnyObject>(reference: Reference) throws -> T where T: Decodable {
         if reference.targetType?.getType() != T.self {
             throw NSError(domain: "Can't extract model from reference id: '\(reference.id)'. " +
-                "Type mismatch, expectet type: '\(String(describing:T.self))', " +
+                "Type mismatch, expectet type: '\(String(describing: T.self))', " +
                 "actual type: '\(String(describing: reference.targetType?.getType()))'", code: 1, userInfo: nil)
         }
 

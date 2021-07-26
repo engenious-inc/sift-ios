@@ -68,7 +68,7 @@ class XCResultObjectType: Codable {
         case supertype = "_supertype"
     }
     
-    func getType() -> AnyObject.Type {
+    func getType() -> Decodable.Type {
         if let type = XCResultTypeFamily(rawValue: self.name) {
             return type.getType()
         } else if let parentType = supertype {
@@ -81,7 +81,7 @@ class XCResultObjectType: Codable {
 
 protocol ClassFamily: Decodable {
     static var overlook: Overlook { get }
-    func getType() -> AnyObject.Type
+    func getType() -> Decodable.Type
 }
 
 enum Overlook: String, CodingKey {
@@ -144,7 +144,7 @@ enum XCResultTypeFamily: String, ClassFamily {
     
     static var overlook: Overlook = .type
     
-    func getType() -> AnyObject.Type {
+    func getType() -> Decodable.Type {
         switch self {
         case .ActionAbstractTestSummary:
             return SiftLib.ActionAbstractTestSummary.self
@@ -241,9 +241,9 @@ enum XCResultTypeFamily: String, ClassFamily {
         case .ResultMetrics:
             return SiftLib.ResultMetrics.self
         case .SortedKeyValueArray:
-            return AnyObject.self
+            return AnyObject.self as! Decodable.Type
         case .SortedKeyValueArrayPair:
-            return AnyObject.self
+            return AnyObject.self as! Decodable.Type
         case .String:
             return SiftLib.XCResultValueType.self
         case .TestFailureIssueSummary:
