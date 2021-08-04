@@ -3,40 +3,33 @@ import Foundation
 enum CommandLineExecutor {
     
 	@discardableResult
-	static func launchProcess(command: String, arguments: [String], timeout: Double = 60.0) throws -> Result {
+	static func launchProcess(command: String, arguments: [String], timeout: Double = 10.0) throws -> Result {
 		let stdoutPipe = Pipe()
 		let stderrPipe = Pipe()
 		let runCommand = Process()
         
-        let MAX_DATA = 1024 * 1024
-        var stdOutData = Data(capacity: MAX_DATA)
-        var stdErrData = Data(capacity: MAX_DATA)
+        var stdOutData = Data()
+        var stdErrData = Data()
 		
-		runCommand.launchPath = command
+		runCommand.executableURL = URL(fileURLWithPath: command)
 		runCommand.currentDirectoryPath = NSTemporaryDirectory()
 		runCommand.arguments = arguments
 		runCommand.standardError = stderrPipe
 		runCommand.standardOutput = stdoutPipe
         
-        stdoutPipe.fileHandleForReading.readabilityHandler = { (fileHandle) in
-            let availableData = fileHandle.availableData
-            if availableData.count > 0 {
-                if stdOutData.count + availableData.count > MAX_DATA {
-                    Log.error("stdout data exceeds buffer capacity: \(MAX_DATA)")
-                } else {
-                    stdOutData.append(availableData)
-                }
+        let outputQueue = DispatchQueue(label: "bash-output-queue")
+        
+        stdoutPipe.fileHandleForReading.readabilityHandler = { (handler) in
+            let data = handler.availableData
+            outputQueue.async {
+                stdOutData.append(data)
             }
         }
         
-        stderrPipe.fileHandleForReading.readabilityHandler = { (fileHandle) in
-            let availableData = fileHandle.availableData
-            if availableData.count > 0 {
-                if stdErrData.count + availableData.count > MAX_DATA {
-                    Log.error("stderror data exceeds buffer capacity: \(MAX_DATA)")
-                } else {
-                    stdErrData.append(availableData)
-                }
+        stderrPipe.fileHandleForReading.readabilityHandler = { (handler) in
+            let data = handler.availableData
+            outputQueue.async {
+                stdErrData.append(data)
             }
         }
 		
@@ -48,22 +41,20 @@ enum CommandLineExecutor {
 			}
 		})
 		
-		do {
-            try runCommand.run()
-			runCommand.waitUntilExit()
-		} catch {
-			// handle errors
-			throw NSError(domain: "Error starting process for \(command): \(error.localizedDescription)", code: 1, userInfo: nil)
-		}
-        
-        let stdOutString = String(data: stdOutData, encoding: .utf8)
-        let stdErrString = String(data: stdErrData, encoding: .utf8)
+        runCommand.launch()
+        runCommand.waitUntilExit()
+        stdoutPipe.fileHandleForReading.readabilityHandler = nil
+        stderrPipe.fileHandleForReading.readabilityHandler = nil
         
 		if processTimedOut {
             throw NSError(domain: "Command terminated due to timeout: \(runCommand.launchPath ?? command)\(arguments.joined(separator: ""))", code: 1, userInfo: nil)
 		}
 		
-        return Result(standardOut: stdOutString, errorOut: stdErrString, terminationStatus: runCommand.terminationStatus)
+        return outputQueue.sync {
+            let stdOutString = String(data: stdOutData, encoding: .utf8)
+            let stdErrString = String(data: stdErrData, encoding: .utf8)
+            return Result(standardOut: stdOutString, errorOut: stdErrString, terminationStatus: runCommand.terminationStatus)
+        }
 	}
 }
 
