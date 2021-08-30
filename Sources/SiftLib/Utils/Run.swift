@@ -3,9 +3,11 @@ import Foundation
 public struct Run: ShellExecutor {
     
 	public let arch: Config.NodeConfig.Arch?
+    private let timeout: Double
 	
-	public init(arch: Config.NodeConfig.Arch? = nil) {
+	public init(arch: Config.NodeConfig.Arch? = nil, timeout: Double = 30) {
 		self.arch = arch
+        self.timeout = timeout
 	}
     
     @discardableResult
@@ -18,7 +20,7 @@ public struct Run: ShellExecutor {
             arguments = ["-\(arch.rawValue)", "/bin/sh", "-c", command]
         }
         
-        let output = try CommandLineExecutor.launchProcess(command: parsedCommand, arguments: arguments)
+        let output = try CommandLineExecutor.launchProcess(command: parsedCommand, arguments: arguments, timeout: timeout)
         return (output.terminationStatus, output.standardOut ?? "")
     }
 }

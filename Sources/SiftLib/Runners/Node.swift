@@ -67,6 +67,11 @@ extension Node: Runner {
                 let xctestrunPath = try communication.saveOnRunner(xctestrun: xctestrun) // save *.xctestrun file on Node side
                 
                 executors = createExecutors(xctestrunPath: xctestrunPath)
+                guard !executors.isEmpty else {
+                    self.delegate.runnerFinished(runner: self)
+                    return
+                }
+                
                 executors.forEach { executor in
                     executor.ready { result in
                         if result == false {
@@ -83,6 +88,7 @@ extension Node: Runner {
                 }
             } catch let err {
                 Log.error("\(name): \(err)")
+                self.delegate.runnerFinished(runner: self)
                 return
             }
         }

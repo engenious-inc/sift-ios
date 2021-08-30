@@ -3,7 +3,7 @@ import Foundation
 enum CommandLineExecutor {
     
 	@discardableResult
-	static func launchProcess(command: String, arguments: [String], timeout: Double = 10.0) throws -> Result {
+	static func launchProcess(command: String, arguments: [String], timeout: Double = 30.0) throws -> Result {
 		let stdoutPipe = Pipe()
 		let stderrPipe = Pipe()
 		let runCommand = Process()
