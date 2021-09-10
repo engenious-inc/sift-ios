@@ -5,7 +5,7 @@ public struct Run: ShellExecutor {
 	public let arch: Config.NodeConfig.Arch?
     private let timeout: Double
 	
-	public init(arch: Config.NodeConfig.Arch? = nil, timeout: Double = 30) {
+	public init(arch: Config.NodeConfig.Arch? = nil, timeout: Double = 120) {
 		self.arch = arch
         self.timeout = timeout
 	}
