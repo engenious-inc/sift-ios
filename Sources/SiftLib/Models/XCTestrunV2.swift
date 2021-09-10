@@ -123,7 +123,12 @@ extension XCTestRunV2 {
 		
 		private var platform: String? {
 			if let DYLD_FALLBACK_LIBRARY_PATH = testingEnvironmentVariables?["DYLD_FALLBACK_LIBRARY_PATH"] {
-				return DYLD_FALLBACK_LIBRARY_PATH.contains("MacOSX.platform") ? "MacOSX" : nil
+                if DYLD_FALLBACK_LIBRARY_PATH.contains("MacOSX.platform") {
+                    return "MacOSX"
+                } else if DYLD_FALLBACK_LIBRARY_PATH.contains("iPhoneSimulator.platform") {
+                    return "iPhoneSimulator"
+                }
+                return nil
 			}
 			
 			if let DYLD_INSERT_LIBRARIES = testingEnvironmentVariables?["DYLD_INSERT_LIBRARIES"] {
