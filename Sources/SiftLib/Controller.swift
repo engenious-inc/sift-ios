@@ -48,7 +48,7 @@ public class Controller {
 			// remove tests which included in xctestrun.skipTestIdentifiers
 			self.bundleTests.removeAll {
 				var bundleTestComponents = $0.components(separatedBy: "/")
-				let moduleName = bundleTestComponents.removeFirst()
+                let moduleName = bundleTestComponents.removeFirst().replacingOccurrences(of: " ", with: "_")
 				return xctestrun.skipTestIdentifiers[moduleName]?.first {
 					let isSkipTestIdentifiersContainsInBundleTests = $0.components(separatedBy: "/").enumerated().allSatisfy {
 						$0.element == bundleTestComponents[$0.offset].replacingOccurrences(of: "()", with: "")
