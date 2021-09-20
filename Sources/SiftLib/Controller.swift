@@ -33,7 +33,7 @@ public class Controller {
 			// remove tests which not included in xctestrun.onlyTestIdentifiers
 			self.bundleTests.removeAll {
 				var bundleTestComponents = $0.components(separatedBy: "/")
-				let moduleName = bundleTestComponents.removeFirst()
+                let moduleName = bundleTestComponents.removeFirst().replacingOccurrences(of: " ", with: "_")
 				guard let moduleTest = xctestrun.onlyTestIdentifiers[moduleName], !moduleTest.isEmpty else { return false }
 				return moduleTest.first {
 					let isOnlyTestIdentifierContainsInBundleTests = $0.components(separatedBy: "/").enumerated().allSatisfy {
