@@ -15,7 +15,7 @@ public class TypeDefinition: Codable {
         supertype = try container.decodeXCResultObjectIfPresent(forKey: .supertype)
     }
 
-    public func getType() -> AnyObject.Type {
+    public func getType() -> Decodable.Type {
         if let type = XCResultTypeFamily(rawValue: self.name) {
             return type.getType()
         } else if let parentType = self.supertype {

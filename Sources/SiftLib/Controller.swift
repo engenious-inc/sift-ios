@@ -15,7 +15,7 @@ public class Controller {
 
     public init(config: Config, tests: [String]? = nil) throws {
         self.config = config
-        let xctestrun = try XCTestRunFactory.init(path: config.xctestrunPath)
+        let xctestrun = try XCTestRunFactory.create(path: config.xctestrunPath)
 		self.xctestrun = xctestrun
         self.bundleTests = self.xctestrun.testBundleExecPaths.flatMap { bundle -> [String] in
             do {
@@ -33,7 +33,7 @@ public class Controller {
 			// remove tests which not included in xctestrun.onlyTestIdentifiers
 			self.bundleTests.removeAll {
 				var bundleTestComponents = $0.components(separatedBy: "/")
-				let moduleName = bundleTestComponents.removeFirst()
+                let moduleName = bundleTestComponents.removeFirst().replacingOccurrences(of: " ", with: "_")
 				guard let moduleTest = xctestrun.onlyTestIdentifiers[moduleName], !moduleTest.isEmpty else { return false }
 				return moduleTest.first {
 					let isOnlyTestIdentifierContainsInBundleTests = $0.components(separatedBy: "/").enumerated().allSatisfy {
@@ -48,7 +48,7 @@ public class Controller {
 			// remove tests which included in xctestrun.skipTestIdentifiers
 			self.bundleTests.removeAll {
 				var bundleTestComponents = $0.components(separatedBy: "/")
-				let moduleName = bundleTestComponents.removeFirst()
+                let moduleName = bundleTestComponents.removeFirst().replacingOccurrences(of: " ", with: "_")
 				return xctestrun.skipTestIdentifiers[moduleName]?.first {
 					let isSkipTestIdentifiersContainsInBundleTests = $0.components(separatedBy: "/").enumerated().allSatisfy {
 						$0.element == bundleTestComponents[$0.offset].replacingOccurrences(of: "()", with: "")
@@ -111,8 +111,8 @@ extension Controller {
             let unzipFolderPath = "\(self.config.outputDirectoryPath)/\(uuid)"
             try shell.run("unzip -o -q \"\(path)\" -d \(unzipFolderPath)")
             let files = try shell.run("ls -1 \(unzipFolderPath) | grep -E '.\\.xcresult$'").output
-            let xcresultFiles =  files.components(separatedBy: "\n")
-            guard let xcresultFileName = (xcresultFiles.filter { $0.contains(".xcresult") }.sorted { $0 > $1 }).first else {
+            let xcresultFiles =  files.components(separatedBy: "\n").filter { $0.contains(".xcresult") }
+            guard let xcresultFileName = (xcresultFiles.sorted { $0 > $1 }).first else {
                 Log.error("*.xcresult files was not found: \(unzipFolderPath)")
                 return nil
             }
@@ -140,6 +140,7 @@ extension Controller {
             Log.message(verboseMsg: "All nodes finished")
             let mergedResultsPath = "'\(self.config.outputDirectoryPath)/final/final_result.xcresult'"
             let JUnitReportUrl = URL(fileURLWithPath: "\(self.config.outputDirectoryPath)/final/final_result.xml")
+            let JSONReportUrl = URL(fileURLWithPath: "\(self.config.outputDirectoryPath)/final/final_result.json")
             do {
                 Log.message(verboseMsg: "Merging results...")
                 if let mergeXCResult = try? self.xcresulttool.merge(inputPaths: self.xcresultFiles, outputPath: mergedResultsPath), mergeXCResult.status != 0 {
@@ -147,6 +148,8 @@ extension Controller {
                 } else {
                     Log.message(verboseMsg: "All results is merged: \(mergedResultsPath)")
                 }
+                let duration = Date.timeIntervalSinceReferenceDate - self.time
+                try JSONReport.generate(tests: self.tests, duration: duration).write(to: JSONReportUrl)
                 try JUnit().generate(tests: self.tests).write(to: JUnitReportUrl, atomically: true, encoding: .utf8)
                 let reran = self.tests.reran
                 let failed = self.tests.failed
@@ -174,8 +177,8 @@ extension Controller {
                 unexecuted.forEach {
                     Log.failed(before: "\t", $0.name)
                 }
-                let seconds = Date.timeIntervalSinceReferenceDate - self.time
-                Log.message("Done: in \(String(format: "%.3f", seconds)) seconds")
+                
+                Log.message("Done: in \(String(format: "%.3f", duration)) seconds")
                 print()
                 Log.message("####################################")
                 

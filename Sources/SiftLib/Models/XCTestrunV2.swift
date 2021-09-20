@@ -123,7 +123,12 @@ extension XCTestRunV2 {
 		
 		private var platform: String? {
 			if let DYLD_FALLBACK_LIBRARY_PATH = testingEnvironmentVariables?["DYLD_FALLBACK_LIBRARY_PATH"] {
-				return DYLD_FALLBACK_LIBRARY_PATH.contains("MacOSX.platform") ? "MacOSX" : nil
+                if DYLD_FALLBACK_LIBRARY_PATH.contains("MacOSX.platform") {
+                    return "MacOSX"
+                } else if DYLD_FALLBACK_LIBRARY_PATH.contains("iPhoneSimulator.platform") {
+                    return "iPhoneSimulator"
+                }
+                return nil
 			}
 			
 			if let DYLD_INSERT_LIBRARIES = testingEnvironmentVariables?["DYLD_INSERT_LIBRARIES"] {
@@ -135,7 +140,7 @@ extension XCTestRunV2 {
 		
 		//Path to *.xctest/execution file
 		var testBundleExecPath: String? {
-			guard let platform = platform else { return nil }
+			let platform = platform ?? "iPhoneSimulator"
 			let bundleName = testBundlePath.components(separatedBy: "/").last?.components(separatedBy: ".").first ?? productModuleName
 			let path = platform == "MacOSX" ? "\(testBundlePath)/Contents/MacOS/\(bundleName)" : "\(testBundlePath)/\(bundleName)"
 			return path.replacingOccurrences(of: "__TESTHOST__", with: testHostPath)

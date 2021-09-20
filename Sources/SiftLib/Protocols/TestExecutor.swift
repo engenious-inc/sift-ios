@@ -1,6 +1,6 @@
 import Foundation
 
-public protocol TestExecutor: class {
+public protocol TestExecutor: AnyObject {
     var type: TestExecutorType { get }
     var UDID: String { get }
     var finished: Bool { get set }
