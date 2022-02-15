@@ -4,6 +4,8 @@ import SiftLib
 
 setbuf(__stdoutp, nil)
 
+let semaphore = DispatchSemaphore(value: 0)
+
 struct Sift: ParsableCommand {
     static var configuration = CommandConfiguration(
         abstract: "A utility for parallel XCTest execution.",
@@ -104,7 +106,8 @@ extension Sift {
                 let config = try Config(path: path)
                 let testsController = try Controller(config: config, tests: tests)
                 testsController.start()
-                dispatchMain()
+				_ = semaphore.wait(timeout: .distantFuture)
+                //dispatchMain()
             } catch let error {
                 Log.error("\(error)")
                 Sift.exit(withError: error)

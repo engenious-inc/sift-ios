@@ -26,7 +26,7 @@ extension Device: TestExecutor {
         self.queue.async(flags: .barrier) {
             Log.message(verboseMsg: "\(self.config.name): check Device \"\(self.UDID)\"")
             let prefixCommand = "export DEVELOPER_DIR=\(self.config.xcodePathSafe)/Contents/Developer\n"
-            let output = try? self.ssh.run(prefixCommand + "instruments -s devices").output
+            let output = try? self.ssh.run(prefixCommand + "xcrun xctrace list devices").output
             guard let outputUnwraped = output, outputUnwraped.lowercased().contains(self.UDID.lowercased()) else {
                 let knownDevices = output?.components(separatedBy: "\n").joined(separator: "\r\t\t- ") ?? ""
                 Log.error("\(self.config.name) Device: \"\(self.UDID)\" is not plugged in")

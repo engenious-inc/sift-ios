@@ -77,7 +77,11 @@ extension Node: Runner {
                         if result == false {
                             // if simulator is not ready try to reset and run tests
                             // if device is not ready (doesn't plugin) - return
-                            guard executor.type == .simulator else { return }
+                            guard executor.type == .simulator else {
+								Log.message(verboseMsg: "\(self.name): FINISHED")
+								self.delegate.runnerFinished(runner: self)
+								return
+							}
                             executor.reset { _ in
                                 runTests(in: executor)
                             }
@@ -208,7 +212,7 @@ extension Node {
     private func finish(_ executor: TestExecutor) {
         executor.reset(completion: nil)
         self.serialQueue.async {
-            Log.message(verboseMsg: "\(self.name) Simulator: \"\(executor.UDID)\") finished")
+			Log.message(verboseMsg: "\(self.name) \(executor.type.rawValue): \"\(executor.UDID)\") finished")
             executor.finished = true
             if (self.executors.filter { $0.finished == false }).count == 0 {
                 //self.killSimulators()
