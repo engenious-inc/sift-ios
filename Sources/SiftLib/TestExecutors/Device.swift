@@ -7,14 +7,16 @@ class Device: BaseExecutor {
 				  config: Config.NodeConfig,
 				  xctestrunPath: String,
 				  setUpScriptPath: String?,
-				  tearDownScriptPath: String?) throws {
+				  tearDownScriptPath: String?,
+                  log: Logging?) throws {
 
 		try super.init(type: type,
 					   UDID: UDID,
 					   config: config,
 					   xctestrunPath: xctestrunPath,
 					   setUpScriptPath: setUpScriptPath,
-					   tearDownScriptPath: tearDownScriptPath)
+					   tearDownScriptPath: tearDownScriptPath,
+                       log: log)
     }
 }
 
@@ -24,13 +26,12 @@ extension Device: TestExecutor {
 
     func ready(completion: @escaping (Bool) -> Void) {
         self.queue.async(flags: .barrier) {
-            Log.message(verboseMsg: "\(self.config.name) Device: \"\(self.UDID)\" ready")
+            self.log?.message(verboseMsg: "Device: \"\(self.UDID)\" ready")
             completion(true)
         }
     }
     
     func run(tests: [String],
-             timeout: Int,
              completion: ((TestExecutor, Result<[String], TestExecutorError>) -> Void)? = nil) {
         self.queue.async(flags: .barrier) {
             if tests.isEmpty {
@@ -42,30 +43,30 @@ extension Device: TestExecutor {
                     completion?(self, .failure(.testSkipped))
                     return
                 }
-                Log.message(verboseMsg: "\(self.config.name) \"\(self.UDID)\" run tests:\n\t\t- " +
+                self.log?.message(verboseMsg: "\"\(self.UDID)\" run tests:\n\t\t- " +
                                         "\(tests.joined(separator: "\n\t\t- "))")
                 let result = try self.xcodebuild.execute(tests: tests,
                                                          executorType: self.type,
                                                          UDID: self.UDID,
                                                          xctestrunPath: self.xctestrunPath,
                                                          derivedDataPath: self.config.deploymentPath,
-                                                         timeout: timeout)
-                Log.message(verboseMsg: "\(self.config.name) \"\(self.UDID)\" " +
+                                                         log: self.log)
+                self.log?.message(verboseMsg: "\"\(self.UDID)\" " +
                                         "tests run finished with status: \(result.status)")
                 if result.status != 0 {
-                    Log.message(verboseMsg: result.output)
+                    self.log?.message(verboseMsg: result.output)
                 }
                 try self.executeShellScript(path: self.tearDownScriptPath, testNameEnv: tests.first ?? "")
                 if result.status == 0 || result.status == 65 {
                     completion?(self, .success(tests))
                     return
                 }
-                Log.message(verboseMsg: "\(self.config.name) \"\(self.UDID)\" " +
+                self.log?.message(verboseMsg: "\"\(self.UDID)\" " +
                 "xcodebuild:\n \(result.output)")
                 self.reset { _ in
                     completion?(self, .failure(.executionError(description: "Device: \(self.UDID) " +
                         "- status \(result.status) " +
-                        "\(result.status == 143 ? "- timeout: \(timeout)" : "")",
+                        "\(result.status == 143 ? "- timeout" : "")",
                         tests: tests)))
                 }
             } catch let err {

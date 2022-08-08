@@ -11,15 +11,15 @@ struct Xcodebuild {
                  xctestrunPath: String,
                  derivedDataPath: String,
                  quiet: Bool = true,
-                 timeout: Int) throws -> (status: Int32, output: String) {
+                 log: Logging?) throws -> (status: Int32, output: String) {
         let onlyTestingString = tests.map { "-only-testing:'\($0)'" }.joined(separator: " ")
         let command = "xcodebuild " + (quiet == true ? "-quiet " : "") +
             "-xctestrun '\(xctestrunPath)' " +
             "-destination 'platform=\(executorType.rawValue),id=\(UDID)' " +
             "-derivedDataPath \(derivedDataPath)/\(UDID) " +
+            "-test-timeouts-enabled YES " +
             "\(onlyTestingString) test-without-building"
-        
-        return try shell.run("export DEVELOPER_DIR=\(xcodePath)/Contents/Developer\n" +
-        "/usr/local/bin/timeout --preserve-status \(timeout) " + command)
+        log?.message(verboseMsg: "Run command:\n" + command)
+        return try shell.run("export DEVELOPER_DIR=\(xcodePath)/Contents/Developer\n" + command)
     }
 }

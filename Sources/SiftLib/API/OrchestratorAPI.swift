@@ -11,10 +11,12 @@ public class OrchestratorAPI {
     private let endpoint: String
     private let token: String
     private let session = URLSession.shared
+    private let log: Logging?
 
-    public init(endpoint: String, token: String) {
+    public init(endpoint: String, token: String, log: Logging?) {
         self.endpoint = endpoint
         self.token = token
+        self.log = log
     }
 
     public func get(testplan: String, status: Status, platform: String = "IOS") -> Config? {
@@ -23,7 +25,7 @@ public class OrchestratorAPI {
             .appending("testplan", value: testplan)?
             .appending("status", value: status.rawValue.uppercased())?
             .appending("platform", value: platform) else {
-            Log.error("Can't resolve URL endpoint")
+            log?.error("Can't resolve URL endpoint")
             return nil
         }
 
@@ -34,36 +36,36 @@ public class OrchestratorAPI {
         let result = session.sendSynchronous(request: request)
         
         if result.error != nil {
-            Log.error("\(result.error!)")
+            log?.error("\(result.error!)")
             return nil
         }
         
         guard let data = result.data else {
-            Log.error("Data is nil")
+            log?.error("Data is nil")
             return nil
         }
 
         guard let response = result.response as? HTTPURLResponse, (200...299).contains(response.statusCode) else {
-            Log.error("Server error!")
+            log?.error("Server error!")
             return nil
         }
 
         guard let mime = result.response?.mimeType, mime == "application/json" else {
-            Log.error("Wrong MIME type!")
+            log?.error("Wrong MIME type!")
             return nil
         }
 
         do {
             return try JSONDecoder().decode(Config.self, from: data)
         } catch {
-            Log.error("JSON parse error: \(error.localizedDescription)")
+            log?.error("JSON parse error: \(error.localizedDescription)")
             return nil
         }
     }
     
     public func post(tests: [String], platform: String = "IOS") -> Bool {
         guard let url = URL(string: endpoint + "/public") else {
-            Log.error("Can't resolve URL endpoint")
+            log?.error("Can't resolve URL endpoint")
             return false
         }
 
@@ -79,13 +81,13 @@ public class OrchestratorAPI {
         let result = session.sendSynchronous(request: request)
 
         if result.error != nil {
-           Log.error("\(result.error!)")
-           return false
+            log?.error("\(result.error!)")
+            return false
         }
 
         guard let response = result.response as? HTTPURLResponse, (200...299).contains(response.statusCode) else {
-           Log.error("Server error!")
-           return false
+            log?.error("Server error!")
+            return false
         }
         
         return true

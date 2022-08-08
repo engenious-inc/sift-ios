@@ -57,7 +57,7 @@ public struct XCTestRunV2: XCTestRun {
 			}
 	}
 	
-	public func addEnvironmentVariables(_ values: [String: String]?) {
+    mutating public func addEnvironmentVariables(_ values: [String: String]?) {
 		guard let values = values, !values.isEmpty else { return }
 		self.testConfigurations
 			.compactMap { $0.testTargets }
@@ -66,6 +66,16 @@ public struct XCTestRunV2: XCTestRun {
 				$0.environmentVariables?.merge(values) { (_, new) -> String in new }
 			}
 	}
+    
+    mutating public func add(timeout: Int) {
+        self.testConfigurations
+            .compactMap { $0.testTargets }
+            .flatMap { $0 }
+            .forEach {
+                $0.testTimeoutsEnabled = true
+                $0.defaultTestExecutionTimeAllowance = timeout
+            }
+    }
 	
 	public func save(path: String) throws {
 		try (data() as NSData).write(toFile: path)
@@ -116,10 +126,12 @@ extension XCTestRunV2 {
 		var commandLineArguments: [String]?
 		var systemAttachmentLifetime: String?
 		var testingEnvironmentVariables: [String: String]?
-		var blueprintName, testRegion: String?
+		var blueprintName, blueprintProviderName, testRegion: String?
 		var bundleIdentifiersForCrashReportEmphasis: [String]?
 		var testBundlePath: String
 		var dependentProductPaths: [String]
+        var UITargetAppMainThreadCheckerEnabled: Bool?
+        var UITargetAppPath: String?
 		
 		private var platform: String? {
 			if let DYLD_FALLBACK_LIBRARY_PATH = testingEnvironmentVariables?["DYLD_FALLBACK_LIBRARY_PATH"] {
@@ -167,10 +179,13 @@ extension XCTestRunV2 {
 			case systemAttachmentLifetime = "SystemAttachmentLifetime"
 			case testingEnvironmentVariables = "TestingEnvironmentVariables"
 			case blueprintName = "BlueprintName"
+            case blueprintProviderName = "BlueprintProviderName"
 			case testRegion = "TestRegion"
 			case bundleIdentifiersForCrashReportEmphasis = "BundleIdentifiersForCrashReportEmphasis"
 			case testBundlePath = "TestBundlePath"
 			case dependentProductPaths = "DependentProductPaths"
+            case UITargetAppMainThreadCheckerEnabled = "UITargetAppMainThreadCheckerEnabled"
+            case UITargetAppPath = "UITargetAppPath"
 		}
 	}
 

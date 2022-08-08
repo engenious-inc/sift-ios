@@ -6,7 +6,7 @@ public protocol TestExecutor: AnyObject {
     var finished: Bool { get set }
     
     func ready(completion: @escaping (Bool) -> Void)
-    func run(tests: [String], timeout: Int, completion: ((TestExecutor, Result<[String], TestExecutorError>) -> Void)?)
+    func run(tests: [String], completion: ((TestExecutor, Result<[String], TestExecutorError>) -> Void)?)
     func reset(completion: ((Result<TestExecutor, Error>) -> Void)?)
     func deleteApp(bundleId: String)
 }
