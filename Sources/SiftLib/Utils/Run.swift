@@ -1,6 +1,6 @@
 import Foundation
 
-public struct Run: ShellExecutor {
+public actor Run: ShellExecutor {
     
 	public let arch: Config.NodeConfig.Arch?
     private let timeout: Double
@@ -11,7 +11,7 @@ public struct Run: ShellExecutor {
 	}
     
     @discardableResult
-    public func run(_ command: String) throws -> (status: Int32, output: String)  {
+    nonisolated public func run(_ command: String) throws -> (status: Int32, output: String)  {
         var parsedCommand = "/bin/sh"
         var arguments = ["-c", command]
         

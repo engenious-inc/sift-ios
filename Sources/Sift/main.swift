@@ -108,8 +108,7 @@ extension Sift {
                 let config = try Config(path: path)
                 let testsController = try Controller(config: config, tests: tests, log: Log())
                 testsController.start()
-				_ = semaphore.wait(timeout: .distantFuture)
-                //dispatchMain()
+                dispatchMain()
             } catch let error {
                 log.error("\(error)")
                 Sift.exit(withError: error)

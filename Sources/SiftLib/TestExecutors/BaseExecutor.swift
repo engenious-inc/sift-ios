@@ -2,9 +2,7 @@ import Foundation
 
 class BaseExecutor {
 
-    var ssh: SSHExecutor!
-    let threadName: String
-    let queue: Queue
+    var ssh: SSHExecutor
     let config: Config.NodeConfig
     let xctestrunPath: String
     let setUpScriptPath: String?
@@ -13,15 +11,6 @@ class BaseExecutor {
 	let type: TestExecutorType
     let UDID: String
     var log: Logging?
-    private var _finished: Bool = false
-    var finished: Bool {
-        get {
-            self.queue.sync(flags: .barrier) { self._finished }
-        }
-        set {
-            self.queue.async(flags: .barrier) { self._finished = newValue }
-        }
-    }
 
     init(type: TestExecutorType,
 		 UDID: String,
@@ -29,7 +18,7 @@ class BaseExecutor {
          xctestrunPath: String,
          setUpScriptPath: String?,
          tearDownScriptPath: String?,
-         log: Logging?) throws {
+         log: Logging?) async throws {
 
         self.log = log
         self.log?.prefix = config.name
@@ -39,19 +28,15 @@ class BaseExecutor {
         self.xctestrunPath = xctestrunPath
         self.setUpScriptPath = setUpScriptPath
         self.tearDownScriptPath = tearDownScriptPath
-        self.threadName = UDID
-        self.queue = .init(type: .serial, name: self.threadName)
-        try self.queue.sync {
-            log?.message(verboseMsg: "Open connection to: \"\(UDID)\"")
-			self.ssh = try SSH(host: config.host, port: config.port, arch: config.arch)
-            try self.ssh.authenticate(username: self.config.username,
-                                      password: self.config.password,
-                                      privateKey: self.config.privateKey,
-                                      publicKey: self.config.publicKey,
-                                      passphrase: self.config.passphrase)
-            log?.message(verboseMsg: "\"\(UDID)\" connection established")
-            self.xcodebuild = Xcodebuild(xcodePath: self.config.xcodePathSafe, shell: self.ssh)
-        }
+        log?.message(verboseMsg: "Open connection to: \"\(UDID)\"")
+        self.ssh = try SSH(host: config.host, port: config.port, arch: config.arch)
+        try self.ssh.authenticate(username: self.config.username,
+                                  password: self.config.password,
+                                  privateKey: self.config.privateKey,
+                                  publicKey: self.config.publicKey,
+                                  passphrase: self.config.passphrase)
+        log?.message(verboseMsg: "\"\(UDID)\" connection established")
+        self.xcodebuild = Xcodebuild(xcodePath: self.config.xcodePathSafe, shell: self.ssh)
     }
     
     @discardableResult

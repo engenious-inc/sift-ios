@@ -6,3 +6,4 @@ extension Data {
         String(data: self, encoding: encoding)
     }
 }
+

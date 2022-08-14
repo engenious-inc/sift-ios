@@ -3,12 +3,12 @@ import Foundation
 public protocol TestExecutor: AnyObject {
     var type: TestExecutorType { get }
     var UDID: String { get }
-    var finished: Bool { get set }
     
-    func ready(completion: @escaping (Bool) -> Void)
-    func run(tests: [String], completion: ((TestExecutor, Result<[String], TestExecutorError>) -> Void)?)
-    func reset(completion: ((Result<TestExecutor, Error>) -> Void)?)
-    func deleteApp(bundleId: String)
+    func ready() async -> Bool
+    func run(tests: [String]) async -> (TestExecutor, Result<[String], TestExecutorError>)
+    @discardableResult
+    func reset() async -> Result<TestExecutor, Error>
+    func deleteApp(bundleId: String) async
 }
 
 public enum TestExecutorType: String {

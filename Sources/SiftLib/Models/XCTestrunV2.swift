@@ -190,7 +190,7 @@ extension XCTestRunV2 {
 	}
 
 	// MARK: - TestPlan
-	class TestPlan: Codable {
+	struct TestPlan: Codable {
 		var isDefault: Bool?
 		var name: String?
 
@@ -201,7 +201,7 @@ extension XCTestRunV2 {
 	}
 
 	// MARK: - XctestrunMetadata
-	class XctestrunMetadata: Codable {
+	struct XctestrunMetadata: Codable {
 		var formatVersion: Int?
 
 		enum CodingKeys: String, CodingKey {

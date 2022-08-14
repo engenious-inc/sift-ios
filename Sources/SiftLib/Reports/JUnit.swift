@@ -6,9 +6,8 @@ class JUnit {
     var testsuite: [String: (tests: Int, failures: Int, time: Double)] = [:]
     var testcase: [String: (isFailed: Bool, time: Double, message: String)] = [:]
     
-    func generate(tests: TestCases) -> String {
-        
-        tests.cases.values.forEach { test in
+    func generate(tests: TestCases) async -> String {
+        await tests.cases.values.forEach { test in
             var components = test.name.components(separatedBy: "/")
             let moduleName = components.removeFirst()
             _ = components.removeLast()

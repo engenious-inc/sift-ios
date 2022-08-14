@@ -1,11 +1,10 @@
 import Foundation
 import Shout
 
-final class SSH: SSHExecutor, ShellExecutor {
+final actor SSH: SSHExecutor, ShellExecutor {
     private let ssh: Shout.SSH
     private let host: String
     private let port: Int32
-    private var sftp: SFTP!
 	private let arch: Config.NodeConfig.Arch?
     
     init(host: String, port: Int32 = 22, arch: Config.NodeConfig.Arch? = nil) throws {
@@ -15,7 +14,7 @@ final class SSH: SSHExecutor, ShellExecutor {
 		self.arch = arch
     }
     
-    func authenticate(username: String, password: String?, privateKey: String?, publicKey: String?, passphrase: String?) throws {
+    nonisolated func authenticate(username: String, password: String?, privateKey: String?, publicKey: String?, passphrase: String?) throws {
         if let password = password {
             try ssh.authenticate(username: username, password: password)
         } else if let privateKey = privateKey {
@@ -23,35 +22,34 @@ final class SSH: SSHExecutor, ShellExecutor {
         } else {
             try ssh.authenticateByAgent(username: username)
         }
-        self.sftp = try ssh.openSftp()
     }
     
     @discardableResult
-    func uploadFile(localPath: String, remotePath: String) throws -> Self {
-        try self.sftp.upload(localURL: URL(fileURLWithPath: localPath), remotePath: remotePath)
+    nonisolated func uploadFile(localPath: String, remotePath: String) throws -> Self {
+        try ssh.openSftp().upload(localURL: URL(fileURLWithPath: localPath), remotePath: remotePath)
         return self
     }
     
     @discardableResult
-    func uploadFile(data: Data, remotePath: String) throws -> Self {
-        try self.sftp.upload(data: data, remotePath: remotePath)
+    nonisolated func uploadFile(data: Data, remotePath: String) throws -> Self {
+        try ssh.openSftp().upload(data: data, remotePath: remotePath)
         return self
     }
     
     @discardableResult
-    func uploadFile(string: String, remotePath: String) throws -> Self {
-        try self.sftp.upload(string: string, remotePath: remotePath)
+    nonisolated func uploadFile(string: String, remotePath: String) throws -> Self {
+        try ssh.openSftp().upload(string: string, remotePath: remotePath)
         return self
     }
     
     @discardableResult
-    func downloadFile(remotePath: String, localPath: String) throws -> Self {
-        try self.sftp.download(remotePath: remotePath, localURL: URL(fileURLWithPath: localPath))
+    nonisolated func downloadFile(remotePath: String, localPath: String) throws -> Self {
+        try ssh.openSftp().download(remotePath: remotePath, localURL: URL(fileURLWithPath: localPath))
         return self
     }
     
     @discardableResult
-    func run(_ command: String) throws -> (status: Int32, output: String) {
+    nonisolated func run(_ command: String) throws -> (status: Int32, output: String) {
 		let command = arch != nil ? "arch -\(arch!.rawValue) /bin/sh -c \"\(command)\"" : command
 		return try self.ssh.capture(command)
     }

@@ -1,7 +1,7 @@
 import Foundation
 
-public struct TestCase: Hashable {
-    public enum State {
+public struct TestCase: Hashable, Sendable {
+    public enum State: Sendable {
         case pass
         case failed
         case unexecuted
@@ -18,7 +18,7 @@ public struct TestCase: Hashable {
     }
 }
 
-public struct TestCases {
+public actor TestCases {
     private var iterator: IndexingIterator<[(key: String, case: TestCase)]>
     private var failedTestsCache: [String] = []
     private let rerunLimit: Int
@@ -39,16 +39,16 @@ public struct TestCases {
         self.rerunLimit = rerunLimit
     }
     
-    public mutating func next(amount: Int) -> [String] {
+    public func next(amount: Int) -> [String] {
         return (1...amount).compactMap { _ in self.iterator.next()?.key }
     }
     
-    public mutating func nextForRerun() -> String? {
+    public func nextForRerun() -> String? {
         guard let test = failedTestsCache.popLast() else { return nil }
         return test
     }
     
-    public mutating func update(test: String, state: TestCase.State, duration: Double, message: String = "") {
+    public func update(test: String, state: TestCase.State, duration: Double, message: String = "") {
         guard cases[test] != nil else { return }
         cases[test]!.state = state
         cases[test]!.launchCounter += 1
@@ -60,8 +60,8 @@ public struct TestCases {
     }
 }
 
-extension TestCases: CustomStringConvertible {
-    public var description: String {
-        return cases.keys.sorted().joined(separator: "\n")
-    }
-}
+//extension TestCases: CustomStringConvertible {
+//    public var description: String {
+//        return cases.keys.sorted().joined(separator: "\n")
+//    }
+//}

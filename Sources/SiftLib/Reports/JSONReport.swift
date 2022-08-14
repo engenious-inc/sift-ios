@@ -2,15 +2,15 @@ import Foundation
 
 enum JSONReport {
     
-    static func generate(tests: TestCases, duration: Double) -> JSONReportModel {
+    static func generate(tests: TestCases, duration: Double) async -> JSONReportModel {
         
-        let testsBySuite: [String: [TestCase]] = tests.cases.values
+        let testsBySuite: [String: [TestCase]] = await tests.cases.values
             .reduce(into: [String: [TestCase]]()) { result, testCase in
             let suiteName = testCase.name.components(separatedBy: "/").dropLast().joined(separator: "/")
             result[suiteName, default: []].append(testCase)
         }
         
-        let reportSummary = JSONReportModel.Summary(tests: tests.count,
+        let reportSummary = await JSONReportModel.Summary(tests: await tests.count,
                                 passed: tests.passed.count,
                                 rerunned: tests.reran.count,
                                 failed: tests.failed.count,
