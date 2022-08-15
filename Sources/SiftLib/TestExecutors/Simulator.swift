@@ -3,19 +3,25 @@ import Foundation
 class Simulator: BaseExecutor {
 
     override init(type: TestExecutorType,
-				  UDID: String,
+                  UDID: String,
                   config: Config.NodeConfig,
                   xctestrunPath: String,
                   setUpScriptPath: String?,
                   tearDownScriptPath: String?,
+                  runnerDeploymentPath: String,
+                  masterDeploymentPath: String,
+                  nodeName: String,
                   log: Logging?) async throws {
 
-		try await super.init(type: type,
-					   UDID: UDID,
+        try await super.init(type: type,
+                       UDID: UDID,
                        config: config,
                        xctestrunPath: xctestrunPath,
                        setUpScriptPath: setUpScriptPath,
                        tearDownScriptPath: tearDownScriptPath,
+                       runnerDeploymentPath: runnerDeploymentPath,
+                       masterDeploymentPath: masterDeploymentPath,
+                       nodeName: nodeName,
                        log: log)
     }
 }
@@ -27,60 +33,35 @@ extension Simulator: TestExecutor {
     func ready() async -> Bool {
         self.log?.message(verboseMsg: "check Simulator \"\(self.UDID)\"")
         let prefixCommand = "export DEVELOPER_DIR=\(self.config.xcodePathSafe)/Contents/Developer\n"
-        guard let output = try? self.ssh.run(prefixCommand +
-            "xcrun simctl list devices" +
-            " | grep \"(Booted)\" | grep -E -o -i \"([0-9a-f]{8}-([0-9a-f]{4}-){3}[0-9a-f]{12})\"").output else {
-            self.log?.message(verboseMsg: "Simulator \"\(self.UDID)\" is not booted.")
+        var command = [prefixCommand,
+                       "xcrun simctl list devices",
+                       " | grep \"(Booted)\"",
+                       " | grep -E -o -i \"([0-9a-f]{8}-([0-9a-f]{4}-){3}[0-9a-f]{12})\""]
+        
+        guard let output = try? self.ssh.run(command.joined()).output else {
+            self.log?.message(verboseMsg: "Error: can't run \"\(command.joined())\"")
             return false
         }
-        let udids = output.components(separatedBy: "\n")
-        let result = udids.contains { self.UDID == $0 }
-        if !result {
-            self.log?.message(verboseMsg: "Simulator \"\(self.UDID)\" is not booted.")
+        
+        if output.contains(UDID + "\n") {
+            return true
         }
-        return result
-    }
-    
-    func run(tests: [String]) async -> (TestExecutor, Result<[String], TestExecutorError>) {
-        if tests.isEmpty {
-            return (self, .failure(.noTestsForExecution))
+                
+        command[2] = ""
+        guard let output = try? self.ssh.run(command.joined()).output else {
+            self.log?.message(verboseMsg: "Error: can't run \"\(command.joined())\"")
+            return false
         }
-        do {
-            if try self.executeShellScript(path: self.setUpScriptPath, testNameEnv: tests.first ?? "") == 1 {
-                return (self, .failure(.testSkipped))
-            }
-            self.log?.message(verboseMsg: "Simulator: \"\(self.UDID)\") run tests:\n\t\t- " +
-                                    "\(tests.joined(separator: "\n\t\t- "))")
-            let result = try self.xcodebuild.execute(tests: tests,
-                                                     executorType: self.type,
-                                                     UDID: self.UDID,
-                                                     xctestrunPath: self.xctestrunPath,
-                                                     derivedDataPath: self.config.deploymentPath,
-                                                     quiet: !verbose,
-                                                     log: self.log)
-            self.log?.message(verboseMsg: "Simulator: \"\(self.UDID)\") " +
-                                    "tests run finished with status: \(result.status)")
-            if result.status != 0 {
-                let message = "Xcode output:\n" +
-                              ">>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>\n" + result.output +
-                              "<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<\n"
-                self.log?.message(verboseMsg: message)
-            }
-            try self.executeShellScript(path: self.tearDownScriptPath, testNameEnv: tests.first ?? "")
-            if result.status == 0 || result.status == 65 {
-                return (self, .success(tests))
-            }
-            self.log?.message(verboseMsg: "\"\(self.UDID)\" " +
-            "xcodebuild:\n \(result.output)")
-            await self.reset()
-            return (self, .failure(.executionError(description: "Simulator: \(self.UDID) " +
-            "- status \(result.status) " +
-            "\(result.status == 143 ? "- timeout" : "")",
-            tests: tests)))
-        } catch let err {
-            await self.reset()
-            return (self, .failure(.executionError(description: "Simulator: \(self.UDID) - \(err)", tests: tests)))
+        
+        if output.contains(UDID + "\n") {
+            self.log?.message("Simulator \"\(UDID)\" is not booted.")
+            await reset()
+            return true
         }
+        
+        log?.warning("Simulator: \(UDID) not found and will be ignored in test run")
+        
+        return false
     }
     
     @discardableResult

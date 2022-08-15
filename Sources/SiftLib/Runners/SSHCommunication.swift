@@ -45,30 +45,6 @@ struct SSHCommunication<SSH: SSHExecutor>: Communication {
         log?.message(verboseMsg: "\(self.nodeName): Build successfully uploaded to: \(self.runnerDeploymentPath)")
     }
     
-    func sendResultsToMaster(UDID: String) throws -> String? {
-        do {
-            log?.message(verboseMsg: "\(self.nodeName): Uploading tests result to master...")
-            let resultsFolderPath = "\(self.runnerDeploymentPath)/\(UDID)/Logs/Test"
-            let (_, filesString) = try self.ssh.run("ls -1 \(resultsFolderPath) | grep -E '.\\.xcresult$'")
-            let xcresultFiles =  filesString.components(separatedBy: "\n")
-            guard let xcresult = (xcresultFiles.filter { $0.contains(".xcresult") }.sorted { $0 > $1 }).first else {
-                log?.error("*.xcresult files not found in \(resultsFolderPath): \n \(filesString)")
-                return nil
-            }
-            log?.message(verboseMsg: "\(self.nodeName): Test results: \(xcresult)")
-            let masterPath = "\(self.masterDeploymentPath)/\(UDID).zip"
-            try self.ssh.run("cd '\(resultsFolderPath)'\n" + "zip -r -X -q -0 './\(UDID).zip' './\(xcresult)'")
-            try self.ssh.downloadFile(remotePath: "\(resultsFolderPath)/\(UDID).zip", localPath: "\(masterPath)")
-            _ = try? self.ssh.run("rm -r \(resultsFolderPath)")
-            log?.message(verboseMsg: "\(self.nodeName): Successfully uploaded on master: \(masterPath)")
-            return masterPath
-        } catch {
-            print(error)
-            sleep(1)
-            return nil
-        }
-    }
-    
     func saveOnRunner(xctestrun: XCTestRun) throws -> String {
         let data = try xctestrun.data()
         let xctestrunPath = "\(self.runnerDeploymentPath)/\(xctestrun.xctestrunFileName)"

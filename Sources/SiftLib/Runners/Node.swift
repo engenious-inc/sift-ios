@@ -69,18 +69,10 @@ extension Node: Runner {
             }
             
             await executors.concurrentForEach { executor in
-                if await executor.ready() == false {
-                    // if simulator is not ready try to reset and run tests
-                    // if device is not ready (doesn't plugin) - return
-                    guard executor.type == .simulator else {
-                        self.log?.message(verboseMsg: "\(self.name): FINISHED")
-                        await self.delegate.runnerFinished()
-                        return
-                    }
-                    await executor.reset()
+                if await executor.ready() {
                     await self.runTests(in: executor)
                 } else {
-                    await self.runTests(in: executor)
+                    await self.finish(executor, reset: false)
                 }
             }
         } catch let err {
@@ -104,6 +96,9 @@ extension Node {
                                          xctestrunPath: xctestrunPath,
                                          setUpScriptPath: self.setUpScriptPath,
                                          tearDownScriptPath: self.tearDownScriptPath,
+                                         runnerDeploymentPath: config.deploymentPath,
+                                         masterDeploymentPath: outputDirectoryPath,
+                                         nodeName: config.name,
                                          log: log)
                 } catch let err {
                     self.log?.error("\(self.name): \(err)")
@@ -121,6 +116,9 @@ extension Node {
                                       xctestrunPath: xctestrunPath,
                                       setUpScriptPath: self.setUpScriptPath,
                                       tearDownScriptPath: self.tearDownScriptPath,
+                                      runnerDeploymentPath: config.deploymentPath,
+                                      masterDeploymentPath: outputDirectoryPath,
+                                      nodeName: config.name,
                                       log: log)
                 } catch let err {
                     self.log?.error("\(self.name): \(err)")
@@ -139,6 +137,9 @@ extension Node {
 									  xctestrunPath: xctestrunPath,
 									  setUpScriptPath: self.setUpScriptPath,
 									  tearDownScriptPath: self.tearDownScriptPath,
+                                      runnerDeploymentPath: config.deploymentPath,
+                                      masterDeploymentPath: outputDirectoryPath,
+                                      nodeName: config.name,
                                       log: log)
 				} catch let err {
                     self.log?.error("\(self.name): \(err)")
@@ -170,25 +171,28 @@ extension Node {
     
     private func testExecutionSuccessFlow(_ tests: [String], executor: TestExecutor) async {
         do {
-            let pathToTestsResults = try self.communication.sendResultsToMaster(UDID: executor.UDID)
+            let pathToTestsResults = try executor.sendResultsToMaster()
             await self.delegate.handleTestsResults(runner: self, executedTests: tests, pathToResults: pathToTestsResults)
             await self.runTests(in: executor) // continue running next tests
         } catch let err {
             self.log?.error("\(self.name): \(err)")
-            await executor.reset()
             await self.runTests(in: executor)
         }
     }
     
-    private func testExecutionFailureFlow(_ simError: TestExecutorError, executor: TestExecutor) async {
-        switch simError {
+    private func testExecutionFailureFlow(_ error: TestExecutorError, executor: TestExecutor) async {
+        switch error {
         case .noTestsForExecution:
             self.log?.message(verboseMsg: "\(self.name): No more tests for execution")
             await self.finish(executor)
         case .executionError(let description, let tests):
             self.log?.error(description)
             await self.delegate.handleTestsResults(runner: self, executedTests: tests, pathToResults: nil)
-            await self.runTests(in: executor) // continue running next tests
+            if await executor.executionFailureCounter.getValue() < 2 {
+                await self.runTests(in: executor) // continue running next tests
+            } else {
+                await self.finish(executor)
+            }
         case .testSkipped:
             self.log?.message(verboseMsg: "\(self.name): test skipped")
             await self.runTests(in: executor) // continue running next tests
@@ -205,18 +209,15 @@ extension Node {
         return xctestrun
     }
     
-    private func finish(_ executor: TestExecutor) async {
-        await withTaskGroup(of: Void.self) { group in
-            group.addTask {
-                let counter = await self.finishedExecutorsCounter.getValue()
-                await self.finishedExecutorsCounter.set(value: counter + 1)
-                await executor.reset()
-                self.log?.message(verboseMsg: "\(self.name) \(executor.type.rawValue): \"\(executor.UDID)\") finished")
-                if await self.finishedExecutorsCounter.getValue() == self.executors.count {
-                    self.log?.message(verboseMsg: "\(self.name): FINISHED")
-                    await self.delegate.runnerFinished()
-                }
-            }
+    private func finish(_ executor: TestExecutor, reset: Bool = true) async {
+        if reset {
+            await executor.reset()
+        }
+        self.log?.message(verboseMsg: "\(self.name) \(executor.type.rawValue): \"\(executor.UDID)\") finished")
+        let counter = await self.finishedExecutorsCounter.increment()
+        if counter == self.executors.count {
+            self.log?.message(verboseMsg: "\(self.name): FINISHED")
+            await self.delegate.runnerFinished()
         }
     }
     

@@ -10,7 +10,11 @@ class BaseExecutor {
     var xcodebuild: Xcodebuild!
 	let type: TestExecutorType
     let UDID: String
+    let runnerDeploymentPath: String
+    let masterDeploymentPath: String
+    let nodeName: String
     var log: Logging?
+    var executionFailureCounter: Atomic<Int>
 
     init(type: TestExecutorType,
 		 UDID: String,
@@ -18,6 +22,9 @@ class BaseExecutor {
          xctestrunPath: String,
          setUpScriptPath: String?,
          tearDownScriptPath: String?,
+         runnerDeploymentPath: String,
+         masterDeploymentPath: String,
+         nodeName: String,
          log: Logging?) async throws {
 
         self.log = log
@@ -37,23 +44,9 @@ class BaseExecutor {
                                   passphrase: self.config.passphrase)
         log?.message(verboseMsg: "\"\(UDID)\" connection established")
         self.xcodebuild = Xcodebuild(xcodePath: self.config.xcodePathSafe, shell: self.ssh)
-    }
-    
-    @discardableResult
-    func executeShellScript(path: String?, testNameEnv: String) throws -> Int32? {
-        if let scriptPath = path {
-            log?.message(verboseMsg: "\"\(self.UDID)\" executing \"\(scriptPath)\" script...")
-            let script = try String(contentsOfFile: scriptPath, encoding: .utf8)
-            let env = "export TEST_NAME='\(testNameEnv)'\n" +
-                      "export UDID='\(UDID)'\n" +
-                (self.config
-                    .environmentVariables?
-					.map { "export \($0.key)=\($0.value)" }
-                    .joined(separator: "\n") ?? "")
-            let scriptExecutionResult = try self.ssh.run(env + script)
-            log?.message(verboseMsg: "Device: \"\(self.UDID)\"\n\(scriptExecutionResult.output)")
-            return scriptExecutionResult.status
-        }
-        return nil
+        self.runnerDeploymentPath = runnerDeploymentPath
+        self.masterDeploymentPath = masterDeploymentPath
+        self.nodeName = nodeName
+        executionFailureCounter = .init(value: 0)
     }
 }

@@ -1,6 +1,5 @@
 import Foundation
 
-
 public class Controller {
     private let config: Config
     private let xctestrun: XCTestRun
@@ -115,9 +114,6 @@ extension Controller {
             let uuid = UUID().uuidString
             let unzipFolderPath = "\(self.config.outputDirectoryPath)/\(uuid)"
             
-            var fileSize = try? shell.run("du -sh '\(path)'")
-            log?.message(verboseMsg: "File size: " + (fileSize?.output ?? "File size Unknown"))
-            
             try shell.run("unzip -o -q \"\(path)\" -d \(unzipFolderPath)")
             var files = ""
             for limit in 1...3 where files.isEmpty {
@@ -134,9 +130,6 @@ extension Controller {
             _ = try? shell.run("mkdir \(self.config.outputDirectoryPath)/final")
             try shell.run("cp -R '\(xcresultAbsolutePath)' " +
                                "'\(self.config.outputDirectoryPath)/final/\(uuid).xcresult'")
-            
-            fileSize = try? shell.run("du -sh '\(self.config.outputDirectoryPath)/final/\(uuid).xcresult'")
-            log?.message(verboseMsg: "File size: " + (fileSize?.output ?? "File size Unknown"))
             
             await self.xcresultFiles.append(value: "\(self.config.outputDirectoryPath)/final/\(uuid).xcresult")
             let xcresult = XCResult(path: "\(self.config.outputDirectoryPath)/final/\(uuid).xcresult",
@@ -224,6 +217,7 @@ extension Controller: RunnerDelegate {
                 log?.message(verboseMsg: "Parse test results from \(runner.name)")
                 guard let pathToResults = pathToResults,
                       var xcresult = await self.getXCResult(path: pathToResults) else {
+                    log?.warning("Can't parse file:" + (pathToResults ?? "NO PATH TO .xcresultfile"))
                     await executedTests.asyncForEach {
                         await self.tests.update(test: $0, state: .unexecuted, duration: 0.0, message: "Was not executed")
                         self.log?.failed("\(runner.name): \($0) - Was not executed")
