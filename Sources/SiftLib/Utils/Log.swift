@@ -5,40 +5,57 @@ import Rainbow
 public var quiet = false
 public var verbose = false
 
-public enum Log {
-    public static func warning(before: String? = nil, _ msg: String) {
+public protocol Logging {
+    var prefix: String { get set }
+    func warning(before: String?, _ msg: String)
+    func error(before: String?, _ msg: String)
+    func message(before: String?, _ msg: String)
+    func message(before: String?, verboseMsg: String)
+    func success(before: String?, _ msg: String)
+    func failed(before: String?, _ msg: String)
+}
+
+public extension Logging {
+    func warning(before: String? = nil, _ msg: String) {
         if !quiet {
             let before = before ?? ""
-            print("\n" + before + " ⚠️  " + msg.yellow.bold + "\n")
+            print("\n" + before + " ⚠️  " + prefix + " " + msg.yellow.bold + "\n")
         }
     }
 
-    public static func error(before: String? = nil, _ msg: String) {
+    func error(before: String? = nil, _ msg: String) {
         let before = before ?? ""
-        print("\n" + before + " ⛔️ " + msg.red.bold + "\n")
+        print("\n" + before + " ⛔️ " + prefix + " " + msg.red.bold + "\n")
     }
 
-    public static func message(before: String? = nil, _ msg: String) {
+    func message(before: String? = nil, _ msg: String) {
         if !quiet {
-            print((before ?? "") + " • " + msg)
+            print((before ?? "") + " • " + prefix + " " + msg)
         }
     }
     
-    public static func message(before: String? = nil, verboseMsg: String) {
+    func message(before: String? = nil, verboseMsg: String) {
         if verbose && !quiet && !verboseMsg.isEmpty {
-            print((before ?? "\t") + " > " + verboseMsg.lightBlack.italic)
+            print((before ?? "\t") + " > " + prefix + " " + verboseMsg.lightBlack.italic)
         }
     }
 
-    public static func success(before: String? = nil, _ msg: String) {
+    func success(before: String? = nil, _ msg: String) {
         if !quiet {
-            print((before ?? "") + " ✅ " + msg.green.bold + "\n")
+            print((before ?? "") + " ✅ " + prefix + " " + msg.green.bold + "\n")
         }
     }
 
-    public static func failed(before: String? = nil, _ msg: String) {
+    func failed(before: String? = nil, _ msg: String) {
         if !quiet {
-            print((before ?? "") + " ❌ " + msg.red.bold + "\n")
+            print((before ?? "") + " ❌ " + prefix + " " + msg.red.bold + "\n")
         }
+    }
+}
+
+public struct Log: Logging {
+    public var prefix: String
+    public init(prefix: String = "") {
+        self.prefix = prefix
     }
 }

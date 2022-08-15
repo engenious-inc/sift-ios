@@ -6,7 +6,7 @@ public struct Config: Codable {
     public var outputDirectoryPath: String
     public var rerunFailedTest: Int
     public var testsBucket: Int
-    public var testsExecutionTimeout: Int
+    public var testsExecutionTimeout: Int?
     public var setUpScriptPath: String?
     public var tearDownScriptPath: String?
     public var nodes: [NodeConfig]

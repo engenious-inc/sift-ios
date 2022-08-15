@@ -1,100 +1,84 @@
 import Foundation
+import CollectionConcurrencyKit
 
 class Node {
     
     private let config: Config.NodeConfig
     private let outputDirectoryPath: String
-    private let testsExecutionTimeout: Int
+    private let testsExecutionTimeout: Int?
     private let setUpScriptPath: String?
     private let tearDownScriptPath: String?
     
     private var executors: [TestExecutor]
-    private let queue: Queue
-    private let serialQueue: Queue
     private var communication: Communication!
-    private var _finished: Bool = false
+    private let log: Logging?
+    private var finishedExecutorsCounter: Atomic<Int>
     
     let name: String
     weak var delegate: RunnerDelegate!
-    var finished: Bool {
-        get {
-            self.queue.sync(flags: .barrier) { self._finished }
-        }
-        set {
-            self.queue.async(flags: .barrier) { self._finished = newValue }
-        }
-    }
     
     init(config: Config.NodeConfig,
                 outputDirectoryPath: String,
-                testsExecutionTimeout: Int,
+                testsExecutionTimeout: Int?,
                 setUpScriptPath: String?,
                 tearDownScriptPath: String?,
-                delegate: RunnerDelegate) throws {
+                delegate: RunnerDelegate,
+                log: Logging?) throws {
+        self.log = log
         self.config = config
         self.outputDirectoryPath = outputDirectoryPath
         self.testsExecutionTimeout = testsExecutionTimeout
         self.setUpScriptPath = setUpScriptPath
         self.tearDownScriptPath = tearDownScriptPath
         self.executors = []
-        self.queue = .init(type: .concurrent, name: "io.engenious." + config.name + "." + config.host)
-        self.serialQueue = .init(type: .serial, name: "io.engenious." + config.name + "." + config.host + ".serial")
         self.name = config.name
         self.delegate = delegate
+        self.finishedExecutorsCounter = Atomic(value: 0)
+        
+        log?.message(verboseMsg: "\(self.name) Created")
     }
 }
 
 // MARK: - Runner Protocol implementation
 
 extension Node: Runner {
-    func start() {
-		self.queue.async { [unowned self] in
-            do {
-                communication = try SSHCommunication<SSH>(host: config.host,
-                                                               port: config.port,
-                                                           username: config.username,
-                                                           password: config.password,
-                                                         privateKey: config.privateKey,
-                                                          publicKey: config.publicKey,
-                                                         passphrase: config.passphrase,
-                                               runnerDeploymentPath: config.deploymentPath,
-                                               masterDeploymentPath: outputDirectoryPath,
-														   nodeName: config.name,
-											                   arch: config.arch)
-                try communication.getBuildOnRunner(buildPath: delegate.buildPath())
-                
-                let xctestrun = injectENVToXctestrun() // all env should be injected in to the .xctestrun file
-                let xctestrunPath = try communication.saveOnRunner(xctestrun: xctestrun) // save *.xctestrun file on Node side
-                
-                executors = createExecutors(xctestrunPath: xctestrunPath)
-                guard !executors.isEmpty else {
-                    self.delegate.runnerFinished(runner: self)
-                    return
-                }
-                
-                executors.forEach { executor in
-                    executor.ready { result in
-                        if result == false {
-                            // if simulator is not ready try to reset and run tests
-                            // if device is not ready (doesn't plugin) - return
-                            guard executor.type == .simulator else {
-								Log.message(verboseMsg: "\(self.name): FINISHED")
-								self.delegate.runnerFinished(runner: self)
-								return
-							}
-                            executor.reset { _ in
-                                runTests(in: executor)
-                            }
-                        } else {
-                            runTests(in: executor)
-                        }
-                    }
-                }
-            } catch let err {
-                Log.error("\(name): \(err)")
-                self.delegate.runnerFinished(runner: self)
+    
+    func start() async {
+        do {
+            communication = try SSHCommunication<SSH>(host: config.host,
+                                                           port: config.port,
+                                                       username: config.username,
+                                                       password: config.password,
+                                                     privateKey: config.privateKey,
+                                                      publicKey: config.publicKey,
+                                                     passphrase: config.passphrase,
+                                           runnerDeploymentPath: config.deploymentPath,
+                                           masterDeploymentPath: outputDirectoryPath,
+                                                       nodeName: config.name,
+                                                           arch: config.arch,
+                                                            log: log)
+            try communication.getBuildOnRunner(buildPath: await delegate.buildPath())
+            
+            let xctestrun = try await injectENVToXctestrun() // all env should be injected in to the .xctestrun file
+            let xctestrunPath = try communication.saveOnRunner(xctestrun: xctestrun) // save *.xctestrun file on Node side
+            
+            executors = await createExecutors(xctestrunPath: xctestrunPath)
+            guard !executors.isEmpty else {
+                await self.delegate.runnerFinished()
                 return
             }
+            
+            await executors.concurrentForEach { executor in
+                if await executor.ready() {
+                    await self.runTests(in: executor)
+                } else {
+                    await self.finish(executor, reset: false)
+                }
+            }
+        } catch let err {
+            self.log?.error("\(name): \(err)")
+            await self.delegate.runnerFinished()
+            return
         }
     }
 }
@@ -102,50 +86,63 @@ extension Node: Runner {
 //MARK: - Internal methods
 
 extension Node {
-    private func createExecutors(xctestrunPath: String) -> [TestExecutor] {
+    private func createExecutors(xctestrunPath: String) async -> [TestExecutor] {
         if let simulators = self.config.UDID.simulators, !simulators.isEmpty {
-            return simulators.compactMap {
+            return await simulators.asyncCompactMap {
                 do {
-					return try Simulator(type: .simulator,
+					return try await Simulator(type: .simulator,
 										 UDID: $0,
                                          config: self.config,
                                          xctestrunPath: xctestrunPath,
                                          setUpScriptPath: self.setUpScriptPath,
-                                         tearDownScriptPath: self.tearDownScriptPath)
+                                         tearDownScriptPath: self.tearDownScriptPath,
+                                         runnerDeploymentPath: config.deploymentPath,
+                                         masterDeploymentPath: outputDirectoryPath,
+                                         nodeName: config.name,
+                                         log: log)
                 } catch let err {
-                    Log.error("\(self.name): \(err)")
+                    self.log?.error("\(self.name): \(err)")
                     return nil
                 }
             }
         }
         
         if let devices = self.config.UDID.devices {
-            return devices.compactMap {
+            return await devices.asyncCompactMap {
                 do {
-					return try Device(type: .device,
+					return try await Device(type: .device,
 									  UDID: $0,
                                       config: self.config,
                                       xctestrunPath: xctestrunPath,
                                       setUpScriptPath: self.setUpScriptPath,
-                                      tearDownScriptPath: self.tearDownScriptPath)
+                                      tearDownScriptPath: self.tearDownScriptPath,
+                                      runnerDeploymentPath: config.deploymentPath,
+                                      masterDeploymentPath: outputDirectoryPath,
+                                      nodeName: config.name,
+                                      log: log)
                 } catch let err {
-                    Log.error("\(self.name): \(err)")
+                    self.log?.error("\(self.name): \(err)")
                     return nil
                 }
             }
+            
         }
 		
 		if let mac = self.config.UDID.mac {
-			return mac.compactMap {
+			return await mac.asyncCompactMap {
 				do {
-					return try Device(type: .macOS,
+					return try await Device(type: .macOS,
 									  UDID: $0,
 									  config: self.config,
 									  xctestrunPath: xctestrunPath,
 									  setUpScriptPath: self.setUpScriptPath,
-									  tearDownScriptPath: self.tearDownScriptPath)
+									  tearDownScriptPath: self.tearDownScriptPath,
+                                      runnerDeploymentPath: config.deploymentPath,
+                                      masterDeploymentPath: outputDirectoryPath,
+                                      nodeName: config.name,
+                                      log: log)
 				} catch let err {
-					Log.error("\(self.name): \(err)")
+                    self.log?.error("\(self.name): \(err)")
 					return nil
 				}
 			}
@@ -153,72 +150,74 @@ extension Node {
         return []
     }
     
-    private func runTests(in executor: TestExecutor) {
-        let testsForExecution = self.delegate.getTests() // request tests for execution
+    private func runTests(in executor: TestExecutor) async {
+        let testsForExecution = await self.delegate.getTests() // request tests for execution
         if testsForExecution.isEmpty {
-            self.finish(executor)
+            await self.finish(executor)
             return
         }
-        executor.run(tests: testsForExecution,
-                   timeout: self.testsExecutionTimeout,
-                completion: { [unowned self] (executor, result) in
-            /*
-             .success - doesn't mean that tests is passed, just means that tests was successfully executed
-             .failure - tests was not executed.
-            */
-            self.queue.async {
-                switch result {
-                case .success(let tests):
-                    self.testExecutionSuccessFlow(tests, executor: executor)
-                case .failure(let error):
-                    self.testExecutionFailureFlow(error, executor: executor)
-                }
-            }
-        })
+        let (executor, result) = await executor.run(tests: testsForExecution)
+        /*
+         .success - doesn't mean that tests is passed, just means that tests was successfully executed
+         .failure - tests was not executed.
+        */
+        switch result {
+        case .success(let tests):
+            await self.testExecutionSuccessFlow(tests, executor: executor)
+        case .failure(let error):
+            await self.testExecutionFailureFlow(error, executor: executor)
+        }
     }
     
-    private func testExecutionSuccessFlow(_ tests: [String], executor: TestExecutor) {
+    private func testExecutionSuccessFlow(_ tests: [String], executor: TestExecutor) async {
         do {
-            let pathToTestsResults = try self.communication.sendResultsToMaster(UDID: executor.UDID)
-            self.delegate.handleTestsResults(runner: self, executedTests: tests, pathToResults: pathToTestsResults)
-            self.runTests(in: executor) // continue running next tests
+            let pathToTestsResults = try executor.sendResultsToMaster()
+            await self.delegate.handleTestsResults(runner: self, executedTests: tests, pathToResults: pathToTestsResults)
+            await self.runTests(in: executor) // continue running next tests
         } catch let err {
-            Log.error("\(self.name): \(err)")
-            executor.reset { _ in
-                self.runTests(in: executor)
-            }
+            self.log?.error("\(self.name): \(err)")
+            await self.runTests(in: executor)
         }
     }
     
-    private func testExecutionFailureFlow(_ simError: TestExecutorError, executor: TestExecutor) {
-        switch simError {
+    private func testExecutionFailureFlow(_ error: TestExecutorError, executor: TestExecutor) async {
+        switch error {
         case .noTestsForExecution:
-            self.finish(executor)
+            self.log?.message(verboseMsg: "\(self.name): No more tests for execution")
+            await self.finish(executor)
         case .executionError(let description, let tests):
-            Log.error(description)
-            self.delegate.handleTestsResults(runner: self, executedTests: tests, pathToResults: nil)
-            self.runTests(in: executor) // continue running next tests
+            self.log?.error(description)
+            await self.delegate.handleTestsResults(runner: self, executedTests: tests, pathToResults: nil)
+            if await executor.executionFailureCounter.getValue() < 2 {
+                await self.runTests(in: executor) // continue running next tests
+            } else {
+                await self.finish(executor)
+            }
         case .testSkipped:
-            self.runTests(in: executor) // continue running next tests
+            self.log?.message(verboseMsg: "\(self.name): test skipped")
+            await self.runTests(in: executor) // continue running next tests
         }
     }
     
-    private func injectENVToXctestrun() -> XCTestRun {
-        var xctestrun = self.delegate.XCTestRun()
+    private func injectENVToXctestrun() async throws -> XCTestRun {
+        var xctestrun = try await self.delegate.XCTestRun()
+        self.log?.message(verboseMsg: "\(self.name): Injecting environment variables: \(self.config.environmentVariables ?? [:])")
         xctestrun.addEnvironmentVariables(self.config.environmentVariables)
+        if let testsExecutionTimeout = testsExecutionTimeout {
+            xctestrun.add(timeout: testsExecutionTimeout)
+        }
         return xctestrun
     }
     
-    private func finish(_ executor: TestExecutor) {
-        executor.reset(completion: nil)
-        self.serialQueue.async {
-			Log.message(verboseMsg: "\(self.name) \(executor.type.rawValue): \"\(executor.UDID)\") finished")
-            executor.finished = true
-            if (self.executors.filter { $0.finished == false }).count == 0 {
-                //self.killSimulators()
-                Log.message(verboseMsg: "\(self.name): FINISHED")
-                self.delegate.runnerFinished(runner: self)
-            }
+    private func finish(_ executor: TestExecutor, reset: Bool = true) async {
+        if reset {
+            await executor.reset()
+        }
+        self.log?.message(verboseMsg: "\(self.name) \(executor.type.rawValue): \"\(executor.UDID)\") finished")
+        let counter = await self.finishedExecutorsCounter.increment()
+        if counter == self.executors.count {
+            self.log?.message(verboseMsg: "\(self.name): FINISHED")
+            await self.delegate.runnerFinished()
         }
     }
     
@@ -226,7 +225,7 @@ extension Node {
         let simulators = self.executors.filter { $0.type == .simulator }
         guard !simulators.isEmpty else { return }
         
-        Log.message(verboseMsg: "\(self.name) kill simulator process...")
+        self.log?.message(verboseMsg: "\(self.name) kill simulator process...")
         guard let pid = self.getIdForProccess(name: "com.apple.CoreSimulator.CoreSimulatorService") else {
             return
         }

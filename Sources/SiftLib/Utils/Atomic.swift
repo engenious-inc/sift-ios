@@ -1,28 +1,36 @@
-//
-//  Atomic.swift
-//  SiftLib
-//
-//  Created by AP on 11/3/20.
-//
-
 import Foundation
 
-@propertyWrapper
-public struct Atomic<Value> {
-    private let queue: DispatchQueue
-    private var value: Value
-    
-    public init(wrappedValue: Value, queue: DispatchQueue) {
-        self.value = wrappedValue
-        self.queue = queue
+public actor Atomic<T: Sendable> {
+    private var _value: T
+    init(value: T) {
+        self._value = value
     }
     
-    public var wrappedValue: Value {
-        get {
-            return queue.sync(flags: .barrier) { value }
-        }
-        set {
-            queue.sync(flags: .barrier) { value = newValue }
-        }
+    func getValue() -> T {
+        return _value
+    }
+    
+    func set(value: T) {
+        _value = value
+    }
+}
+
+public extension Atomic where T == Array<String> {
+   
+    func get(element index: Int) -> T.Element {
+        _value[0]
+    }
+    
+    func append(value: T.Element) {
+        _value.append(value)
+    }
+}
+
+public extension Atomic where T == Int {
+   
+    @discardableResult
+    func increment() -> Int {
+        _value += 1
+        return _value
     }
 }

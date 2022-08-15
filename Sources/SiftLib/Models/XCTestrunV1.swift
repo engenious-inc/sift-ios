@@ -59,6 +59,10 @@ public struct XCTestRunV1: XCTestRun {
 			try? self.json[key]["EnvironmentVariables"].merge(with: JSON(values))
 		}
 	}
+    
+    public mutating func add(timeout: Int) {
+        // to do
+    }
 	
 	public func save(path: String) throws {
 		try (data() as NSData).write(toFile: path)

@@ -24,17 +24,23 @@ struct XCResult {
 
 extension XCResult {
     mutating func actionsInvocationRecord() throws -> ActionsInvocationRecord {
-        if let _actionsInvocationRecord = self._actionsInvocationRecord {
-            return _actionsInvocationRecord
+        var stringResult = try tool.get(format: .json, id: nil, xcresultPath: path)
+        for _ in 1...3 where stringResult.isEmpty {
+            stringResult = try tool.get(format: .json, id: nil, xcresultPath: path)
         }
-        let stringResult = try tool.get(format: .json, id: nil, xcresultPath: path)
+
         let jsonData = try data(from: stringResult)
-        self._actionsInvocationRecord = try JSONDecoder().decode(ActionsInvocationRecord.self, from: jsonData)
+        do {
+            self._actionsInvocationRecord = try JSONDecoder().decode(ActionsInvocationRecord.self, from: jsonData)
+        } catch {
+            Log().error(error.localizedDescription)
+            print(stringResult)
+        }
         return self._actionsInvocationRecord!
     }
     
     mutating func actionTestableSummary() throws -> [ActionTestableSummary] {
-        if let _actionTestableSummary = self._actionTestableSummary {
+        if let _actionTestableSummary = self._actionTestableSummary, !_actionTestableSummary.isEmpty {
             return _actionTestableSummary
         }
         self._actionTestableSummary = try self.actionsInvocationRecord().actions.compactMap { actionRecord throws -> ActionTestPlanRunSummaries? in
@@ -49,7 +55,7 @@ extension XCResult {
     }
     
     mutating func testsMetadata() throws -> [ActionTestMetadata] {
-        if let _testsMetadata = self._testsMetadata {
+        if let _testsMetadata = self._testsMetadata, !_testsMetadata.isEmpty {
             return _testsMetadata
         }
         self._testsMetadata = try actionTestableSummary().compactMap { actionTestableSummary -> [ActionTestMetadata]? in
@@ -97,17 +103,29 @@ extension XCResult {
         return self._reran ?? [:]
     }
     
-    func modelFrom<T: AnyObject>(reference: Reference) throws -> T where T: Decodable {
+    func modelFrom<T: AnyObject>(reference: Reference, iteration: Int = 0) throws -> T where T: Decodable {
+        guard iteration < 3 else {
+            throw NSError(domain: "XCResult parssing error - can't make model from referance: \(reference.id)", code: 1)
+        }
+        
         if reference.targetType?.getType() != T.self {
             throw NSError(domain: "Can't extract model from reference id: '\(reference.id)'. " +
                 "Type mismatch, expectet type: '\(String(describing: T.self))', " +
                 "actual type: '\(String(describing: reference.targetType?.getType()))'", code: 1, userInfo: nil)
         }
-
-        let summaryGetResult = try self.tool.get(format: .json,
-                                                 id: reference.id,
-                                                 xcresultPath: self.path)
-        let referenceData = try data(from: summaryGetResult)
-        return try JSONDecoder().decode(T.self, from: referenceData)
+        
+        guard let summaryGetResult = try? self.tool.get(format: .json, id: reference.id, xcresultPath: self.path) else {
+            return try modelFrom(reference: reference, iteration: iteration + 1)
+        }
+        
+        guard let referenceData = try? data(from: summaryGetResult) else {
+            return try modelFrom(reference: reference, iteration: iteration + 1)
+        }
+        
+        guard let model = try? JSONDecoder().decode(T.self, from: referenceData) else {
+            return try modelFrom(reference: reference, iteration: iteration + 1)
+        }
+        
+        return model
     }
 }

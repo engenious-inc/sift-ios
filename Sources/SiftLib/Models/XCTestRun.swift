@@ -9,6 +9,7 @@ public protocol XCTestRun: Codable {
 	var skipTestIdentifiers: [String: [String]] { get }
 	
 	mutating func addEnvironmentVariables(_ values: [String: String]?)
+    mutating func add(timeout: Int)
 	func save(path: String) throws
 	func data() throws -> Data
 }
