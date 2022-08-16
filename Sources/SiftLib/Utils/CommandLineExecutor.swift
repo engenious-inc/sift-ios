@@ -3,7 +3,7 @@ import Foundation
 enum CommandLineExecutor {
     
 	@discardableResult
-	static func launchProcess(command: String, arguments: [String], timeout: Double = 120.0) throws -> Result {
+    static func launchProcess(command: String, arguments: [String], timeout: Double = 300.0) throws -> Result {
 		let stdoutPipe = Pipe()
 		let stderrPipe = Pipe()
 		let runCommand = Process()
@@ -33,22 +33,19 @@ enum CommandLineExecutor {
             }
         }
 		
-		var processTimedOut = false
-		DispatchQueue.main.asyncAfter(deadline: .now() + timeout, execute: {
-			if runCommand.isRunning {
-				processTimedOut = true
-				runCommand.terminate()
-			}
-		})
+        let timeoutTask = Task {
+            try await Task.sleep(nanoseconds: UInt64(timeout) * 1_000_000_000)
+            runCommand.terminate()
+            throw NSError(domain: "Command terminated due to timeout: \(runCommand.launchPath ?? command)\(arguments.joined(separator: ""))", code: 1, userInfo: nil)
+		}
 		
         runCommand.launch()
         runCommand.waitUntilExit()
+        timeoutTask.cancel()
+        try stdoutPipe.fileHandleForReading.close()
+        try stderrPipe.fileHandleForReading.close()
         stdoutPipe.fileHandleForReading.readabilityHandler = nil
         stderrPipe.fileHandleForReading.readabilityHandler = nil
-        
-		if processTimedOut {
-            throw NSError(domain: "Command terminated due to timeout: \(runCommand.launchPath ?? command)\(arguments.joined(separator: ""))", code: 1, userInfo: nil)
-		}
 		
         return outputQueue.sync {
             let stdOutString = String(data: stdOutData, encoding: .utf8)
