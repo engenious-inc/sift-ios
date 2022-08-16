@@ -30,12 +30,7 @@ extension XCResult {
         }
 
         let jsonData = try data(from: stringResult)
-        do {
-            self._actionsInvocationRecord = try JSONDecoder().decode(ActionsInvocationRecord.self, from: jsonData)
-        } catch {
-            Log().error(error.localizedDescription)
-            print(stringResult)
-        }
+        self._actionsInvocationRecord = try JSONDecoder().decode(ActionsInvocationRecord.self, from: jsonData)
         return self._actionsInvocationRecord!
     }
     

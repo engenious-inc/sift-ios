@@ -226,6 +226,7 @@ extension Controller: RunnerDelegate {
                 }
                 
                 do {
+                    log?.message(verboseMsg: "\(runner.name) Parsing: \(xcresult.path)")
                     var testsMetadataBuff = try xcresult.testsMetadata()
                     for _ in 1...3 where testsMetadataBuff.isEmpty {
                         sleep(1)
@@ -265,6 +266,10 @@ extension Controller: RunnerDelegate {
                     }
                 } catch let err {
                     log?.error("\(err)")
+                    await executedTests.asyncForEach {
+                        await self.tests.update(test: $0, state: .unexecuted, duration: 0.0, message: "Was not executed")
+                        self.log?.failed("\(runner.name): \($0) - Was not executed")
+                    }
                 }
             }
         }

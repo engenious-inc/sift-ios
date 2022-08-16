@@ -5,7 +5,7 @@ public actor Run: ShellExecutor {
 	public let arch: Config.NodeConfig.Arch?
     private let timeout: Double
 	
-	public init(arch: Config.NodeConfig.Arch? = nil, timeout: Double = 180) {
+	public init(arch: Config.NodeConfig.Arch? = nil, timeout: Double = 300) {
 		self.arch = arch
         self.timeout = timeout
 	}

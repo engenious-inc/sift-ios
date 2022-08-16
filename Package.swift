@@ -9,7 +9,7 @@ let package = Package(
         .macOS(.v12)
     ],
     dependencies: [
-        .package(url: "https://github.com/apple/swift-argument-parser", from: "0.3.0"),
+        .package(url: "https://github.com/apple/swift-argument-parser", from: "1.0.0"),
         .package(url: "https://github.com/onevcat/Rainbow", from: "3.1.5"),
         .package(url: "https://github.com/jakeheis/Shout", from: "0.5.7"),
         .package(url: "https://github.com/SwiftyJSON/SwiftyJSON.git", from: "5.0.0"),
