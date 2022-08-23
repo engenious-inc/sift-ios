@@ -70,8 +70,11 @@ extension Simulator: TestExecutor {
         let commands = "/bin/sh -c '" +
             "export DEVELOPER_DIR=\(self.config.xcodePathSafe)/Contents/Developer\n" +
                        "xcrun simctl shutdown \(self.UDID)\n" +
+                       "sleep 5\n" +
                        "xcrun simctl erase \(self.UDID)\n" +
-                       "xcrun simctl boot \(self.UDID)'"
+                       "sleep 5\n" +
+                       "xcrun simctl boot \(self.UDID)'\n" +
+                       "sleep 5"
         
         do {
             try self.ssh.run(commands)
