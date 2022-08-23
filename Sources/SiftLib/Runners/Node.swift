@@ -210,15 +210,22 @@ extension Node {
     }
     
     private func finish(_ executor: TestExecutor, reset: Bool = true) async {
-        if reset {
-            await executor.reset()
-        }
         self.log?.message(verboseMsg: "\(self.name) \(executor.type.rawValue): \"\(executor.UDID)\") finished")
         let counter = await self.finishedExecutorsCounter.increment()
         if counter == self.executors.count {
             self.log?.message(verboseMsg: "\(self.name): FINISHED")
+            killSimulators()
+            await executors.concurrentForEach {
+                await $0.reset()
+            }
+            launchSimulator()
             await self.delegate.runnerFinished()
         }
+    }
+    
+    private func launchSimulator() {
+        log?.message(verboseMsg: "Launch: \(config.xcodePathSafe)/Contents/Developer/Applications/Simulator.app")
+        _ = try? self.communication.executeOnRunner(command: "open \(config.xcodePathSafe)/Contents/Developer/Applications/Simulator.app")
     }
     
     private func killSimulators() {
@@ -226,25 +233,16 @@ extension Node {
         guard !simulators.isEmpty else { return }
         
         self.log?.message(verboseMsg: "\(self.name) kill simulator process...")
-        guard let pid = self.getIdForProccess(name: "com.apple.CoreSimulator.CoreSimulatorService") else {
-            return
-        }
-        let prefixCommand = "export DEVELOPER_DIR=\(self.config.xcodePathSafe)/Contents/Developer\n"
-        let killCommands = prefixCommand + "kill -3 \(pid)"
-        let bootCommands = prefixCommand +
-            simulators
-            .map { return "xcrun simctl boot \($0.UDID)" }
-            .joined(separator: "\n")
-        sleep(5)
-        _ = try? self.communication.executeOnRunner(command: killCommands)
-        sleep(5)
-        _ = try? self.communication.executeOnRunner(command: bootCommands)
+        _ = try? self.communication.executeOnRunner(command: "osascript -e 'quit app \"Simulator\"'")
+        sleep(1)
+        let output = try? self.communication.executeOnRunner(command: "for p in $(pgrep -i simulator); do echo \"Terminating process: $p\"; kill -3 $p; done")
+        log?.message(verboseMsg: "\(self.name): \(output?.output ?? "")")
     }
 
-    private func getIdForProccess(name: String) -> Int? {
-        guard let result = try? self.communication.executeOnRunner(command: "ps axc -o pid -o command | grep -E '\(name)' | grep -Eoi -m 1 '[0-9]' | tr -d '\n'") else {
-            return nil
+    private func getPidForProccess(name: String) -> [Int] {
+        guard let result = try? self.communication.executeOnRunner(command: "pgrep -i \(name)") else {
+            return []
         }
-        return Int(result.output)
+        return result.output.components(separatedBy: "\n").compactMap { Int($0) }
     }
 }
