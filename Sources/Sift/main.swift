@@ -27,7 +27,10 @@ extension Sift {
         
         @Flag(name: [.short, .customLong("verbose")], help: "Verbose mode.")
         var verboseMode: Bool = false
-        
+
+        @Flag(name: [.short, .customLong("init")], help: "Init tests for orchesstrator.")
+        var initMode: Bool = false
+
         mutating func run() {
             verbose = verboseMode
             let log = Log()
@@ -56,6 +59,10 @@ extension Sift {
                 Sift.exit(withError: NSError(domain: "Can't post new tests to Orchestrator", code: 1))
             }
             
+            if initMode {
+                log.message("Tests posted tp orchestrator")
+                Sift.exit()
+            }
             //Get tests for execution
             guard let tests = orchestrator.get(testplan: testPlan, status: .enabled)?.tests else {
                 log.error("Error: can't get config for TestPlan: \(testPlan)")
