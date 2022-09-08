@@ -68,7 +68,8 @@ public class OrchestratorAPI {
     }
     
     public func post(tests: [String], platform: String = "IOS") -> Bool {
-        guard let url = URL(string: endpoint + path) else {
+        guard let url = URL(string: endpoint + path)?
+            .appending("platform", value: platform) else {
             log?.error("Can't resolve URL endpoint")
             return false
         }
