@@ -23,7 +23,7 @@ extension Sift {
         var testPlan: String = "default_ios_plan"
         
         @Option(name: .shortAndLong, help: "API endpoint.")
-        var endpoint: String
+        var endpoint: String = "https://api.orchestrator.engenious.io"
         
         @Flag(name: [.short, .customLong("verbose")], help: "Verbose mode.")
         var verboseMode: Bool = false
@@ -64,13 +64,13 @@ extension Sift {
                 Sift.exit()
             }
             //Get tests for execution
-            guard let tests = orchestrator.get(testplan: testPlan, status: .enabled)?.tests else {
-                log.error("Error: can't get config for TestPlan: \(testPlan)")
-                Sift.exit(withError: NSError(domain: "Error: can't get config for TestPlan: \(testPlan)", code: 1))
-            }
+//            guard let tests = orchestrator.get(testplan: testPlan, status: .enabled)?.tests else {
+//                log.error("Error: can't get config for TestPlan: \(testPlan)")
+//                Sift.exit(withError: NSError(domain: "Error: can't get config for TestPlan: \(testPlan)", code: 1))
+//            }
             
             do {
-                let testsController = try Controller(config: config, tests: tests, log: Log())
+                let testsController = try Controller(config: config, tests: config.getTests(), log: Log())
                 testsController.start()
                 dispatchMain()
             } catch let error {

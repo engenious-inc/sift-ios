@@ -13,9 +13,9 @@ public class OrchestratorAPI {
     private let session = URLSession.shared
     private let log: Logging?
     
-    private let path = "v1/sift"
-    private let pathRun = "v1/sift/run"
-    private let pathResult = "v1/sift/result"
+    private let path = "/v1/sift"
+    private let pathRun = "/v1/sift/run"
+    private let pathResult = "/v1/sift/result"
 
     public init(endpoint: String, token: String, log: Logging?) {
         self.endpoint = endpoint

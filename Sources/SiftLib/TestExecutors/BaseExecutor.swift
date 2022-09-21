@@ -39,9 +39,9 @@ class BaseExecutor {
         self.ssh = try SSH(host: config.host, port: config.port, arch: config.arch)
         try self.ssh.authenticate(username: self.config.username,
                                   password: self.config.password,
-                                  privateKey: self.config.privateKey,
-                                  publicKey: self.config.publicKey,
-                                  passphrase: self.config.passphrase)
+                                  privateKey: self.config.pathToCertificate,
+                                  publicKey: self.config.publicKey, // not implemented on backend
+                                  passphrase: self.config.passphrase) // not implemented on backend
         log?.message(verboseMsg: "\"\(UDID)\" connection established")
         self.xcodebuild = Xcodebuild(xcodePath: self.config.xcodePathSafe, shell: self.ssh)
         self.runnerDeploymentPath = runnerDeploymentPath
