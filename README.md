@@ -45,7 +45,6 @@
                     },
             "xcodePath": "/Applications/Xcode.app", // path to xcode
             "environmentVariables": ["env1": "value1"] // inject env if need, optional
-            "arch": "arm64" // optional: "i386", "x86_64" or "arm64" - for Apple M1 silicon
         }
     ]
 }
