@@ -12,6 +12,10 @@ public class OrchestratorAPI {
     private let token: String
     private let session = URLSession.shared
     private let log: Logging?
+    
+    private let path = "/v1/sift"
+        private let pathRun = "/v1/sift/run"
+        private let pathResult = "/v1/sift/result"
 
     public init(endpoint: String, token: String, log: Logging?) {
         self.endpoint = endpoint
@@ -21,7 +25,7 @@ public class OrchestratorAPI {
 
     public func get(testplan: String, status: Status, platform: String = "IOS") -> Config? {
         
-        guard let url = URL(string: endpoint + "/public")?
+        guard let url = URL(string: endpoint + path)?
             .appending("testplan", value: testplan)?
             .appending("status", value: status.rawValue.uppercased())?
             .appending("platform", value: platform) else {
@@ -64,8 +68,8 @@ public class OrchestratorAPI {
     }
     
     public func post(tests: [String], platform: String = "IOS") -> Bool {
-        guard let url = URL(string: endpoint + "/public") else {
-            log?.error("Can't resolve URL endpoint")
+        guard let url = URL(string: endpoint + path)?
+            .appending("platform", value: platform) else {
             return false
         }
 

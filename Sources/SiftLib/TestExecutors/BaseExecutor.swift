@@ -39,7 +39,10 @@ class BaseExecutor {
         self.ssh = try SSH(host: config.host, port: config.port, arch: config.arch)
         try self.ssh.authenticate(username: self.config.username,
                                   password: self.config.password,
-                                  privateKey: self.config.privateKey,
+                                  privateKey: self.config.pathToCertificate,
+                                  publicKey: self.config.publicKey, // not implemented on backend
+                                  passphrase: self.config.passphrase) // not implemented on backend
+                                  //privateKey: self.config.privateKey,
                                   publicKey: self.config.publicKey,
                                   passphrase: self.config.passphrase)
         log?.message(verboseMsg: "\"\(UDID)\" connection established")

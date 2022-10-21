@@ -49,7 +49,10 @@ extension Node: Runner {
                                                            port: config.port,
                                                        username: config.username,
                                                        password: config.password,
-                                                     privateKey: config.privateKey,
+                                                      privateKey: config.pathToCertificate,
+                                                                                            publicKey: config.publicKey, // not implemented on backend
+                                                                                                           passphrase: config.passphrase, // not implemented on backend
+                                                     //privateKey: config.privateKey,
                                                       publicKey: config.publicKey,
                                                      passphrase: config.passphrase,
                                            runnerDeploymentPath: config.deploymentPath,

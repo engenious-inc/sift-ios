@@ -10,7 +10,7 @@ public struct Config: Codable {
     public var setUpScriptPath: String?
     public var tearDownScriptPath: String?
     public var nodes: [NodeConfig]
-    public var tests: [String]?
+    public var tests: [Test]?
     
     public init(data: Data) throws {
         self = try JSONDecoder().decode(Config.self, from: data)
@@ -19,6 +19,10 @@ public struct Config: Codable {
     public init(path: String) throws {
         let json = try NSData(contentsOfFile: path) as Data
         try self.init(data: json)
+    }
+    
+    public func getTests() -> [String] {
+        return tests!.map { $0.testName }
     }
 }
 
@@ -29,6 +33,7 @@ extension Config {
         public var host: String
         public var port: Int32
         public var username: String
+        public var pathToCertificate: String? // match old api
         public var password: String?
         public var privateKey: String?
         public var publicKey: String?
@@ -45,6 +50,16 @@ extension Config {
 			case x86_64
 			case arm64
 		}
+    }
+}
+
+public struct Test: Codable {
+    public var testID: Int
+    public var testName: String
+
+    enum CodingKeys: String, CodingKey {
+        case testID = "testId"
+        case testName
     }
 }
 
