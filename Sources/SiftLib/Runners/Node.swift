@@ -53,8 +53,8 @@ extension Node: Runner {
                                                                                             publicKey: config.publicKey, // not implemented on backend
                                                                                                            passphrase: config.passphrase, // not implemented on backend
                                                      //privateKey: config.privateKey,
-                                                      publicKey: config.publicKey,
-                                                     passphrase: config.passphrase,
+                                                      //publicKey: config.publicKey,
+                                                     //passphrase: config.passphrase,
                                            runnerDeploymentPath: config.deploymentPath,
                                            masterDeploymentPath: outputDirectoryPath,
                                                        nodeName: config.name,

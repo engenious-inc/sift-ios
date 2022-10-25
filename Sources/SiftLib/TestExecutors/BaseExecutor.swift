@@ -43,8 +43,8 @@ class BaseExecutor {
                                   publicKey: self.config.publicKey, // not implemented on backend
                                   passphrase: self.config.passphrase) // not implemented on backend
                                   //privateKey: self.config.privateKey,
-                                  publicKey: self.config.publicKey,
-                                  passphrase: self.config.passphrase)
+                                  //publicKey: self.config.publicKey,
+                                  //passphrase: self.config.passphrase)
         log?.message(verboseMsg: "\"\(UDID)\" connection established")
         self.xcodebuild = Xcodebuild(xcodePath: self.config.xcodePathSafe, shell: self.ssh)
         self.runnerDeploymentPath = runnerDeploymentPath
