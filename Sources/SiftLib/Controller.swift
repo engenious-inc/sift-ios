@@ -212,66 +212,64 @@ extension Controller: RunnerDelegate {
     }
     
     public func handleTestsResults(runner: Runner, executedTests: [String], pathToResults: String?) async {
-        await withTaskGroup(of: Void.self) { group in
-            group.addTask { [self] in
-                log?.message(verboseMsg: "Parse test results from \(runner.name)")
-                guard let pathToResults = pathToResults,
-                      var xcresult = await self.getXCResult(path: pathToResults) else {
-                    log?.warning("Can't parse file:" + (pathToResults ?? "NO PATH TO .xcresultfile"))
-                    await executedTests.asyncForEach {
-                        await self.tests.update(test: $0, state: .unexecuted, duration: 0.0, message: "Was not executed")
-                        self.log?.failed("\(runner.name): \($0) - Was not executed")
-                    }
-                    return
-                }
-                
-                do {
-                    log?.message(verboseMsg: "\(runner.name) Parsing: \(xcresult.path)")
-                    var testsMetadataBuff = try xcresult.testsMetadata()
-                    for _ in 1...3 where testsMetadataBuff.isEmpty {
-                        sleep(1)
-                        testsMetadataBuff = try xcresult.testsMetadata()
-                    }
-                    let testsMetadata = testsMetadataBuff.reduce(into: [String: ActionTestMetadata]()) { dictionary, value in
-                            dictionary[value.identifier] = value
-                        }
-                    for executedTest in executedTests {
-                        let executedTest = executedTest.suffix(2) != "()" ? "\(executedTest)()" : executedTest
-                        guard let testMetaData = testsMetadata[executedTest] else {
-                            await self.tests.update(test: executedTest, state: .unexecuted, duration: 0.0, message: "Was not executed")
-                            self.log?.failed("\(runner.name): \(executedTest) - Was not executed")
-                            continue
-                        }
-                        if testMetaData.testStatus == "Success" {
-                            await self.tests.update(test: executedTest, state: .pass, duration: testMetaData.duration ?? 0.0)
-                            self.log?.success("\(runner.name): \(executedTest) " +
-                                              "- \(testMetaData.testStatus): \(String(format: "%.3f", testMetaData.duration ?? 0)) sec.")
-                        } else {
-                            let summary: ActionTestSummary = try xcresult.modelFrom(reference: testMetaData.summaryRef!)
-                            var message = summary.failureSummaries.compactMap { $0.message }.joined(separator: " ")
-                            if message.isEmpty {
-                                message = summary.allChildActivitySummaries()
-                                    .filter{$0.activityType == "com.apple.dt.xctest.activity-type.testAssertionFailure"}
-                                    .map{ $0.title }
-                                    .joined(separator: "\n")
-                            }
-                            await self.tests.update(test: executedTest,
-                                                    state: .failed,
-                                                    duration: testMetaData.duration ?? 0.0,
-                                                    message: message)
-                            self.log?.failed("\(runner.name): \(executedTest) " +
-                                             "- \(testMetaData.testStatus): \(String(format: "%.3f", testMetaData.duration ?? 0)) sec.")
-                            self.log?.message(verboseMsg: "\(runner.name): \(executedTest) - \(testMetaData.testStatus):\n\t\t- \(message)")
-                        }
-                    }
-                } catch let err {
-                    log?.error("\(err)")
-                    await executedTests.asyncForEach {
-                        await self.tests.update(test: $0, state: .unexecuted, duration: 0.0, message: "Was not executed")
-                        self.log?.failed("\(runner.name): \($0) - Was not executed")
-                    }
-                }
-            }
+        Task { [self] in
+			log?.message(verboseMsg: "Parse test results from \(runner.name)")
+			guard let pathToResults = pathToResults,
+				  var xcresult = await self.getXCResult(path: pathToResults) else {
+				log?.warning("Can't parse file:" + (pathToResults ?? "NO PATH TO .xcresultfile"))
+				await executedTests.asyncForEach {
+					await self.tests.update(test: $0, state: .unexecuted, duration: 0.0, message: "Was not executed")
+					self.log?.failed("\(runner.name): \($0) - Was not executed")
+				}
+				return
+			}
+			
+			do {
+				log?.message(verboseMsg: "\(runner.name) Parsing: \(xcresult.path)")
+				var testsMetadataBuff = try xcresult.testsMetadata()
+				for _ in 1...3 where testsMetadataBuff.isEmpty {
+					sleep(1)
+					testsMetadataBuff = try xcresult.testsMetadata()
+				}
+				let testsMetadata = testsMetadataBuff.reduce(into: [String: ActionTestMetadata]()) { dictionary, value in
+						dictionary[value.identifier] = value
+					}
+				for executedTest in executedTests {
+					let executedTest = executedTest.suffix(2) != "()" ? "\(executedTest)()" : executedTest
+					guard let testMetaData = testsMetadata[executedTest] else {
+						await self.tests.update(test: executedTest, state: .unexecuted, duration: 0.0, message: "Was not executed")
+						self.log?.failed("\(runner.name): \(executedTest) - Was not executed")
+						continue
+					}
+					if testMetaData.testStatus == "Success" {
+						await self.tests.update(test: executedTest, state: .pass, duration: testMetaData.duration ?? 0.0)
+						self.log?.success("\(runner.name): \(executedTest) " +
+										  "- \(testMetaData.testStatus): \(String(format: "%.3f", testMetaData.duration ?? 0)) sec.")
+					} else {
+						let summary: ActionTestSummary = try xcresult.modelFrom(reference: testMetaData.summaryRef!)
+						var message = summary.failureSummaries.compactMap { $0.message }.joined(separator: " ")
+						if message.isEmpty {
+							message = summary.allChildActivitySummaries()
+								.filter{$0.activityType == "com.apple.dt.xctest.activity-type.testAssertionFailure"}
+								.map{ $0.title }
+								.joined(separator: "\n")
+						}
+						await self.tests.update(test: executedTest,
+												state: .failed,
+												duration: testMetaData.duration ?? 0.0,
+												message: message)
+						self.log?.failed("\(runner.name): \(executedTest) " +
+										 "- \(testMetaData.testStatus): \(String(format: "%.3f", testMetaData.duration ?? 0)) sec.")
+						self.log?.message(verboseMsg: "\(runner.name): \(executedTest) - \(testMetaData.testStatus):\n\t\t- \(message)")
+					}
+				}
+			} catch let err {
+				log?.error("\(err)")
+				await executedTests.asyncForEach {
+					await self.tests.update(test: $0, state: .unexecuted, duration: 0.0, message: "Was not executed")
+					self.log?.failed("\(runner.name): \($0) - Was not executed")
+				}
+			}
         }
     }
     
