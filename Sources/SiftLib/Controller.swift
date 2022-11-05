@@ -240,7 +240,7 @@ extension Controller: RunnerDelegate {
                         guard let testMetaData = testsMetadata[executedTest] else {
                             await self.tests.update(test: executedTest, state: .unexecuted, duration: 0.0, message: "Was not executed")
                             self.log?.failed("\(runner.name): \(executedTest) - Was not executed")
-                            return
+                            continue
                         }
                         if testMetaData.testStatus == "Success" {
                             await self.tests.update(test: executedTest, state: .pass, duration: testMetaData.duration ?? 0.0)

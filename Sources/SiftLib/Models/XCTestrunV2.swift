@@ -143,6 +143,15 @@ extension XCTestRunV2 {
                 return nil
 			}
 			
+			if let DYLD_LIBRARY_PATH = testingEnvironmentVariables?["DYLD_LIBRARY_PATH"] {
+				if DYLD_LIBRARY_PATH.contains("MacOSX.platform") {
+					return "MacOSX"
+				} else if DYLD_LIBRARY_PATH.contains("iPhoneSimulator.platform") {
+					return "iPhoneSimulator"
+				}
+				return nil
+			}
+			
 			if let DYLD_INSERT_LIBRARIES = testingEnvironmentVariables?["DYLD_INSERT_LIBRARIES"] {
 				return DYLD_INSERT_LIBRARIES.contains("iPhoneOS.platform") ? "iPhoneOS" : nil
 			}

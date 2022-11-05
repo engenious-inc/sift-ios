@@ -218,7 +218,9 @@ extension Node {
             await executors.concurrentForEach {
                 await $0.reset()
             }
-            launchSimulator()
+			if executor.type == .simulator {
+				launchSimulator()
+			}
             await self.delegate.runnerFinished()
         }
     }

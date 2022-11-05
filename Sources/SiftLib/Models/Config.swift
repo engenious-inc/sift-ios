@@ -18,7 +18,15 @@ public struct Config: Codable {
     
     public init(path: String) throws {
         let json = try NSData(contentsOfFile: path) as Data
-        try self.init(data: json)
+		let jsonString = json.string(encoding: .utf8)
+		let parsedJsonData = jsonString?.matches(regex: "\\$\\{[a-zA-Z0-9_\\-\\.]+\\}")
+			.map { String($0.dropFirst(2).dropLast()) }
+			.reduce(into: jsonString ?? "") { result, element in
+				if let env = ProcessInfo().environment[element] {
+					result = result?.replacingOccurrences(of: "${\(element)}", with: env)
+				}
+			}?.data(using: .utf8)
+        try self.init(data: parsedJsonData ?? json)
     }
 }
 
