@@ -59,17 +59,17 @@ extension Node: Runner {
                                                             log: log)
             try communication.getBuildOnRunner(buildPath: await delegate.buildPath())
             
-            let xctestrun = try await injectENVToXctestrun() // all env should be injected in to the .xctestrun file
+            let xctestrun = try injectENVToXctestrun() // all env should be injected in to the .xctestrun file
             let xctestrunPath = try communication.saveOnRunner(xctestrun: xctestrun) // save *.xctestrun file on Node side
             
-            executors = await createExecutors(xctestrunPath: xctestrunPath)
+            executors = createExecutors(xctestrunPath: xctestrunPath)
             guard !executors.isEmpty else {
                 await self.delegate.runnerFinished()
                 return
             }
             
             await executors.concurrentForEach { executor in
-                if await executor.ready() {
+                if executor.ready() {
                     await self.runTests(in: executor)
                 } else {
                     await self.finish(executor, reset: false)
@@ -86,11 +86,11 @@ extension Node: Runner {
 //MARK: - Internal methods
 
 extension Node {
-    private func createExecutors(xctestrunPath: String) async -> [TestExecutor] {
+    private func createExecutors(xctestrunPath: String) -> [TestExecutor] {
         if let simulators = self.config.UDID.simulators, !simulators.isEmpty {
-            return await simulators.asyncCompactMap {
+            return simulators.compactMap {
                 do {
-					return try await Simulator(type: .simulator,
+					return try Simulator(type: .simulator,
 										 UDID: $0,
                                          config: self.config,
                                          xctestrunPath: xctestrunPath,
@@ -108,9 +108,9 @@ extension Node {
         }
         
         if let devices = self.config.UDID.devices {
-            return await devices.asyncCompactMap {
+            return devices.compactMap {
                 do {
-					return try await Device(type: .device,
+					return try Device(type: .device,
 									  UDID: $0,
                                       config: self.config,
                                       xctestrunPath: xctestrunPath,
@@ -129,9 +129,9 @@ extension Node {
         }
 		
 		if let mac = self.config.UDID.mac {
-			return await mac.asyncCompactMap {
+			return mac.compactMap {
 				do {
-					return try await Device(type: .macOS,
+					return try Device(type: .macOS,
 									  UDID: $0,
 									  config: self.config,
 									  xctestrunPath: xctestrunPath,
@@ -172,7 +172,7 @@ extension Node {
     private func testExecutionSuccessFlow(_ tests: [String], executor: TestExecutor) async {
         do {
             let pathToTestsResults = try executor.sendResultsToMaster()
-            await self.delegate.handleTestsResults(runner: self, executedTests: tests, pathToResults: pathToTestsResults)
+			self.delegate.handleTestsResults(runner: self, executedTests: tests, pathToResults: pathToTestsResults)
             await self.runTests(in: executor) // continue running next tests
         } catch let err {
             self.log?.error("\(self.name): \(err)")
@@ -187,7 +187,7 @@ extension Node {
             await self.finish(executor)
         case .executionError(let description, let tests):
             self.log?.error(description)
-            await self.delegate.handleTestsResults(runner: self, executedTests: tests, pathToResults: nil)
+			self.delegate.handleTestsResults(runner: self, executedTests: tests, pathToResults: nil)
             if await executor.executionFailureCounter.getValue() < 2 {
                 await self.runTests(in: executor) // continue running next tests
             } else {
@@ -199,8 +199,8 @@ extension Node {
         }
     }
     
-    private func injectENVToXctestrun() async throws -> XCTestRun {
-        var xctestrun = try await self.delegate.XCTestRun()
+    private func injectENVToXctestrun() throws -> XCTestRun {
+        var xctestrun = try self.delegate.XCTestRun()
         self.log?.message(verboseMsg: "\(self.name): Injecting environment variables: \(self.config.environmentVariables ?? [:])")
         xctestrun.addEnvironmentVariables(self.config.environmentVariables)
         if let testsExecutionTimeout = testsExecutionTimeout {
@@ -215,8 +215,8 @@ extension Node {
         if counter == self.executors.count {
             self.log?.message(verboseMsg: "\(self.name): FINISHED")
             killSimulators()
-            await executors.concurrentForEach {
-                await $0.reset()
+			executors.forEach {
+				$0.reset()
             }
 			if executor.type == .simulator {
 				launchSimulator()

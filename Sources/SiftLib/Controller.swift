@@ -211,8 +211,8 @@ extension Controller: RunnerDelegate {
         await self.checkout()
     }
     
-    public func handleTestsResults(runner: Runner, executedTests: [String], pathToResults: String?) async {
-        Task { [self] in
+    public func handleTestsResults(runner: Runner, executedTests: [String], pathToResults: String?) {
+        Task {
 			log?.message(verboseMsg: "Parse test results from \(runner.name)")
 			guard let pathToResults = pathToResults,
 				  var xcresult = await self.getXCResult(path: pathToResults) else {
@@ -273,7 +273,7 @@ extension Controller: RunnerDelegate {
         }
     }
     
-    public func XCTestRun() async throws -> XCTestRun {
+    public func XCTestRun() throws -> XCTestRun {
         return try XCTestRunFactory.create(path: config.xctestrunPath, log: nil)
     }
     
