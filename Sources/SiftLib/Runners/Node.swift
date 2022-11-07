@@ -47,14 +47,11 @@ extension Node: Runner {
         do {
             communication = try SSHCommunication<SSH>(host: config.host,
                                                            port: config.port,
-                                                       username: config.username,
-                                                       password: config.password,
-                                                      privateKey: config.pathToCertificate,
-                                                                                            publicKey: config.publicKey, // not implemented on backend
-                                                                                                           passphrase: config.passphrase, // not implemented on backend
-                                                     //privateKey: config.privateKey,
-                                                      //publicKey: config.publicKey,
-                                                     //passphrase: config.passphrase,
+                                                      username: config.authorization.data.username,
+                                                      password: config.authorization.data.password,
+                                                      privateKey: config.authorization.data.privateKey,
+                                                      publicKey: config.authorization.data.publicKey, // not implemented on backend
+                                                      passphrase: config.authorization.data.passphrase,
                                            runnerDeploymentPath: config.deploymentPath,
                                            masterDeploymentPath: outputDirectoryPath,
                                                        nodeName: config.name,
@@ -93,8 +90,8 @@ extension Node {
         if let simulators = self.config.UDID.simulators, !simulators.isEmpty {
             return await simulators.asyncCompactMap {
                 do {
-					return try await Simulator(type: .simulator,
-										 UDID: $0,
+                    return try await Simulator(type: .simulator,
+                                         UDID: $0,
                                          config: self.config,
                                          xctestrunPath: xctestrunPath,
                                          setUpScriptPath: self.setUpScriptPath,
@@ -113,8 +110,8 @@ extension Node {
         if let devices = self.config.UDID.devices {
             return await devices.asyncCompactMap {
                 do {
-					return try await Device(type: .device,
-									  UDID: $0,
+                    return try await Device(type: .device,
+                                      UDID: $0,
                                       config: self.config,
                                       xctestrunPath: xctestrunPath,
                                       setUpScriptPath: self.setUpScriptPath,
@@ -130,26 +127,26 @@ extension Node {
             }
             
         }
-		
-		if let mac = self.config.UDID.mac {
-			return await mac.asyncCompactMap {
-				do {
-					return try await Device(type: .macOS,
-									  UDID: $0,
-									  config: self.config,
-									  xctestrunPath: xctestrunPath,
-									  setUpScriptPath: self.setUpScriptPath,
-									  tearDownScriptPath: self.tearDownScriptPath,
+        
+        if let mac = self.config.UDID.mac {
+            return await mac.asyncCompactMap {
+                do {
+                    return try await Device(type: .macOS,
+                                      UDID: $0,
+                                      config: self.config,
+                                      xctestrunPath: xctestrunPath,
+                                      setUpScriptPath: self.setUpScriptPath,
+                                      tearDownScriptPath: self.tearDownScriptPath,
                                       runnerDeploymentPath: config.deploymentPath,
                                       masterDeploymentPath: outputDirectoryPath,
                                       nodeName: config.name,
                                       log: log)
-				} catch let err {
+                } catch let err {
                     self.log?.error("\(self.name): \(err)")
-					return nil
-				}
-			}
-		}
+                    return nil
+                }
+            }
+        }
         return []
     }
     

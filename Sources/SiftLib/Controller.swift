@@ -12,55 +12,113 @@ public class Controller {
     public private(set) var bundleTests: [String]
     private let log: Logging?
     private var finishedRunnersCounter: Atomic<Int>
-
+    
+    private var testRunID: Int?
+    private var orchestrator: OrchestratorAPI?
+    
     public init(config: Config, tests: [String]? = nil, log: Logging?) throws {
         self.log = log
         self.config = config
         let xctestrun = try XCTestRunFactory.create(path: config.xctestrunPath, log: log)
-		self.xctestrun = xctestrun
+        self.xctestrun = xctestrun
         self.bundleTests = self.xctestrun.testBundleExecPaths.flatMap { bundle -> [String] in
             let moduleName = bundle.path.components(separatedBy: "/").last ?? bundle.target
             do {
-				let listOfTests: [String] = try TestsDump().dump(path: bundle.path, moduleName: moduleName)
+                let listOfTests: [String] = try TestsDump().dump(path: bundle.path, moduleName: moduleName)
                 log?.message("\(moduleName): \(listOfTests.count) tests")
                 return listOfTests
             } catch {
                 log?.warning("Target: \(moduleName) - tests not found")
                 return []
             }
-		}
+        }
 
-		if !xctestrun.onlyTestIdentifiers.isEmpty {
+        if !xctestrun.onlyTestIdentifiers.isEmpty {
             log?.message(verboseMsg: "xctestrun.onlyTestIdentifiers:\n" + xctestrun.onlyTestIdentifiers.description)
-			// remove tests which not included in xctestrun.onlyTestIdentifiers
-			self.bundleTests.removeAll {
-				var bundleTestComponents = $0.components(separatedBy: "/")
+            // remove tests which not included in xctestrun.onlyTestIdentifiers
+            self.bundleTests.removeAll {
+                var bundleTestComponents = $0.components(separatedBy: "/")
                 let moduleName = bundleTestComponents.removeFirst().replacingOccurrences(of: " ", with: "_")
-				guard let moduleTest = xctestrun.onlyTestIdentifiers[moduleName], !moduleTest.isEmpty else { return false }
-				return moduleTest.first {
-					let isOnlyTestIdentifierContainsInBundleTests = $0.components(separatedBy: "/").enumerated().allSatisfy {
-						$0.element == bundleTestComponents[$0.offset].replacingOccurrences(of: "()", with: "")
-					}
-					return isOnlyTestIdentifierContainsInBundleTests
-				} == nil
-			}
-		}
-		
-		if !xctestrun.skipTestIdentifiers.isEmpty {
+                guard let moduleTest = xctestrun.onlyTestIdentifiers[moduleName], !moduleTest.isEmpty else { return false }
+                return moduleTest.first {
+                    let isOnlyTestIdentifierContainsInBundleTests = $0.components(separatedBy: "/").enumerated().allSatisfy {
+                        $0.element == bundleTestComponents[$0.offset].replacingOccurrences(of: "()", with: "")
+                    }
+                    return isOnlyTestIdentifierContainsInBundleTests
+                } == nil
+            }
+        }
+        
+        if !xctestrun.skipTestIdentifiers.isEmpty {
             log?.message(verboseMsg: "xctestrun.skipTestIdentifiers:\n" + xctestrun.skipTestIdentifiers.description)
-			// remove tests which included in xctestrun.skipTestIdentifiers
-			self.bundleTests.removeAll {
-				var bundleTestComponents = $0.components(separatedBy: "/")
+            // remove tests which included in xctestrun.skipTestIdentifiers
+            self.bundleTests.removeAll {
+                var bundleTestComponents = $0.components(separatedBy: "/")
                 let moduleName = bundleTestComponents.removeFirst().replacingOccurrences(of: " ", with: "_")
-				return xctestrun.skipTestIdentifiers[moduleName]?.first {
-					let isSkipTestIdentifiersContainsInBundleTests = $0.components(separatedBy: "/").enumerated().allSatisfy {
-						$0.element == bundleTestComponents[$0.offset].replacingOccurrences(of: "()", with: "")
-					}
-					return isSkipTestIdentifiersContainsInBundleTests
-				} != nil
-			}
-		}
-		
+                return xctestrun.skipTestIdentifiers[moduleName]?.first {
+                    let isSkipTestIdentifiersContainsInBundleTests = $0.components(separatedBy: "/").enumerated().allSatisfy {
+                        $0.element == bundleTestComponents[$0.offset].replacingOccurrences(of: "()", with: "")
+                    }
+                    return isSkipTestIdentifiersContainsInBundleTests
+                } != nil
+            }
+        }
+        
+        self.tests = TestCases(tests: (tests != nil && !tests!.isEmpty ? tests! : bundleTests).shuffled(),
+                               rerunLimit: config.rerunFailedTest)
+        self.xcresultFiles = Atomic(value: [])
+        self.finishedRunnersCounter = Atomic(value: 0)
+    }
+
+    public init(config: Config, tests: [String]? = nil, log: Logging?, orchestrator: OrchestratorAPI) throws {
+        self.orchestrator = orchestrator
+        self.log = log
+        self.config = config
+        let xctestrun = try XCTestRunFactory.create(path: config.xctestrunPath, log: log)
+        self.xctestrun = xctestrun
+        self.bundleTests = self.xctestrun.testBundleExecPaths.flatMap { bundle -> [String] in
+            let moduleName = bundle.path.components(separatedBy: "/").last ?? bundle.target
+            do {
+                let listOfTests: [String] = try TestsDump().dump(path: bundle.path, moduleName: moduleName)
+                log?.message("\(moduleName): \(listOfTests.count) tests")
+                return listOfTests
+            } catch {
+                log?.warning("Target: \(moduleName) - tests not found")
+                return []
+            }
+        }
+
+        if !xctestrun.onlyTestIdentifiers.isEmpty {
+            log?.message(verboseMsg: "xctestrun.onlyTestIdentifiers:\n" + xctestrun.onlyTestIdentifiers.description)
+            // remove tests which not included in xctestrun.onlyTestIdentifiers
+            self.bundleTests.removeAll {
+                var bundleTestComponents = $0.components(separatedBy: "/")
+                let moduleName = bundleTestComponents.removeFirst().replacingOccurrences(of: " ", with: "_")
+                guard let moduleTest = xctestrun.onlyTestIdentifiers[moduleName], !moduleTest.isEmpty else { return false }
+                return moduleTest.first {
+                    let isOnlyTestIdentifierContainsInBundleTests = $0.components(separatedBy: "/").enumerated().allSatisfy {
+                        $0.element == bundleTestComponents[$0.offset].replacingOccurrences(of: "()", with: "")
+                    }
+                    return isOnlyTestIdentifierContainsInBundleTests
+                } == nil
+            }
+        }
+        
+        if !xctestrun.skipTestIdentifiers.isEmpty {
+            log?.message(verboseMsg: "xctestrun.skipTestIdentifiers:\n" + xctestrun.skipTestIdentifiers.description)
+            // remove tests which included in xctestrun.skipTestIdentifiers
+            self.bundleTests.removeAll {
+                var bundleTestComponents = $0.components(separatedBy: "/")
+                let moduleName = bundleTestComponents.removeFirst().replacingOccurrences(of: " ", with: "_")
+                return xctestrun.skipTestIdentifiers[moduleName]?.first {
+                    let isSkipTestIdentifiersContainsInBundleTests = $0.components(separatedBy: "/").enumerated().allSatisfy {
+                        $0.element == bundleTestComponents[$0.offset].replacingOccurrences(of: "()", with: "")
+                    }
+                    return isSkipTestIdentifiersContainsInBundleTests
+                } != nil
+            }
+        }
+        
         self.tests = TestCases(tests: (tests != nil && !tests!.isEmpty ? tests! : bundleTests).shuffled(),
                                rerunLimit: config.rerunFailedTest)
         self.xcresultFiles = Atomic(value: [])
@@ -92,11 +150,11 @@ public class Controller {
 extension Controller {
     private func zipBuild() throws -> String {
         let filesToZip: [String] = self.xctestrun.dependentProductPaths.compactMap { (path) -> String? in
-			var path = path
-			if path.contains("-Runner.app") {
-				path = path.components(separatedBy: "-Runner.app").dropLast().joined() + "-Runner.app"
-			}
-			return path.replacingOccurrences(of: self.xctestrun.testRootPath + "/", with: "")
+            var path = path
+            if path.contains("-Runner.app") {
+                path = path.components(separatedBy: "-Runner.app").dropLast().joined() + "-Runner.app"
+            }
+            return path.replacingOccurrences(of: self.xctestrun.testRootPath + "/", with: "")
         }
         //filesToZip.append(config.xctestrunPath.replacingOccurrences(of: self.xctestrun.testRootPath + "/", with: ""))
         log?.message(verboseMsg: "Start zip dependent files: \n\t\t- " + filesToZip.joined(separator: "\n\t\t- "))
@@ -166,10 +224,10 @@ extension Controller {
                 
                 _ = try? ("Total Tests: \(await self.tests.count)\n" +
                           "Passed: \(await self.tests.passed.count) tests\n" +
-				"Failed: \(failed.count) tests")
-					.write(toFile: "\(self.config.outputDirectoryPath)/final/final_result.txt", atomically: true, encoding: .utf8)
-				
-				quiet = false
+                "Failed: \(failed.count) tests")
+                    .write(toFile: "\(self.config.outputDirectoryPath)/final/final_result.txt", atomically: true, encoding: .utf8)
+                
+                quiet = false
                 print()
                 log?.message("####################################\n")
                 log?.message("Total Tests: \(await self.tests.count)")
@@ -205,9 +263,51 @@ extension Controller {
 
 //MARK: - TestsRunnerDelegate implementation
 extension Controller: RunnerDelegate {
+    public func formResults(runIndex: Int) async -> OrchestratorTestResults {
+        let results = await self.tests.cases.map {
+            OrchestratorTestResults.TestResult(testId: ($0.value.id ?? config.getTestId(testName: $0.key)) ?? 0,
+                                               result: $0.value.resultFormatted(),
+                                               errorMessage: $0.value.message)
+        }
+        return OrchestratorTestResults(runIndex: runIndex, testResults: results)
+    }
+    
     public func runnerFinished() async {
         let counter = await finishedRunnersCounter.getValue()
         await finishedRunnersCounter.set(value: counter + 1)
+
+        if let orchestrator = self.orchestrator {
+            let testRun = orchestrator.postRun()
+
+            guard let runIndex = testRun?.runIndex else {
+                log?.error("Run ID was not found")
+                return
+            }
+            log?.message("Creating test run for orchestrator ...")
+
+            if await orchestrator.postResults(testResults: formResults(runIndex: runIndex)) {
+                log?.message("Results posted successfully!")
+            } else {
+                log?.error("Faild to post results.")
+            }
+
+            var snapshots: [String] = []
+//                    for test in await self.tests.failed {
+//                        if let screenshotID = test.screenshotID {
+//                            let extractedPng = extractImage(xcresultPath: mergedResultsPath, testName: test.name, screenshotID: screenshotID)
+//                            snapshots.append(extractedPng)
+//                        }
+//                    }
+            
+            if !snapshots.isEmpty {
+                if orchestrator.postImages(runIndex: runIndex, fileNames: snapshots) {
+                    log?.message("Screenshots posted successfully!")
+                } else {
+                    log?.error("Faild to post screenshots.")
+                }
+            }
+        }
+        
         await self.checkout()
     }
     

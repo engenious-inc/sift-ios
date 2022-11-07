@@ -24,32 +24,50 @@ public struct Config: Codable {
     public func getTests() -> [String] {
         return tests!.map { $0.testName }
     }
+    
+    public func getTestId(testName: String) -> Int? {
+        return self.tests?.first(where: {$0.testName == testName} )?.testID
+    }
 }
 
 extension Config {
     public struct NodeConfig: Codable {
-        public var id: Int
+        public var id: Int?
         public var name: String
         public var host: String
         public var port: Int32
+        public var deploymentPath: String
+        public var UDID: UDID
+        public var xcodePath: String
+        public var authorization: Authorization
+        public var xcodePathSafe: String { xcodePath.replacingOccurrences(of: " ", with: "\\ ") }
+        public var environmentVariables: [String: String]?
+        public var arch: Arch?
+        
+        public enum Arch: String, Codable {
+            case i386
+            case x86_64
+            case arm64
+        }
+    }
+}
+
+// MARK: - Authorization
+extension Config.NodeConfig {
+    public struct Authorization: Codable {
+        public var type: String?
+        public var data: DataClass
+    }
+}
+
+// MARK: - DataClass
+extension Config.NodeConfig.Authorization {
+    public struct DataClass: Codable {
         public var username: String
-        public var pathToCertificate: String? // match old api
         public var password: String?
         public var privateKey: String?
         public var publicKey: String?
         public var passphrase: String?
-        public var deploymentPath: String
-        public var UDID: UDID
-		private var xcodePath: String
-		public var xcodePathSafe: String { xcodePath.replacingOccurrences(of: " ", with: "\\ ") }
-        public var environmentVariables: [String: String]?
-		public var arch: Arch?
-		
-		public enum Arch: String, Codable {
-			case i386
-			case x86_64
-			case arm64
-		}
     }
 }
 
@@ -67,6 +85,6 @@ extension Config.NodeConfig {
     public struct UDID: Codable {
         public var simulators: [String]?
         public var devices: [String]?
-		public var mac: [String]?
+        public var mac: [String]?
     }
 }
