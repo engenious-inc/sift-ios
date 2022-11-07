@@ -36,16 +36,18 @@
             "name": "Node-1",
             "host": "172.22.22.12",
             "port": 22,
-            "username": "node-1",
-            "password": "password",
             "deploymentPath": "path where all necessary stuff will be stored on the node",
             "UDID": {
                         "devices": ["devices udid, can be null"],
                         "simulators": ["simulators udid, can be null"]
                     },
             "xcodePath": "/Applications/Xcode.app", // path to xcode
-            "environmentVariables": ["env1": "value1"] // inject env if need, optional
-            "arch": "arm64" // optional: "i386", "x86_64" or "arm64" - for Apple M1 silicon
+            "authorization": {
+            "data": {
+              "username": "nodeUsername",
+              "password": "nodePassword"
+            }
+          }
         }
     ]
 }
