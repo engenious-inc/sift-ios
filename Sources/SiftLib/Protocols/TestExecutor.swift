@@ -88,7 +88,7 @@ extension TestExecutor {
             return nil
         }
         log?.message(verboseMsg: "\(self.nodeName): Test results: \(xcresult)")
-        let masterPath = "\(self.masterDeploymentPath)/\(UDID).zip"
+		let masterPath = "\(self.masterDeploymentPath)/\(UDID)_\(Int.random(in: 1...99999)).zip"
         try self.ssh.run("cd '\(resultsFolderPath)'\n" + "zip -r -X -q -0 './\(UDID).zip' './\(xcresult)'")
         try self.ssh.downloadFile(remotePath: "\(resultsFolderPath)/\(UDID).zip", localPath: "\(masterPath)")
         _ = try? self.ssh.run("rm -r \(resultsFolderPath)")

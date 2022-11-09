@@ -12,7 +12,6 @@ class Node {
     private var executors: [TestExecutor]
     private var communication: Communication!
     private let log: Logging?
-    private var finishedExecutorsCounter: Atomic<Int>
     
     let name: String
     weak var delegate: RunnerDelegate!
@@ -33,7 +32,6 @@ class Node {
         self.executors = []
         self.name = config.name
         self.delegate = delegate
-        self.finishedExecutorsCounter = Atomic(value: 0)
         
         log?.message(verboseMsg: "\(self.name) Created")
     }
@@ -64,20 +62,17 @@ extension Node: Runner {
             
             executors = createExecutors(xctestrunPath: xctestrunPath)
             guard !executors.isEmpty else {
-                await self.delegate.runnerFinished()
                 return
             }
             
             await executors.concurrentForEach { executor in
                 if executor.ready() {
                     await self.runTests(in: executor)
-                } else {
-                    await self.finish(executor, reset: false)
                 }
             }
+			self.finish()
         } catch let err {
             self.log?.error("\(name): \(err)")
-            await self.delegate.runnerFinished()
             return
         }
     }
@@ -153,7 +148,6 @@ extension Node {
     private func runTests(in executor: TestExecutor) async {
         let testsForExecution = await self.delegate.getTests() // request tests for execution
         if testsForExecution.isEmpty {
-            await self.finish(executor)
             return
         }
         let (executor, result) = await executor.run(tests: testsForExecution)
@@ -184,14 +178,11 @@ extension Node {
         switch error {
         case .noTestsForExecution:
             self.log?.message(verboseMsg: "\(self.name): No more tests for execution")
-            await self.finish(executor)
         case .executionError(let description, let tests):
             self.log?.error(description)
 			self.delegate.handleTestsResults(runner: self, executedTests: tests, pathToResults: nil)
             if await executor.executionFailureCounter.getValue() < 2 {
                 await self.runTests(in: executor) // continue running next tests
-            } else {
-                await self.finish(executor)
             }
         case .testSkipped:
             self.log?.message(verboseMsg: "\(self.name): test skipped")
@@ -209,20 +200,18 @@ extension Node {
         return xctestrun
     }
     
-    private func finish(_ executor: TestExecutor, reset: Bool = true) async {
-        self.log?.message(verboseMsg: "\(self.name) \(executor.type.rawValue): \"\(executor.UDID)\") finished")
-        let counter = await self.finishedExecutorsCounter.increment()
-        if counter == self.executors.count {
-            self.log?.message(verboseMsg: "\(self.name): FINISHED")
-            killSimulators()
+    private func finish(reset: Bool = true) {
+		executors.forEach { executor in
+			self.log?.message(verboseMsg: "\(self.name) \(executor.type.rawValue): \"\(executor.UDID)\") finished")
+			self.log?.message(verboseMsg: "\(self.name): FINISHED")
+			killSimulators()
 			executors.forEach {
 				$0.reset()
-            }
+			}
 			if executor.type == .simulator {
 				launchSimulator()
 			}
-            await self.delegate.runnerFinished()
-        }
+		}
     }
     
     private func launchSimulator() {
