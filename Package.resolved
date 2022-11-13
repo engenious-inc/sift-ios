@@ -28,15 +28,6 @@
       }
     },
     {
-      "identity" : "shout",
-      "kind" : "remoteSourceControl",
-      "location" : "https://github.com/jakeheis/Shout",
-      "state" : {
-        "revision" : "fbcae228bc68d5e2352f0790079995d27b610dbc",
-        "version" : "0.5.7"
-      }
-    },
-    {
       "identity" : "swift-argument-parser",
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/apple/swift-argument-parser",
