@@ -89,6 +89,9 @@ extension Sift {
 
 		@Option(name: [.customShort("t"), .customLong("timeout")], help: "Timeout in seconds.")
 		var timeout: Int?
+		
+		@Flag(name: [.customLong("disable-tests-results-processing")], help: "Experimental! - Disable processing of test results in real time - might reduce execution time.")
+		var isTestProcessingDisabled: Bool = false
 
         mutating func run() {
             verbose = verboseMode
@@ -108,7 +111,7 @@ extension Sift {
 
             do {
                 let config = try Config(path: path)
-                let testsController = try Controller(config: config, tests: tests, log: Log())
+				let testsController = try Controller(config: config, tests: tests, isTestProcessingDisabled: isTestProcessingDisabled, log: Log())
 				mainTask = testsController.start()
 				if let timeout = timeout {
 					Task {

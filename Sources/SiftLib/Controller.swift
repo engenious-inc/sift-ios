@@ -12,8 +12,10 @@ public class Controller {
     public private(set) var bundleTests: [String]
     private let log: Logging?
 	private var tasks: [Task<(), Never>] = []
+	private let isTestProcessingDisabled: Bool
 
-    public init(config: Config, tests: [String]? = nil, log: Logging?) throws {
+	public init(config: Config, tests: [String]? = nil, isTestProcessingDisabled: Bool = false, log: Logging?) throws {
+		self.isTestProcessingDisabled = isTestProcessingDisabled
         self.log = log
         self.config = config
         let xctestrun = try XCTestRunFactory.create(path: config.xctestrunPath, log: log)
@@ -155,11 +157,20 @@ extension Controller {
 		let JSONReportUrl = URL(fileURLWithPath: "\(self.config.outputDirectoryPath)/final/final_result.json")
 		do {
 			log?.message(verboseMsg: "Merging results...")
-			if let mergeXCResult = try? self.xcresulttool.merge(inputPaths: await self.xcresultFiles.getValue(), outputPath: mergedResultsPath), mergeXCResult.status != 0 {
+			var xcresultFiles = await self.xcresultFiles.getValue()
+			if xcresultFiles.isEmpty {
+				xcresultFiles = try unzipTestsResults()
+			}
+			if let mergeXCResult = try? self.xcresulttool.merge(inputPaths: xcresultFiles, outputPath: mergedResultsPath), mergeXCResult.status != 0 {
 				log?.message(verboseMsg: mergeXCResult.output)
 			} else {
 				log?.message(verboseMsg: "All results is merged: \(mergedResultsPath)")
 			}
+			
+			guard self.isTestProcessingDisabled == false else {
+				exit(0)
+			}
+			
 			let duration = Date.timeIntervalSinceReferenceDate - self.time
 			try await JSONReport.generate(tests: self.tests, duration: duration).write(to: JSONReportUrl)
 			try await JUnit().generate(tests: self.tests).write(to: JUnitReportUrl, atomically: true, encoding: .utf8)
@@ -203,11 +214,44 @@ extension Controller {
 			exit(1)
 		}
     }
+	
+	private func unzipTestsResults() throws -> [String] {
+		let shell = Run()
+		let files = try shell.run("ls -1 '\(self.config.outputDirectoryPath)' | grep -E '.\\.zip$'").output
+			.components(separatedBy: "\n")
+			.compactMap {
+				return $0.isEmpty ? nil : "\(self.config.outputDirectoryPath)/\($0)"
+			}
+		try shell.run("mkdir \(self.config.outputDirectoryPath)/final")
+		return files.flatMap { zipFile in
+			let uuid = UUID().uuidString
+			let unzipFolderPath = "\(self.config.outputDirectoryPath)/\(uuid)"
+			_ = try? shell.run("unzip -o -q \"\(zipFile)\" -d \(unzipFolderPath)")
+			_ = try? shell.run("rm -r '\(zipFile)'")
+			let xcresultFilesString = (try? shell.run("ls -1 \(unzipFolderPath) | grep -E '.\\.xcresult$'").output) ?? ""
+			let xcresultFiles =  xcresultFilesString.components(separatedBy: "\n").filter { $0.contains(".xcresult") }
+			
+			let results = xcresultFiles.map { xcresultFileName in
+				let xcresultAbsoluteTempPath = "\(unzipFolderPath)/\(xcresultFileName)"
+				let xcresultAbsoluteFinalPath = "\(self.config.outputDirectoryPath)/final/\(uuid).xcresult"
+				_ = try? shell.run("cp -R '\(xcresultAbsoluteTempPath)' " +
+							  "'\(xcresultAbsoluteFinalPath)'")
+				return xcresultAbsoluteFinalPath
+			}
+			
+			_ = try? shell.run("rm -r '\(unzipFolderPath)'")
+			
+			return results
+		}
+	}
 }
 
 //MARK: - TestsRunnerDelegate implementation
 extension Controller: RunnerDelegate {    
     public func handleTestsResults(runner: Runner, executedTests: [String], pathToResults: String?) {
+		guard isTestProcessingDisabled == false else {
+			return
+		}
 		let task = Task {
 			log?.message(verboseMsg: "Parse test results from \(runner.name)")
 			guard let pathToResults = pathToResults,
