@@ -48,6 +48,7 @@
               "password": "nodePassword"
             }
           }
+            "environmentVariables": ["env1": "value1"] // inject env if need, optional
         }
     ]
 }
