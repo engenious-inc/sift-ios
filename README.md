@@ -1,8 +1,8 @@
 
-## Sift - Unit and UI Tests Parallelization
+## Sift - Unit and UI Tests Parallelization for native XCTest and XCUITest
 
 ### Requirements:
- - `Xcode 12`
+ - `Xcode 13`
 
 ### Install:
 - `sh make.sh`
@@ -11,13 +11,16 @@
 - `swift build -c release`
 
 ### How to use:
-
-### With Orchestrator:
-- `sift orchestartor --token 'your token' --test-plan 'name of testplan'`
+https://sift.engenious.io/
 
 ### Standalone:
 - `sift run --config config.json` run tests
 - `sift list --config config.json` print all tests from the bundle
+
+### With Orchestrator:
+- `sift orchestartor --token 'your token' --test-plan 'name of testplan'`
+
+
 
 ### Exapmle of **config.json** file (JSON format):
 
