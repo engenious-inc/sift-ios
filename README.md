@@ -33,21 +33,18 @@
     "nodes": // array of nodes (mac)
     [
         {
+            "id": 0,
             "name": "Node-1",
             "host": "172.22.22.12",
             "port": 22,
+            "username": "nodeUsername",
+            "password": "nodePassword"
             "deploymentPath": "path where all necessary stuff will be stored on the node",
             "UDID": {
                         "devices": ["devices udid, can be null"],
                         "simulators": ["simulators udid, can be null"]
                     },
             "xcodePath": "/Applications/Xcode.app", // path to xcode
-            "authorization": {
-            "data": {
-              "username": "nodeUsername",
-              "password": "nodePassword"
-            }
-          }
             "environmentVariables": ["env1": "value1"] // inject env if need, optional
         }
     ]
