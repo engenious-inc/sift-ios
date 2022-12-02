@@ -11,9 +11,9 @@ class Simulator: BaseExecutor {
                   runnerDeploymentPath: String,
                   masterDeploymentPath: String,
                   nodeName: String,
-                  log: Logging?) async throws {
+                  log: Logging?) throws {
 
-        try await super.init(type: type,
+        try super.init(type: type,
                        UDID: UDID,
                        config: config,
                        xctestrunPath: xctestrunPath,
@@ -30,7 +30,7 @@ class Simulator: BaseExecutor {
 
 extension Simulator: TestExecutor {
 
-    func ready() async -> Bool {
+    func ready() -> Bool {
         self.log?.message(verboseMsg: "check Simulator \"\(self.UDID)\"")
         let prefixCommand = "export DEVELOPER_DIR=\(self.config.xcodePathSafe)/Contents/Developer\n"
         var command = [prefixCommand,
@@ -55,7 +55,7 @@ extension Simulator: TestExecutor {
         
         if output.contains(UDID + "\n") {
             self.log?.message("Simulator \"\(UDID)\" is not booted.")
-            await reset()
+			reset()
             return true
         }
         
@@ -65,7 +65,7 @@ extension Simulator: TestExecutor {
     }
     
     @discardableResult
-    func reset() async -> Result<TestExecutor, Error> {
+    func reset() -> Result<TestExecutor, Error> {
         self.log?.message(verboseMsg: "Simulator: \"\(self.UDID)\") reseting...")
         let commands = "/bin/sh -c '" +
             "export DEVELOPER_DIR=\(self.config.xcodePathSafe)/Contents/Developer\n" +

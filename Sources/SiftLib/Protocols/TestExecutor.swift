@@ -14,10 +14,10 @@ public protocol TestExecutor: AnyObject {
     var nodeName: String { get }
     var executionFailureCounter: Atomic<Int> { get }
     
-    func ready() async -> Bool
+    func ready() -> Bool
     func run(tests: [String]) async -> (TestExecutor, Result<[String], TestExecutorError>)
     @discardableResult
-    func reset() async -> Result<TestExecutor, Error>
+    func reset() -> Result<TestExecutor, Error>
     func deleteApp(bundleId: String) async
 }
 
@@ -48,14 +48,14 @@ extension TestExecutor {
             }
             self.log?.message(verboseMsg: "\"\(self.UDID)\" " +
             "xcodebuild:\n \(result.output)")
-            await self.reset()
+			self.reset()
             return (self, .failure(.executionError(description: "\(type): \(self.UDID) " +
             "- status \(result.status) " +
             "\(result.status == 143 ? "- timeout" : "")",
             tests: tests)))
         } catch let err {
             await executionFailureCounter.increment()
-            await self.reset()
+			self.reset()
             return (self, .failure(.executionError(description: "\(type): \(self.UDID) - \(err)", tests: tests)))
         }
     }
@@ -88,7 +88,7 @@ extension TestExecutor {
             return nil
         }
         log?.message(verboseMsg: "\(self.nodeName): Test results: \(xcresult)")
-        let masterPath = "\(self.masterDeploymentPath)/\(UDID).zip"
+		let masterPath = "\(self.masterDeploymentPath)/\(UUID().uuidString).zip"
         try self.ssh.run("cd '\(resultsFolderPath)'\n" + "zip -r -X -q -0 './\(UDID).zip' './\(xcresult)'")
         try self.ssh.downloadFile(remotePath: "\(resultsFolderPath)/\(UDID).zip", localPath: "\(masterPath)")
         _ = try? self.ssh.run("rm -r \(resultsFolderPath)")
