@@ -295,17 +295,8 @@ extension Controller: RunnerDelegate {
 					self.log?.success("\(runner.name): \(executedTest) " +
 									  "- \(testMetaData.testStatus): \(String(format: "%.3f", testMetaData.duration ?? 0)) sec.")
 				} else {
-					guard let summaryRef = testMetaData.summaryRef, let summary: ActionTestSummary = try? xcresult.modelFrom(reference: summaryRef) else {
-						log?.error("handleTestsResults: Can't make a model from \(testMetaData.summaryRef?.id ?? "Unknown")")
-						return
-					}
-					var message = summary.failureSummaries.compactMap { $0.message }.joined(separator: " ")
-					if message.isEmpty {
-						message = summary.allChildActivitySummaries()
-							.filter{$0.activityType == "com.apple.dt.xctest.activity-type.testAssertionFailure"}
-							.map{ $0.title }
-							.joined(separator: "\n")
-					}
+                    let actionsInvocationRecord = try? xcresult.actionsInvocationRecord()
+                    let message = actionsInvocationRecord?.issues.testFailureSummaries.map { $0.message }.joined(separator: "\n") ?? ""
 					await self.tests.update(test: executedTest,
 											state: .failed,
 											duration: testMetaData.duration ?? 0.0,
