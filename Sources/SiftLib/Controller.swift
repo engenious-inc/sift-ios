@@ -174,7 +174,8 @@ extension Controller {
 			let duration = Date.timeIntervalSinceReferenceDate - self.time
 			try await JSONReport.generate(tests: self.tests, duration: duration).write(to: JSONReportUrl)
 			try await JUnit().generate(tests: self.tests).write(to: JUnitReportUrl, atomically: true, encoding: .utf8)
-			let reran = await self.tests.reran
+			let rerun = await self.tests.rerun
+            let skipped = await self.tests.skipped
 			let failed = await self.tests.failed
 			let unexecuted = await self.tests.unexecuted
 			
@@ -188,14 +189,18 @@ extension Controller {
 			log?.message("####################################\n")
 			log?.message("Total Tests: \(await self.tests.count)")
 			log?.message("Passed: \(await self.tests.passed.count) tests")
-			log?.message("Reran: \(reran.count) tests")
-			reran.forEach {
+			log?.message("Rerun: \(rerun.count) tests")
+			rerun.forEach {
 				log?.warning(before: "\t", "\($0.name) - \($0.launchCounter - 1) times")
 			}
-			log?.message("Failed: \(failed.count) tests")
-			failed.forEach {
-				log?.failed(before: "\t", $0.name)
+			log?.message("Skipped: \(skipped.count) tests")
+			skipped.forEach {
+				log?.skipped(before: "\t", $0.name)
 			}
+            log?.message("Failed: \(failed.count) tests")
+            failed.forEach {
+                log?.failed(before: "\t", $0.name)
+            }
 			log?.message("Unexecuted: \(unexecuted.count) tests")
 			unexecuted.forEach {
 				log?.failed(before: "\t", $0.name)
@@ -294,7 +299,13 @@ extension Controller: RunnerDelegate {
 					await self.tests.update(test: executedTest, state: .pass, duration: testMetaData.duration ?? 0.0)
 					self.log?.success("\(runner.name): \(executedTest) " +
 									  "- \(testMetaData.testStatus): \(String(format: "%.3f", testMetaData.duration ?? 0)) sec.")
-				} else {
+                } else if testMetaData.testStatus == "Skipped" {
+                    await self.tests.update(test: executedTest,
+                                            state: .skipped,
+                                            duration: testMetaData.duration ?? 0.0)
+                    self.log?.skipped("\(runner.name): \(executedTest) " +
+                                      "- \(testMetaData.testStatus): \(String(format: "%.3f", testMetaData.duration ?? 0)) sec.")
+                } else {
                     let actionsInvocationRecord = try? xcresult.actionsInvocationRecord()
                     let message = actionsInvocationRecord?.issues.testFailureSummaries.map { $0.message }.joined(separator: "\n") ?? ""
 					await self.tests.update(test: executedTest,
