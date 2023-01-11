@@ -25,7 +25,7 @@ class BaseExecutor {
          runnerDeploymentPath: String,
          masterDeploymentPath: String,
          nodeName: String,
-         log: Logging?) async throws {
+         log: Logging?) throws {
 
         self.log = log
         self.log?.prefix = config.name

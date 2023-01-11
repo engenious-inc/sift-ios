@@ -11,9 +11,9 @@ class Device: BaseExecutor {
                   runnerDeploymentPath: String,
                   masterDeploymentPath: String,
                   nodeName: String,
-                  log: Logging?) async throws {
+                  log: Logging?) throws {
 
-		try await super.init(type: type,
+		try super.init(type: type,
 					   UDID: UDID,
 					   config: config,
 					   xctestrunPath: xctestrunPath,
@@ -30,13 +30,13 @@ class Device: BaseExecutor {
 
 extension Device: TestExecutor {
 
-    func ready() async -> Bool{
+    func ready() -> Bool{
         self.log?.message(verboseMsg: "Device: \"\(self.UDID)\" ready")
         return true
     }
     
     @discardableResult
-    func reset() async -> Result<TestExecutor, Error> {
+    func reset() -> Result<TestExecutor, Error> {
         return .success(self)
     }
 

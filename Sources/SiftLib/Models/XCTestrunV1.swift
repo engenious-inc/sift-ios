@@ -26,12 +26,11 @@ public struct XCTestRunV1: XCTestRun {
 	public var testBundleExecPaths: [(target: String, path: String)] {
 		var results: [(target: String, path: String)] = []
 		for name in modules() {
-			guard let testBundlePath = testBundlePath(for: name),
+			guard let testBundleExecPath = testBundleExecPath(for: name),
 				  let target = self.json[name]["ProductModuleName"].string else {
 				continue
 			}
-			let bundleName = testBundlePath.components(separatedBy: "/").last?.components(separatedBy: ".").first ?? target
-			results.append((target: target, path: "\(testBundlePath)/\(bundleName)"))
+			results.append((target: target, path: testBundleExecPath))
 		}
 		return results
 	}
@@ -124,6 +123,12 @@ public struct XCTestRunV1: XCTestRun {
                              .last else {
             return nil
         }
+		
+		if self.json[module]["TestingEnvironmentVariables"]["DYLD_LIBRARY_PATH"].string?.contains("MacOS") ?? false ||
+			self.json[module]["TestingEnvironmentVariables"]["DYLD_FRAMEWORK_PATH"].string?.contains("MacOS") ?? false {
+			
+			return "\(testBundlePath)/Contents/MacOS/\(fileName)"
+		}
         return "\(testBundlePath)/\(fileName)"
     }
     

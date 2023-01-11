@@ -3,8 +3,7 @@ import Foundation
 import SiftLib
 
 setbuf(__stdoutp, nil)
-
-let semaphore = DispatchSemaphore(value: 0)
+var mainTask: Task<(), Never>? = nil
 
 struct Sift: ParsableCommand {
     static var configuration = CommandConfiguration(
@@ -90,7 +89,7 @@ extension Sift {
         @Option(name: [.customShort("c"), .customLong("config")], help: "Path to the JSON config file.")
         var path: String
 
-        @Option(name: [.short, .customLong("tests-path")], help: "Path to a text file with list of tests for execution.")
+        @Option(name: [.customShort("p"), .customLong("tests-path")], help: "Path to a text file with list of tests for execution.")
         var testsPath: String?
 
         @Option(name: [.short, .customLong("only-testing")], help: "Test for execution.")
@@ -98,6 +97,12 @@ extension Sift {
 
         @Flag(name: [.short, .customLong("verbose")], help: "Verbose mode.")
         var verboseMode: Bool = false
+
+		@Option(name: [.customShort("t"), .customLong("timeout")], help: "Timeout in seconds.")
+		var timeout: Int?
+		
+		@Flag(name: [.customLong("disable-tests-results-processing")], help: "Experimental! - Disable processing of test results in real time - might reduce execution time.")
+		var isTestProcessingDisabled: Bool = false
 
         mutating func run() {
             verbose = verboseMode
@@ -117,9 +122,16 @@ extension Sift {
 
             do {
                 let config = try Config(path: path)
-                let testsController = try Controller(config: config, tests: tests, log: Log())
-                testsController.start()
-                dispatchMain()
+				let testsController = try Controller(config: config, tests: tests, isTestProcessingDisabled: isTestProcessingDisabled, log: Log())
+				mainTask = testsController.start()
+				if let timeout = timeout {
+					Task {
+						try? await Task.sleep(nanoseconds: UInt64(timeout) * 1_000_000_000)
+						log.error("Timeout")
+						mainTask?.cancel()
+						Sift.exit()
+					}
+				}
             } catch let error {
                 log.error("\(error)")
                 Sift.exit(withError: error)
@@ -148,3 +160,4 @@ extension Sift {
 }
 
 Sift.main()
+RunLoop.main.run()
