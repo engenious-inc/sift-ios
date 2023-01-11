@@ -7,7 +7,6 @@ public struct TestCase: Hashable, Sendable {
         case unexecuted
     }
     
-    public var id: Int? = nil
     public var name: String
     public var state: State
     public var launchCounter: Int
@@ -16,18 +15,6 @@ public struct TestCase: Hashable, Sendable {
     
     public func hash(into hasher: inout Hasher) {
         hasher.combine(name)
-    }
-    
-    public func resultFormatted() -> String {
-        switch state {
-        case .pass:
-            if launchCounter > 1 { return "passed_after_rerun" }
-            return "passed"
-        case .failed:
-            return "failed"
-        case .unexecuted:
-            return "skipped"
-        }
     }
 }
 

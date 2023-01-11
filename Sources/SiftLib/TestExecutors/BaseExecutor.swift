@@ -8,7 +8,7 @@ class BaseExecutor {
     let setUpScriptPath: String?
     let tearDownScriptPath: String?
     var xcodebuild: Xcodebuild!
-    let type: TestExecutorType
+	let type: TestExecutorType
     let UDID: String
     let runnerDeploymentPath: String
     let masterDeploymentPath: String
@@ -17,7 +17,7 @@ class BaseExecutor {
     var executionFailureCounter: Atomic<Int>
 
     init(type: TestExecutorType,
-         UDID: String,
+		 UDID: String,
          config: Config.NodeConfig,
          xctestrunPath: String,
          setUpScriptPath: String?,
@@ -29,7 +29,7 @@ class BaseExecutor {
 
         self.log = log
         self.log?.prefix = config.name
-        self.type = type
+		self.type = type
         self.UDID = UDID
         self.config = config
         self.xctestrunPath = xctestrunPath
@@ -37,11 +37,11 @@ class BaseExecutor {
         self.tearDownScriptPath = tearDownScriptPath
         log?.message(verboseMsg: "Open connection to: \"\(UDID)\"")
         self.ssh = try SSH(host: config.host, port: config.port, arch: config.arch)
-        try self.ssh.authenticate(username: self.config.authorization.data.username,
-                                  password: self.config.authorization.data.password,
-                                  privateKey: self.config.authorization.data.privateKey,
-                                  publicKey: self.config.authorization.data.publicKey, // not implemented on backend
-                                  passphrase: self.config.authorization.data.passphrase)
+        try self.ssh.authenticate(username: self.config.username,
+                                  password: self.config.password,
+                                  privateKey: self.config.privateKey,
+                                  publicKey: self.config.publicKey,
+                                  passphrase: self.config.passphrase)
         log?.message(verboseMsg: "\"\(UDID)\" connection established")
         self.xcodebuild = Xcodebuild(xcodePath: self.config.xcodePathSafe, shell: self.ssh)
         self.runnerDeploymentPath = runnerDeploymentPath

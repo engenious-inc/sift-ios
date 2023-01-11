@@ -36,12 +36,11 @@ https://sift.engenious.io/
     "nodes": // array of nodes (mac)
     [
         {
-            "id": 0,
             "name": "Node-1",
             "host": "172.22.22.12",
             "port": 22,
-            "username": "nodeUsername",
-            "password": "nodePassword"
+            "username": "node-1",
+            "password": "password",
             "deploymentPath": "path where all necessary stuff will be stored on the node",
             "UDID": {
                         "devices": ["devices udid, can be null"],

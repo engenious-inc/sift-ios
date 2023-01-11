@@ -45,11 +45,11 @@ extension Node: Runner {
         do {
             communication = try SSHCommunication<SSH>(host: config.host,
                                                            port: config.port,
-                                                      username: config.authorization.data.username,
-                                                      password: config.authorization.data.password,
-                                                      privateKey: config.authorization.data.privateKey,
-                                                      publicKey: config.authorization.data.publicKey, // not implemented on backend
-                                                      passphrase: config.authorization.data.passphrase,
+                                                       username: config.username,
+                                                       password: config.password,
+                                                     privateKey: config.privateKey,
+                                                      publicKey: config.publicKey,
+                                                     passphrase: config.passphrase,
                                            runnerDeploymentPath: config.deploymentPath,
                                            masterDeploymentPath: outputDirectoryPath,
                                                        nodeName: config.name,
@@ -85,8 +85,8 @@ extension Node {
         if let simulators = self.config.UDID.simulators, !simulators.isEmpty {
             return simulators.compactMap {
                 do {
-                    return try Simulator(type: .simulator,
-                                         UDID: $0,
+					return try Simulator(type: .simulator,
+										 UDID: $0,
                                          config: self.config,
                                          xctestrunPath: xctestrunPath,
                                          setUpScriptPath: self.setUpScriptPath,
@@ -122,7 +122,7 @@ extension Node {
             }
             
         }
-
+		
 		if let mac = self.config.UDID.mac {
 			return mac.compactMap {
 				do {
@@ -136,12 +136,12 @@ extension Node {
                                       masterDeploymentPath: outputDirectoryPath,
                                       nodeName: config.name,
                                       log: log)
-                } catch let err {
+				} catch let err {
                     self.log?.error("\(self.name): \(err)")
-                    return nil
-                }
-            }
-        }
+					return nil
+				}
+			}
+		}
         return []
     }
     
