@@ -63,9 +63,6 @@ extension TestExecutor {
     @discardableResult
     func executeShellScript(path: String?, testNameEnv: String) throws -> Int32? {
         if let scriptPath = path {
-            if scriptPath == "" {
-                return nil
-            }
             log?.message(verboseMsg: "\"\(self.UDID)\" executing \"\(scriptPath)\" script...")
             let script = try String(contentsOfFile: scriptPath, encoding: .utf8)
             let env = "export TEST_NAME='\(testNameEnv)'\n" +

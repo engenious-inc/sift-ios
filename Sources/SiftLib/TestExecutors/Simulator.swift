@@ -67,15 +67,14 @@ extension Simulator: TestExecutor {
     @discardableResult
     func reset() -> Result<TestExecutor, Error> {
         self.log?.message(verboseMsg: "Simulator: \"\(self.UDID)\") reseting...")
-        let commands = ""
-//        let commands = "/bin/sh -c '" +
-//            "export DEVELOPER_DIR=\(self.config.xcodePathSafe)/Contents/Developer\n" +
-//                       "xcrun simctl shutdown \(self.UDID)\n" +
-//                       "sleep 5\n" +
-//                       "xcrun simctl erase \(self.UDID)\n" +
-//                       "sleep 5\n" +
-//                       "xcrun simctl boot \(self.UDID)'\n" +
-//   
+        let commands = "/bin/sh -c '" +
+            "export DEVELOPER_DIR=\(self.config.xcodePathSafe)/Contents/Developer\n" +
+                       "xcrun simctl shutdown \(self.UDID)\n" +
+                       "sleep 5\n" +
+                       "xcrun simctl erase \(self.UDID)\n" +
+                       "sleep 5\n" +
+                       "xcrun simctl boot \(self.UDID)'\n" +
+                       "sleep 5"
         
         do {
             try self.ssh.run(commands)
