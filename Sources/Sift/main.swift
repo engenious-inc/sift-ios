@@ -22,18 +22,24 @@ extension Sift {
         var testPlan: String = "default_ios_plan"
         
         @Option(name: .shortAndLong, help: "API endpoint.")
-        var endpoint: String
+        var endpoint: String = "https://api.orchestrator.engenious.io"
+        
+        @Option(name: .shortAndLong, help: "Test status.")
+        var status: String = "enabled"
         
         @Flag(name: [.short, .customLong("verbose")], help: "Verbose mode.")
         var verboseMode: Bool = false
         
+        @Flag(name: [.short, .customLong("init")], help: "Init tests for orchesstrator.")
+                var initMode: Bool = false
+        
         mutating func run() {
             verbose = verboseMode
             let log = Log()
-            let orchestrator = OrchestratorAPI(endpoint: endpoint, token: token, log: log)
+            let orchestrator = OrchestratorAPI(endpoint: endpoint, token: token, testPlan: testPlan, log: log)
 
             //Get config for testplan
-            guard let config = orchestrator.get(testplan: testPlan, status: .enabled) else {
+            guard let config = orchestrator.get(status: .enabled) else {
                 log.error("Error: can't get config for TestPlan: \(testPlan)")
                 Sift.exit(withError: NSError(domain: "Error: can't get config for TestPlan: \(testPlan)", code: 1))
             }
@@ -42,7 +48,7 @@ extension Sift {
             quiet = true
             var testsFromBundle: [String] = []
             do {
-                testsFromBundle = try Controller(config: config, log: Log()).bundleTests
+                testsFromBundle = try Controller(config: config, log: Log(), orchestrator: orchestrator).bundleTests
             } catch let error {
                 log.error("\(error)")
                 Sift.exit(withError: error)
@@ -55,14 +61,19 @@ extension Sift {
                 Sift.exit(withError: NSError(domain: "Can't post new tests to Orchestrator", code: 1))
             }
             
+            if initMode {
+                            log.message("Tests posted tp orchestrator")
+                            Sift.exit()
+            
             //Get tests for execution
-            guard let tests = orchestrator.get(testplan: testPlan, status: .enabled)?.tests else {
-                log.error("Error: can't get config for TestPlan: \(testPlan)")
-                Sift.exit(withError: NSError(domain: "Error: can't get config for TestPlan: \(testPlan)", code: 1))
-            }
+//            guard let tests = orchestrator.get(testplan: testPlan, status: .enabled)?.tests else {
+//                log.error("Error: can't get config for TestPlan: \(testPlan)")
+//                Sift.exit(withError: NSError(domain: "Error: can't get config for TestPlan: \(testPlan)", code: 1))
+          }
             
             do {
-                let testsController = try Controller(config: config, tests: tests, log: Log())
+                
+                let testsController = try Controller(config: config, tests: config.getTests(), log: Log(), orchestrator: orchestrator)
                 testsController.start()
                 dispatchMain()
             } catch let error {
