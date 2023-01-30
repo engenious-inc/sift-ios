@@ -31,6 +31,7 @@ extension TestExecutor {
             if try self.executeShellScript(path: self.setUpScriptPath, testNameEnv: tests.first ?? "") == 1 {
                 return (self, .failure(.testSkipped))
             }
+            await Task.yield()
             self.log?.message(verboseMsg: "\(type): \"\(self.UDID)\") run tests:\n\t\t- " +
                                     "\(tests.joined(separator: "\n\t\t- "))")
             let result = try xcodebuild.execute(tests: tests,
