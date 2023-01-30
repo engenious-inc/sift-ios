@@ -80,7 +80,7 @@ public class Controller {
                 _ = try? shell.run("rm -r \(self.config.outputDirectoryPath)/*")
                 self.zipBuildPath = try self.zipBuild()
                 self.runners = RunnersFactory.create(config: self.config, delegate: self, log: log)
-                await self.runners.concurrentForEach {
+                await self.runners.concurrentForEach(withPriority: .background) {
                     await $0.start()
                 }
 				await self.checkout()
@@ -257,7 +257,7 @@ extension Controller: RunnerDelegate {
 		guard isTestProcessingDisabled == false else {
 			return
 		}
-		let task = Task {
+        let task = Task(priority: .background) {
 			log?.message(verboseMsg: "Parse test results from \(runner.name)")
 			guard let pathToResults = pathToResults,
 				  var xcresult = await self.getXCResult(path: pathToResults) else {

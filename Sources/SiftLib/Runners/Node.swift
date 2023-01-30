@@ -65,7 +65,7 @@ extension Node: Runner {
                 return
             }
             
-            await executors.concurrentForEach { executor in
+            await executors.concurrentForEach(withPriority: .background) { executor in
                 if executor.ready() {
                     await self.runTests(in: executor)
                 }
