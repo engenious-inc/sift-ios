@@ -31,28 +31,27 @@ extension TestExecutor {
             if try self.executeShellScript(path: self.setUpScriptPath, testNameEnv: tests.first ?? "") == 1 {
                 return (self, .failure(.testSkipped))
             }
-            await Task.yield()
+
             self.log?.message(verboseMsg: "\(type): \"\(self.UDID)\") run tests:\n\t\t- " +
                                     "\(tests.joined(separator: "\n\t\t- "))")
-            let result = try xcodebuild.execute(tests: tests,
+            let result = try await xcodebuild.execute(tests: tests,
                                                  executorType: self.type,
                                                  UDID: self.UDID,
                                                  xctestrunPath: self.xctestrunPath,
                                                  derivedDataPath: self.config.deploymentPath,
                                                  log: self.log)
             self.log?.message(verboseMsg: "\(type): \"\(self.UDID)\") " +
-                                    "tests run finished with status: \(result.status)")
+                                    "tests run finished with status: \(result)")
 
             try self.executeShellScript(path: self.tearDownScriptPath, testNameEnv: tests.first ?? "")
-            if result.status == 0 || result.status == 65 {
+            if result == 0 || result == 65 {
                 return (self, .success(tests))
             }
-            self.log?.message(verboseMsg: "\"\(self.UDID)\" " +
-            "xcodebuild:\n \(result.output)")
+            
 			self.reset()
             return (self, .failure(.executionError(description: "\(type): \(self.UDID) " +
-            "- status \(result.status) " +
-            "\(result.status == 143 ? "- timeout" : "")",
+            "- status \(result) " +
+            "\(result == 143 ? "- timeout" : "")",
             tests: tests)))
         } catch let err {
             await executionFailureCounter.increment()

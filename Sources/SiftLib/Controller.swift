@@ -11,7 +11,7 @@ public class Controller {
     public var tests: TestCases
     public private(set) var bundleTests: [String]
     private let log: Logging?
-	private var tasks: [Task<(), Never>] = []
+    private var tasks: Atomic<[Task<(), Never>]> = .init(value: [])
 	private let isTestProcessingDisabled: Bool
 
 	public init(config: Config, tests: [String]? = nil, isTestProcessingDisabled: Bool = false, log: Logging?) throws {
@@ -80,7 +80,7 @@ public class Controller {
                 _ = try? shell.run("rm -r \(self.config.outputDirectoryPath)/*")
                 self.zipBuildPath = try self.zipBuild()
                 self.runners = RunnersFactory.create(config: self.config, delegate: self, log: log)
-                await self.runners.concurrentForEach(withPriority: .background) {
+                await self.runners.concurrentForEach {
                     await $0.start()
                 }
 				await self.checkout()
@@ -148,7 +148,7 @@ extension Controller {
     }
     
 	@MainActor private func checkout() async {
-		for task in self.tasks {
+        for task in await self.tasks.values() {
 			await task.value
 		}
 		log?.message(verboseMsg: "All nodes finished")
@@ -253,11 +253,11 @@ extension Controller {
 
 //MARK: - TestsRunnerDelegate implementation
 extension Controller: RunnerDelegate {    
-    public func handleTestsResults(runner: Runner, executedTests: [String], pathToResults: String?) {
+    public func handleTestsResults(runner: Runner, executedTests: [String], pathToResults: String?) async {
 		guard isTestProcessingDisabled == false else {
 			return
 		}
-        let task = Task(priority: .background) {
+        let task = Task {
 			log?.message(verboseMsg: "Parse test results from \(runner.name)")
 			guard let pathToResults = pathToResults,
 				  var xcresult = await self.getXCResult(path: pathToResults) else {
@@ -319,7 +319,7 @@ extension Controller: RunnerDelegate {
 			}
         }
 		
-		self.tasks.append(task)
+        await self.tasks.append(value: task)
     }
     
     public func XCTestRun() throws -> XCTestRun {

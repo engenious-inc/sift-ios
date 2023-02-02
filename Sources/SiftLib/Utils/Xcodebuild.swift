@@ -11,7 +11,7 @@ struct Xcodebuild {
                  xctestrunPath: String,
                  derivedDataPath: String,
                  quiet: Bool = true,
-                 log: Logging?) throws -> (status: Int32, output: String) {
+                 log: Logging?) async throws -> Int {
         let onlyTestingString = tests.map { "-only-testing:'\($0)'" }.joined(separator: " ")
         let command = "xcodebuild " + (quiet == true ? "-quiet " : "") +
             "-xctestrun '\(xctestrunPath)' " +
@@ -20,6 +20,14 @@ struct Xcodebuild {
             "-test-timeouts-enabled YES " +
             "\(onlyTestingString) test-without-building"
         log?.message(verboseMsg: "Run command:\n" + command)
-        return try shell.run("export DEVELOPER_DIR=\(xcodePath)/Contents/Developer\n" + command)
+        let exitStatusPath = try shell.runInBackground("export DEVELOPER_DIR=\(xcodePath)/Contents/Developer; " + command, temporaryDirectory: derivedDataPath)
+        
+        var result: (status: Int32, output: String) = (1, "")
+        while result.status != 0 {
+            try await Task.sleep(nanoseconds: UInt64(3) * 1_000_000_000)
+            result = try shell.run("cat \(exitStatusPath)")
+        }
+        
+        return Int(result.output.replacingOccurrences(of: "\n", with: "")) ?? -1
     }
 }

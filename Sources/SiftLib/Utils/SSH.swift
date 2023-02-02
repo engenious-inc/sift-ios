@@ -53,4 +53,14 @@ final class SSH: SSHExecutor, ShellExecutor {
 		let command = arch != nil ? "arch -\(arch!.rawValue) /bin/sh -c \"\(command)\"" : command
 		return try self.ssh.capture(command)
     }
+    
+    @discardableResult
+    func runInBackground(_ command: String, temporaryDirectory: String? = nil) throws -> String {
+        let uuid = UUID().uuidString
+        let temporaryDirectory = temporaryDirectory ?? FileManager().temporaryDirectory.absoluteString
+        let exitStatusPath = "\(temporaryDirectory)/ExitStatus_\(uuid)"
+        let command = command + "; " + "echo \\$? > \(exitStatusPath)"
+        try self.ssh.executeSilent("nohup /bin/sh -c \"\(command)\" &")
+        return exitStatusPath
+    }
 }

@@ -65,7 +65,7 @@ extension Node: Runner {
                 return
             }
             
-            await executors.concurrentForEach(withPriority: .background) { executor in
+            await executors.concurrentForEach { executor in
                 if executor.ready() {
                     await self.runTests(in: executor)
                 }
@@ -166,7 +166,7 @@ extension Node {
     private func testExecutionSuccessFlow(_ tests: [String], executor: TestExecutor) async {
         do {
             let pathToTestsResults = try executor.sendResultsToMaster()
-			self.delegate.handleTestsResults(runner: self, executedTests: tests, pathToResults: pathToTestsResults)
+            await self.delegate.handleTestsResults(runner: self, executedTests: tests, pathToResults: pathToTestsResults)
             await self.runTests(in: executor) // continue running next tests
         } catch let err {
             self.log?.error("\(self.name): \(err)")
@@ -180,7 +180,7 @@ extension Node {
             self.log?.message(verboseMsg: "\(self.name): No more tests for execution")
         case .executionError(let description, let tests):
             self.log?.error(description)
-			self.delegate.handleTestsResults(runner: self, executedTests: tests, pathToResults: nil)
+            await self.delegate.handleTestsResults(runner: self, executedTests: tests, pathToResults: nil)
             if await executor.executionFailureCounter.getValue() < 2 {
                 await self.runTests(in: executor) // continue running next tests
             }
