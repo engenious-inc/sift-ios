@@ -1,7 +1,7 @@
 # Sift-ios
 
 
-## Sift - Unit and UI Tests Parallelization for the native Espresso test
+## Sift - Unit and UI Tests Parallelization for the native XCTest and XCUITest tests
 
 
 ## About Sift
