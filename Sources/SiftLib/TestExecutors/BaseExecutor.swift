@@ -15,7 +15,10 @@ class BaseExecutor {
     let nodeName: String
     var log: Logging?
     var executionFailureCounter: Atomic<Int>
-
+	let testsExecutionTimeout: Int
+	let onlyTestConfiguration: String?
+	let skipTestConfiguration: String?
+	
     init(type: TestExecutorType,
 		 UDID: String,
          config: Config.NodeConfig,
@@ -25,6 +28,9 @@ class BaseExecutor {
          runnerDeploymentPath: String,
          masterDeploymentPath: String,
          nodeName: String,
+		 testsExecutionTimeout: Int?,
+		 onlyTestConfiguration: String?,
+		 skipTestConfiguration: String?,
          log: Logging?) throws {
 
         self.log = log
@@ -35,6 +41,9 @@ class BaseExecutor {
         self.xctestrunPath = xctestrunPath
         self.setUpScriptPath = setUpScriptPath
         self.tearDownScriptPath = tearDownScriptPath
+		self.testsExecutionTimeout = testsExecutionTimeout ?? 300
+		self.onlyTestConfiguration = onlyTestConfiguration
+		self.skipTestConfiguration = onlyTestConfiguration
         log?.message(verboseMsg: "Open connection to: \"\(UDID)\"")
         self.ssh = try SSH(host: config.host, port: config.port, arch: config.arch)
         try self.ssh.authenticate(username: self.config.username,
@@ -43,7 +52,7 @@ class BaseExecutor {
                                   publicKey: self.config.publicKey,
                                   passphrase: self.config.passphrase)
         log?.message(verboseMsg: "\"\(UDID)\" connection established")
-        self.xcodebuild = Xcodebuild(xcodePath: self.config.xcodePathSafe, shell: self.ssh)
+		self.xcodebuild = Xcodebuild(xcodePath: self.config.xcodePathSafe, shell: self.ssh, testsExecutionTimeout: self.testsExecutionTimeout, onlyTestConfiguration: onlyTestConfiguration, skipTestConfiguration: skipTestConfiguration)
         self.runnerDeploymentPath = runnerDeploymentPath
         self.masterDeploymentPath = masterDeploymentPath
         self.nodeName = nodeName

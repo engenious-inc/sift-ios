@@ -59,7 +59,7 @@ final class SSH: SSHExecutor, ShellExecutor {
         let uuid = UUID().uuidString
         let temporaryDirectory = temporaryDirectory ?? FileManager().temporaryDirectory.absoluteString
         let exitStatusPath = "\(temporaryDirectory)/ExitStatus_\(uuid)"
-        let command = command + "; " + "echo \\$? > \(exitStatusPath)"
+        let command = command + "; " + "echo \\$? > \(exitStatusPath) 2>\(exitStatusPath)_error"
         try self.ssh.executeSilent("nohup /bin/sh -c \"\(command)\" &")
         return exitStatusPath
     }

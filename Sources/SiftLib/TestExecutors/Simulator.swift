@@ -11,6 +11,9 @@ class Simulator: BaseExecutor {
                   runnerDeploymentPath: String,
                   masterDeploymentPath: String,
                   nodeName: String,
+				  testsExecutionTimeout: Int?,
+				  onlyTestConfiguration: String?,
+				  skipTestConfiguration: String?,
                   log: Logging?) throws {
 
         try super.init(type: type,
@@ -22,6 +25,9 @@ class Simulator: BaseExecutor {
                        runnerDeploymentPath: runnerDeploymentPath,
                        masterDeploymentPath: masterDeploymentPath,
                        nodeName: nodeName,
+					   testsExecutionTimeout: testsExecutionTimeout,
+					   onlyTestConfiguration: onlyTestConfiguration,
+					   skipTestConfiguration: skipTestConfiguration,
                        log: log)
     }
 }

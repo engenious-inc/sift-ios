@@ -13,7 +13,9 @@ public protocol TestExecutor: AnyObject {
     var masterDeploymentPath: String { get }
     var nodeName: String { get }
     var executionFailureCounter: Atomic<Int> { get }
-    
+	var testsExecutionTimeout: Int { get }
+	var onlyTestConfiguration: String? { get }
+	var skipTestConfiguration: String? { get }
     func ready() -> Bool
     func run(tests: [String]) async -> (TestExecutor, Result<[String], TestExecutorError>)
     @discardableResult
@@ -27,7 +29,7 @@ extension TestExecutor {
             return (self, .failure(.noTestsForExecution))
         }
         do {
-            let xcodebuild = Xcodebuild(xcodePath: self.config.xcodePathSafe, shell: self.ssh)
+			let xcodebuild = Xcodebuild(xcodePath: self.config.xcodePathSafe, shell: self.ssh, testsExecutionTimeout: self.testsExecutionTimeout, onlyTestConfiguration: onlyTestConfiguration, skipTestConfiguration: skipTestConfiguration)
             if try self.executeShellScript(path: self.setUpScriptPath, testNameEnv: tests.first ?? "") == 1 {
                 return (self, .failure(.testSkipped))
             }
