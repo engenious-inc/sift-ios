@@ -14,12 +14,12 @@ https://sift.engenious.io/
 https://github.com/engeniousio/sift-ios/discussions
 
 
-## How to setup Sift-ios on local SDET PC 
+## How to setup Sift locally on Mac
 
 https://github.com/engeniousio/sift-ios/wiki/Setup-Sift-on-local-SDET-PC
 
 
-## How to setup Sift-ios on Jenkins pipeline
+## How to setup Sift-ios on Jenkins
 
 https://github.com/engeniousio/sift-ios/wiki/Setup-Sift-on-Jenkins-pipeline
 
