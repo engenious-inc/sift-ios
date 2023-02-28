@@ -16,8 +16,7 @@ https://github.com/engeniousio/sift-ios/discussions
 
 ## How to setup Sift locally on Mac
 
-https://github.com/engeniousio/sift-ios/wiki/Setup-Sift-on-local-SDET-PC
-
+https://github.com/engeniousio/sift-ios/wiki/SIFT-Local-Setup
 
 ## How to setup Sift-ios on Jenkins
 
