@@ -20,7 +20,7 @@ public class Controller {
         self.config = config
         let xctestrun = try XCTestRunFactory.create(path: config.xctestrunPath, log: log)
 		self.xctestrun = xctestrun
-        self.bundleTests = self.xctestrun.testBundleExecPaths.flatMap { bundle -> [String] in
+		self.bundleTests = self.xctestrun.testBundleExecPaths(config: config.onlyTestConfiguration).flatMap { bundle -> [String] in
             let moduleName = bundle.path.components(separatedBy: "/").last ?? bundle.target
             do {
 				let listOfTests: [String] = try TestsDump().dump(path: bundle.path, moduleName: moduleName)
@@ -32,13 +32,13 @@ public class Controller {
             }
 		}
 
-		if !xctestrun.onlyTestIdentifiers.isEmpty {
-            log?.message(verboseMsg: "xctestrun.onlyTestIdentifiers:\n" + xctestrun.onlyTestIdentifiers.description)
+		if !xctestrun.onlyTestIdentifiers(config: config.onlyTestConfiguration).isEmpty {
+            log?.message(verboseMsg: "xctestrun.onlyTestIdentifiers:\n" + xctestrun.onlyTestIdentifiers(config: config.onlyTestConfiguration).description)
 			// remove tests which not included in xctestrun.onlyTestIdentifiers
 			self.bundleTests.removeAll {
 				var bundleTestComponents = $0.components(separatedBy: "/")
                 let moduleName = bundleTestComponents.removeFirst().replacingOccurrences(of: " ", with: "_")
-				guard let moduleTest = xctestrun.onlyTestIdentifiers[moduleName], !moduleTest.isEmpty else { return false }
+				guard let moduleTest = xctestrun.onlyTestIdentifiers(config: config.onlyTestConfiguration)[moduleName], !moduleTest.isEmpty else { return false }
 				return moduleTest.first {
 					let isOnlyTestIdentifierContainsInBundleTests = $0.components(separatedBy: "/").enumerated().allSatisfy {
 						$0.element == bundleTestComponents[$0.offset].replacingOccurrences(of: "()", with: "")
@@ -48,13 +48,13 @@ public class Controller {
 			}
 		}
 		
-		if !xctestrun.skipTestIdentifiers.isEmpty {
-            log?.message(verboseMsg: "xctestrun.skipTestIdentifiers:\n" + xctestrun.skipTestIdentifiers.description)
+		if !xctestrun.skipTestIdentifiers(config: config.onlyTestConfiguration).isEmpty {
+            log?.message(verboseMsg: "xctestrun.skipTestIdentifiers:\n" + xctestrun.skipTestIdentifiers(config: config.onlyTestConfiguration).description)
 			// remove tests which included in xctestrun.skipTestIdentifiers
 			self.bundleTests.removeAll {
 				var bundleTestComponents = $0.components(separatedBy: "/")
                 let moduleName = bundleTestComponents.removeFirst().replacingOccurrences(of: " ", with: "_")
-				return xctestrun.skipTestIdentifiers[moduleName]?.first {
+				return xctestrun.skipTestIdentifiers(config: config.onlyTestConfiguration)[moduleName]?.first {
 					let isSkipTestIdentifiersContainsInBundleTests = $0.components(separatedBy: "/").enumerated().allSatisfy {
 						$0.element == bundleTestComponents[$0.offset].replacingOccurrences(of: "()", with: "")
 					}
@@ -94,18 +94,18 @@ public class Controller {
 //MARK: - private methods
 extension Controller {
     private func zipBuild() throws -> String {
-        let filesToZip: [String] = self.xctestrun.dependentProductPaths.compactMap { (path) -> String? in
+		let filesToZip: Set<String> = .init(self.xctestrun.dependentProductPaths(config: config.onlyTestConfiguration).compactMap { (path) -> String? in
 			var path = path
 			if path.contains("-Runner.app") {
 				path = path.components(separatedBy: "-Runner.app").dropLast().joined() + "-Runner.app"
 			}
 			return path.replacingOccurrences(of: self.xctestrun.testRootPath + "/", with: "")
-        }
+        })
         //filesToZip.append(config.xctestrunPath.replacingOccurrences(of: self.xctestrun.testRootPath + "/", with: ""))
         log?.message(verboseMsg: "Start zip dependent files: \n\t\t- " + filesToZip.joined(separator: "\n\t\t- "))
         try Run().run(Scripts.zip(workdirectory: self.xctestrun.testRootPath,
-                                       zipName: "build.zip",
-                                       files: filesToZip))
+								  zipName: "build.zip",
+								  files: Array(filesToZip)))
         let zipPath = "\(self.xctestrun.testRootPath)/build.zip"
         log?.message(verboseMsg: "Zip path: " + zipPath)
         return zipPath
