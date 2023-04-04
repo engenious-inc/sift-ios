@@ -43,7 +43,7 @@ class BaseExecutor {
         self.tearDownScriptPath = tearDownScriptPath
 		self.testsExecutionTimeout = testsExecutionTimeout ?? 300
 		self.onlyTestConfiguration = onlyTestConfiguration
-		self.skipTestConfiguration = onlyTestConfiguration
+		self.skipTestConfiguration = skipTestConfiguration
         log?.message(verboseMsg: "Open connection to: \"\(UDID)\"")
         self.ssh = try SSH(host: config.host, port: config.port, arch: config.arch)
         try self.ssh.authenticate(username: self.config.username,
