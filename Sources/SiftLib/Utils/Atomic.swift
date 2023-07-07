@@ -26,6 +26,21 @@ public extension Atomic where T == Array<String> {
     }
 }
 
+public extension Atomic where T == Array<Task<(), Never>> {
+   
+    func get(element index: Int) -> T.Element {
+        _value[0]
+    }
+    
+    func append(value: T.Element) {
+        _value.append(value)
+    }
+    
+    func values() -> T {
+        return _value
+    }
+}
+
 public extension Atomic where T == Int {
    
     @discardableResult

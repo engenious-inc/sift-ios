@@ -11,7 +11,7 @@ public class Controller {
     public var tests: TestCases
     public private(set) var bundleTests: [String]
     private let log: Logging?
-	private var tasks: [Task<(), Never>] = []
+    private var tasks: Atomic<[Task<(), Never>]> = .init(value: [])
 	private let isTestProcessingDisabled: Bool
 
 	public init(config: Config, tests: [String]? = nil, isTestProcessingDisabled: Bool = false, log: Logging?) throws {
@@ -20,7 +20,7 @@ public class Controller {
         self.config = config
         let xctestrun = try XCTestRunFactory.create(path: config.xctestrunPath, log: log)
 		self.xctestrun = xctestrun
-        self.bundleTests = self.xctestrun.testBundleExecPaths.flatMap { bundle -> [String] in
+		self.bundleTests = self.xctestrun.testBundleExecPaths(config: config.onlyTestConfiguration).flatMap { bundle -> [String] in
             let moduleName = bundle.path.components(separatedBy: "/").last ?? bundle.target
             do {
 				let listOfTests: [String] = try TestsDump().dump(path: bundle.path, moduleName: moduleName)
@@ -32,13 +32,13 @@ public class Controller {
             }
 		}
 
-		if !xctestrun.onlyTestIdentifiers.isEmpty {
-            log?.message(verboseMsg: "xctestrun.onlyTestIdentifiers:\n" + xctestrun.onlyTestIdentifiers.description)
+		if !xctestrun.onlyTestIdentifiers(config: config.onlyTestConfiguration).isEmpty {
+            log?.message(verboseMsg: "xctestrun.onlyTestIdentifiers:\n" + xctestrun.onlyTestIdentifiers(config: config.onlyTestConfiguration).description)
 			// remove tests which not included in xctestrun.onlyTestIdentifiers
 			self.bundleTests.removeAll {
 				var bundleTestComponents = $0.components(separatedBy: "/")
                 let moduleName = bundleTestComponents.removeFirst().replacingOccurrences(of: " ", with: "_")
-				guard let moduleTest = xctestrun.onlyTestIdentifiers[moduleName], !moduleTest.isEmpty else { return false }
+				guard let moduleTest = xctestrun.onlyTestIdentifiers(config: config.onlyTestConfiguration)[moduleName], !moduleTest.isEmpty else { return false }
 				return moduleTest.first {
 					let isOnlyTestIdentifierContainsInBundleTests = $0.components(separatedBy: "/").enumerated().allSatisfy {
 						$0.element == bundleTestComponents[$0.offset].replacingOccurrences(of: "()", with: "")
@@ -48,13 +48,13 @@ public class Controller {
 			}
 		}
 		
-		if !xctestrun.skipTestIdentifiers.isEmpty {
-            log?.message(verboseMsg: "xctestrun.skipTestIdentifiers:\n" + xctestrun.skipTestIdentifiers.description)
+		if !xctestrun.skipTestIdentifiers(config: config.onlyTestConfiguration).isEmpty {
+            log?.message(verboseMsg: "xctestrun.skipTestIdentifiers:\n" + xctestrun.skipTestIdentifiers(config: config.onlyTestConfiguration).description)
 			// remove tests which included in xctestrun.skipTestIdentifiers
 			self.bundleTests.removeAll {
 				var bundleTestComponents = $0.components(separatedBy: "/")
                 let moduleName = bundleTestComponents.removeFirst().replacingOccurrences(of: " ", with: "_")
-				return xctestrun.skipTestIdentifiers[moduleName]?.first {
+				return xctestrun.skipTestIdentifiers(config: config.onlyTestConfiguration)[moduleName]?.first {
 					let isSkipTestIdentifiersContainsInBundleTests = $0.components(separatedBy: "/").enumerated().allSatisfy {
 						$0.element == bundleTestComponents[$0.offset].replacingOccurrences(of: "()", with: "")
 					}
@@ -94,18 +94,18 @@ public class Controller {
 //MARK: - private methods
 extension Controller {
     private func zipBuild() throws -> String {
-        let filesToZip: [String] = self.xctestrun.dependentProductPaths.compactMap { (path) -> String? in
+		let filesToZip: Set<String> = .init(self.xctestrun.dependentProductPaths(config: config.onlyTestConfiguration).compactMap { (path) -> String? in
 			var path = path
 			if path.contains("-Runner.app") {
 				path = path.components(separatedBy: "-Runner.app").dropLast().joined() + "-Runner.app"
 			}
 			return path.replacingOccurrences(of: self.xctestrun.testRootPath + "/", with: "")
-        }
+        })
         //filesToZip.append(config.xctestrunPath.replacingOccurrences(of: self.xctestrun.testRootPath + "/", with: ""))
         log?.message(verboseMsg: "Start zip dependent files: \n\t\t- " + filesToZip.joined(separator: "\n\t\t- "))
         try Run().run(Scripts.zip(workdirectory: self.xctestrun.testRootPath,
-                                       zipName: "build.zip",
-                                       files: filesToZip))
+								  zipName: "build.zip",
+								  files: Array(filesToZip)))
         let zipPath = "\(self.xctestrun.testRootPath)/build.zip"
         log?.message(verboseMsg: "Zip path: " + zipPath)
         return zipPath
@@ -148,7 +148,7 @@ extension Controller {
     }
     
 	@MainActor private func checkout() async {
-		for task in self.tasks {
+        for task in await self.tasks.values() {
 			await task.value
 		}
 		log?.message(verboseMsg: "All nodes finished")
@@ -174,7 +174,8 @@ extension Controller {
 			let duration = Date.timeIntervalSinceReferenceDate - self.time
 			try await JSONReport.generate(tests: self.tests, duration: duration).write(to: JSONReportUrl)
 			try await JUnit().generate(tests: self.tests).write(to: JUnitReportUrl, atomically: true, encoding: .utf8)
-			let reran = await self.tests.reran
+			let rerun = await self.tests.rerun
+            let skipped = await self.tests.skipped
 			let failed = await self.tests.failed
 			let unexecuted = await self.tests.unexecuted
 			
@@ -188,14 +189,18 @@ extension Controller {
 			log?.message("####################################\n")
 			log?.message("Total Tests: \(await self.tests.count)")
 			log?.message("Passed: \(await self.tests.passed.count) tests")
-			log?.message("Reran: \(reran.count) tests")
-			reran.forEach {
+			log?.message("Rerun: \(rerun.count) tests")
+			rerun.forEach {
 				log?.warning(before: "\t", "\($0.name) - \($0.launchCounter - 1) times")
 			}
-			log?.message("Failed: \(failed.count) tests")
-			failed.forEach {
-				log?.failed(before: "\t", $0.name)
+			log?.message("Skipped: \(skipped.count) tests")
+			skipped.forEach {
+				log?.skipped(before: "\t", $0.name)
 			}
+            log?.message("Failed: \(failed.count) tests")
+            failed.forEach {
+                log?.failed(before: "\t", $0.name)
+            }
 			log?.message("Unexecuted: \(unexecuted.count) tests")
 			unexecuted.forEach {
 				log?.failed(before: "\t", $0.name)
@@ -248,11 +253,11 @@ extension Controller {
 
 //MARK: - TestsRunnerDelegate implementation
 extension Controller: RunnerDelegate {    
-    public func handleTestsResults(runner: Runner, executedTests: [String], pathToResults: String?) {
+    public func handleTestsResults(runner: Runner, executedTests: [String], pathToResults: String?) async {
 		guard isTestProcessingDisabled == false else {
 			return
 		}
-		let task = Task {
+        let task = Task {
 			log?.message(verboseMsg: "Parse test results from \(runner.name)")
 			guard let pathToResults = pathToResults,
 				  var xcresult = await self.getXCResult(path: pathToResults) else {
@@ -294,18 +299,15 @@ extension Controller: RunnerDelegate {
 					await self.tests.update(test: executedTest, state: .pass, duration: testMetaData.duration ?? 0.0)
 					self.log?.success("\(runner.name): \(executedTest) " +
 									  "- \(testMetaData.testStatus): \(String(format: "%.3f", testMetaData.duration ?? 0)) sec.")
-				} else {
-					guard let summaryRef = testMetaData.summaryRef, let summary: ActionTestSummary = try? xcresult.modelFrom(reference: summaryRef) else {
-						log?.error("handleTestsResults: Can't make a model from \(testMetaData.summaryRef?.id ?? "Unknown")")
-						return
-					}
-					var message = summary.failureSummaries.compactMap { $0.message }.joined(separator: " ")
-					if message.isEmpty {
-						message = summary.allChildActivitySummaries()
-							.filter{$0.activityType == "com.apple.dt.xctest.activity-type.testAssertionFailure"}
-							.map{ $0.title }
-							.joined(separator: "\n")
-					}
+                } else if testMetaData.testStatus == "Skipped" {
+                    await self.tests.update(test: executedTest,
+                                            state: .skipped,
+                                            duration: testMetaData.duration ?? 0.0)
+                    self.log?.skipped("\(runner.name): \(executedTest) " +
+                                      "- \(testMetaData.testStatus): \(String(format: "%.3f", testMetaData.duration ?? 0)) sec.")
+                } else {
+                    let actionsInvocationRecord = try? xcresult.actionsInvocationRecord()
+                    let message = actionsInvocationRecord?.issues.testFailureSummaries.map { $0.message }.joined(separator: "\n") ?? ""
 					await self.tests.update(test: executedTest,
 											state: .failed,
 											duration: testMetaData.duration ?? 0.0,
@@ -317,7 +319,7 @@ extension Controller: RunnerDelegate {
 			}
         }
 		
-		self.tasks.append(task)
+        await self.tasks.append(value: task)
     }
     
     public func XCTestRun() throws -> XCTestRun {

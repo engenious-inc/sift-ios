@@ -9,6 +9,8 @@ public struct Config: Codable {
     public var testsExecutionTimeout: Int?
     public var setUpScriptPath: String?
     public var tearDownScriptPath: String?
+	public var onlyTestConfiguration: String?
+	public var skipTestConfiguration: String?
     public var nodes: [NodeConfig]
     public var tests: [String]?
     

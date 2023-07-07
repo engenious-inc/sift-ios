@@ -8,7 +8,8 @@ class Node {
     private let testsExecutionTimeout: Int?
     private let setUpScriptPath: String?
     private let tearDownScriptPath: String?
-    
+	private var onlyTestConfiguration: String?
+	private var skipTestConfiguration: String?
     private var executors: [TestExecutor]
     private var communication: Communication!
     private let log: Logging?
@@ -17,12 +18,14 @@ class Node {
     weak var delegate: RunnerDelegate!
     
     init(config: Config.NodeConfig,
-                outputDirectoryPath: String,
-                testsExecutionTimeout: Int?,
-                setUpScriptPath: String?,
-                tearDownScriptPath: String?,
-                delegate: RunnerDelegate,
-                log: Logging?) throws {
+		 outputDirectoryPath: String,
+		 testsExecutionTimeout: Int?,
+		 setUpScriptPath: String?,
+		 tearDownScriptPath: String?,
+		 onlyTestConfiguration: String?,
+		 skipTestConfiguration: String?,
+		 delegate: RunnerDelegate,
+		 log: Logging?) throws {
         self.log = log
         self.config = config
         self.outputDirectoryPath = outputDirectoryPath
@@ -31,6 +34,8 @@ class Node {
         self.tearDownScriptPath = tearDownScriptPath
         self.executors = []
         self.name = config.name
+		self.onlyTestConfiguration = onlyTestConfiguration
+		self.skipTestConfiguration = skipTestConfiguration
         self.delegate = delegate
         
         log?.message(verboseMsg: "\(self.name) Created")
@@ -94,6 +99,9 @@ extension Node {
                                          runnerDeploymentPath: config.deploymentPath,
                                          masterDeploymentPath: outputDirectoryPath,
                                          nodeName: config.name,
+										 testsExecutionTimeout: testsExecutionTimeout,
+										 onlyTestConfiguration: onlyTestConfiguration,
+										 skipTestConfiguration: skipTestConfiguration,
                                          log: log)
                 } catch let err {
                     self.log?.error("\(self.name): \(err)")
@@ -114,6 +122,9 @@ extension Node {
                                       runnerDeploymentPath: config.deploymentPath,
                                       masterDeploymentPath: outputDirectoryPath,
                                       nodeName: config.name,
+									  testsExecutionTimeout: testsExecutionTimeout,
+									  onlyTestConfiguration: onlyTestConfiguration,
+									  skipTestConfiguration: skipTestConfiguration,
                                       log: log)
                 } catch let err {
                     self.log?.error("\(self.name): \(err)")
@@ -135,6 +146,9 @@ extension Node {
                                       runnerDeploymentPath: config.deploymentPath,
                                       masterDeploymentPath: outputDirectoryPath,
                                       nodeName: config.name,
+									  testsExecutionTimeout: testsExecutionTimeout,
+									  onlyTestConfiguration: onlyTestConfiguration,
+									  skipTestConfiguration: skipTestConfiguration,
                                       log: log)
 				} catch let err {
                     self.log?.error("\(self.name): \(err)")
@@ -166,7 +180,7 @@ extension Node {
     private func testExecutionSuccessFlow(_ tests: [String], executor: TestExecutor) async {
         do {
             let pathToTestsResults = try executor.sendResultsToMaster()
-			self.delegate.handleTestsResults(runner: self, executedTests: tests, pathToResults: pathToTestsResults)
+            await self.delegate.handleTestsResults(runner: self, executedTests: tests, pathToResults: pathToTestsResults)
             await self.runTests(in: executor) // continue running next tests
         } catch let err {
             self.log?.error("\(self.name): \(err)")
@@ -180,7 +194,7 @@ extension Node {
             self.log?.message(verboseMsg: "\(self.name): No more tests for execution")
         case .executionError(let description, let tests):
             self.log?.error(description)
-			self.delegate.handleTestsResults(runner: self, executedTests: tests, pathToResults: nil)
+            await self.delegate.handleTestsResults(runner: self, executedTests: tests, pathToResults: nil)
             if await executor.executionFailureCounter.getValue() < 2 {
                 await self.runTests(in: executor) // continue running next tests
             }

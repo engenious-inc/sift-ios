@@ -165,6 +165,25 @@ public class SSH {
         
         return channel.exitStatus()
     }
+    
+    /// Execute a command on the remote server silent
+    ///
+    /// - Parameters:
+    ///   - command: the command to execute
+    /// - Returns: exit code of the command
+    /// - Throws: SSHError if the command couldn't be executed
+    @discardableResult
+    public func executeSilent(_ command: String) throws -> Int32 {
+        let channel = try session.openCommandChannel()
+        
+        if let ptyType = ptyType {
+            try channel.requestPty(type: ptyType.rawValue)
+        }
+        
+        try channel.exec(command: command)
+        try channel.close()
+        return channel.exitStatus()
+    }
 
     /// Upload a file from the local device to the remote server
     ///

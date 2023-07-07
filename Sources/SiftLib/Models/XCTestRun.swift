@@ -3,10 +3,10 @@ import Foundation
 public protocol XCTestRun: Codable {
 	var xctestrunFileName: String { get }
 	var testRootPath: String { get }
-	var testBundleExecPaths: [(target: String, path: String)] { get }
-	var dependentProductPaths: [String] { get }
-	var onlyTestIdentifiers: [String: [String]] { get }
-	var skipTestIdentifiers: [String: [String]] { get }
+	func testBundleExecPaths(config: String?) -> [(target: String, path: String)]
+	func dependentProductPaths(config: String?) -> [String]
+	func onlyTestIdentifiers(config: String?) -> [String: [String]]
+	func skipTestIdentifiers(config: String?) -> [String: [String]]
 	
 	mutating func addEnvironmentVariables(_ values: [String: String]?)
     mutating func add(timeout: Int)
