@@ -15,30 +15,35 @@ public struct XCTestRunV2: XCTestRun {
 	public private(set) var testRootPath = ""
 	public private(set) var xctestrunFileName = ""
 	
-	public var testBundleExecPaths: [(target: String, path: String)] {
-		self.testConfigurations
-			.compactMap { $0.testTargets }
-			.flatMap { $0 }
-			.compactMap {
-				guard let path = $0.testBundleExecPath?.replacingOccurrences(of: "__TESTROOT__", with: self.testRootPath) else {
-					return nil
-				}
-				return ($0.productModuleName, path)
+	public func testBundleExecPaths(config: String?) -> [(target: String, path: String)] {
+		guard let testConfig = self.testConfigurations.first(where: { config == nil ? true : $0.name == config }) else {
+			return []
+		}
+		
+		return testConfig.testTargets.compactMap {
+			guard let path = $0.testBundleExecPath?.replacingOccurrences(of: "__TESTROOT__", with: self.testRootPath) else {
+				return nil
 			}
+			return ($0.productModuleName, path)
+		}
 	}
 	
-	public var dependentProductPaths: [String] {
-		self.testConfigurations
-			.compactMap { $0.testTargets }
-			.flatMap { $0 }
+	public func dependentProductPaths(config: String?) -> [String] {
+		guard let testConfig = self.testConfigurations.first(where: { config == nil ? true : $0.name == config }) else {
+			return []
+		}
+		
+		return testConfig.testTargets
 			.flatMap { $0.dependentProductPaths }
 			.map { $0.replacingOccurrences(of: "__TESTROOT__", with: self.testRootPath) }
 	}
 	
-	public var onlyTestIdentifiers: [String: [String]] {
-		self.testConfigurations
-			.compactMap { $0.testTargets }
-			.flatMap { $0 }
+	public func onlyTestIdentifiers(config: String?) -> [String: [String]] {
+		guard let testConfig = self.testConfigurations.first(where: { config == nil ? true : $0.name == config }) else {
+			return [:]
+		}
+		
+		return testConfig.testTargets
 			.reduce([String: [String]]()) { (result, target) -> [String: [String]] in
 				var result = result
 				result[target.productModuleName] = target.onlyTestIdentifiers ?? []
@@ -46,10 +51,12 @@ public struct XCTestRunV2: XCTestRun {
 			}
 	}
 	
-	public var skipTestIdentifiers: [String: [String]] {
-		self.testConfigurations
-			.compactMap { $0.testTargets }
-			.flatMap { $0 }
+	public func skipTestIdentifiers(config: String?) -> [String: [String]] {
+		guard let testConfig = self.testConfigurations.first(where: { config == nil ? true : $0.name == config }) else {
+			return [:]
+		}
+		
+		return testConfig.testTargets
 			.reduce([String: [String]]()) { (result, target) -> [String: [String]] in
 				var result = result
 				result[target.productModuleName] = target.skipTestIdentifiers ?? []

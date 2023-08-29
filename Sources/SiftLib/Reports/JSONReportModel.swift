@@ -10,9 +10,10 @@ extension JSONReportModel {
     // MARK: - Result
     struct Result: Codable {
         var testSuite: String
-        var passed, rerunned, failed, unexecuted: Int
+        var passed, rerunned, skipped, failed, unexecuted: Int
         var passedTests: [PassedTest]
         var rerunnedTests: [String]
+        var skippedTests: [String]
         var failedTests: [FailedTest]
         var unexecutedTests: [String]
     }
@@ -31,7 +32,7 @@ extension JSONReportModel {
 
     // MARK: - Summary
     struct Summary: Codable {
-        var tests, passed, rerunned, failed, unexecuted: Int
+        var tests, passed, rerunned, skipped, failed, unexecuted: Int
         var duration: Double
     }
 }
