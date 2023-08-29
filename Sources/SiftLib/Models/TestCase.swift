@@ -4,10 +4,10 @@ public struct TestCase: Hashable, Sendable {
     public enum State: Sendable {
         case pass
         case failed
+        case skipped
         case unexecuted
     }
     
-    public var id: Int? = nil
     public var name: String
     public var state: State
     public var launchCounter: Int
@@ -16,18 +16,6 @@ public struct TestCase: Hashable, Sendable {
     
     public func hash(into hasher: inout Hasher) {
         hasher.combine(name)
-    }
-    
-    public func resultFormatted() -> String {
-        switch state {
-        case .pass:
-            if launchCounter > 1 { return "passed_after_rerun" }
-            return "passed"
-        case .failed:
-            return "failed"
-        case .unexecuted:
-            return "skipped"
-        }
     }
 }
 
@@ -39,7 +27,8 @@ public actor TestCases {
     
     public var count: Int { cases.count }
     public var passed: [TestCase] { cases.values.filter { $0.state == .pass } }
-    public var reran: [TestCase] { cases.values.filter { $0.launchCounter > 1 } }
+    public var rerun: [TestCase] { cases.values.filter { $0.launchCounter > 1 } }
+    public var skipped: [TestCase] { cases.values.filter { $0.state == .skipped } }
     public var failed: [TestCase] { cases.values.filter { $0.state == .failed } }
     public var unexecuted: [TestCase] { cases.values.filter { $0.state == .unexecuted } }
     
@@ -67,7 +56,7 @@ public actor TestCases {
         cases[test]!.launchCounter += 1
         cases[test]!.duration = duration
         cases[test]!.message = message
-        if state != .pass && cases[test]!.launchCounter <= self.rerunLimit {
+        if state != .pass && state != .skipped && cases[test]!.launchCounter <= self.rerunLimit {
             failedTestsCache.append(test)
         }
     }

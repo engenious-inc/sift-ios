@@ -8,7 +8,8 @@ class Node {
     private let testsExecutionTimeout: Int?
     private let setUpScriptPath: String?
     private let tearDownScriptPath: String?
-    
+	private var onlyTestConfiguration: String?
+	private var skipTestConfiguration: String?
     private var executors: [TestExecutor]
     private var communication: Communication!
     private let log: Logging?
@@ -17,12 +18,14 @@ class Node {
     weak var delegate: RunnerDelegate!
     
     init(config: Config.NodeConfig,
-                outputDirectoryPath: String,
-                testsExecutionTimeout: Int?,
-                setUpScriptPath: String?,
-                tearDownScriptPath: String?,
-                delegate: RunnerDelegate,
-                log: Logging?) throws {
+		 outputDirectoryPath: String,
+		 testsExecutionTimeout: Int?,
+		 setUpScriptPath: String?,
+		 tearDownScriptPath: String?,
+		 onlyTestConfiguration: String?,
+		 skipTestConfiguration: String?,
+		 delegate: RunnerDelegate,
+		 log: Logging?) throws {
         self.log = log
         self.config = config
         self.outputDirectoryPath = outputDirectoryPath
@@ -31,6 +34,8 @@ class Node {
         self.tearDownScriptPath = tearDownScriptPath
         self.executors = []
         self.name = config.name
+		self.onlyTestConfiguration = onlyTestConfiguration
+		self.skipTestConfiguration = skipTestConfiguration
         self.delegate = delegate
         
         log?.message(verboseMsg: "\(self.name) Created")
@@ -45,11 +50,11 @@ extension Node: Runner {
         do {
             communication = try SSHCommunication<SSH>(host: config.host,
                                                            port: config.port,
-                                                      username: config.authorization.data.username,
-                                                      password: config.authorization.data.password,
-                                                      privateKey: config.authorization.data.privateKey,
-                                                      publicKey: config.authorization.data.publicKey, // not implemented on backend
-                                                      passphrase: config.authorization.data.passphrase,
+                                                       username: config.username,
+                                                       password: config.password,
+                                                     privateKey: config.privateKey,
+                                                      publicKey: config.publicKey,
+                                                     passphrase: config.passphrase,
                                            runnerDeploymentPath: config.deploymentPath,
                                            masterDeploymentPath: outputDirectoryPath,
                                                        nodeName: config.name,
@@ -85,8 +90,8 @@ extension Node {
         if let simulators = self.config.UDID.simulators, !simulators.isEmpty {
             return simulators.compactMap {
                 do {
-                    return try Simulator(type: .simulator,
-                                         UDID: $0,
+					return try Simulator(type: .simulator,
+										 UDID: $0,
                                          config: self.config,
                                          xctestrunPath: xctestrunPath,
                                          setUpScriptPath: self.setUpScriptPath,
@@ -94,6 +99,9 @@ extension Node {
                                          runnerDeploymentPath: config.deploymentPath,
                                          masterDeploymentPath: outputDirectoryPath,
                                          nodeName: config.name,
+										 testsExecutionTimeout: testsExecutionTimeout,
+										 onlyTestConfiguration: onlyTestConfiguration,
+										 skipTestConfiguration: skipTestConfiguration,
                                          log: log)
                 } catch let err {
                     self.log?.error("\(self.name): \(err)")
@@ -114,6 +122,9 @@ extension Node {
                                       runnerDeploymentPath: config.deploymentPath,
                                       masterDeploymentPath: outputDirectoryPath,
                                       nodeName: config.name,
+									  testsExecutionTimeout: testsExecutionTimeout,
+									  onlyTestConfiguration: onlyTestConfiguration,
+									  skipTestConfiguration: skipTestConfiguration,
                                       log: log)
                 } catch let err {
                     self.log?.error("\(self.name): \(err)")
@@ -122,7 +133,7 @@ extension Node {
             }
             
         }
-
+		
 		if let mac = self.config.UDID.mac {
 			return mac.compactMap {
 				do {
@@ -135,13 +146,16 @@ extension Node {
                                       runnerDeploymentPath: config.deploymentPath,
                                       masterDeploymentPath: outputDirectoryPath,
                                       nodeName: config.name,
+									  testsExecutionTimeout: testsExecutionTimeout,
+									  onlyTestConfiguration: onlyTestConfiguration,
+									  skipTestConfiguration: skipTestConfiguration,
                                       log: log)
-                } catch let err {
+				} catch let err {
                     self.log?.error("\(self.name): \(err)")
-                    return nil
-                }
-            }
-        }
+					return nil
+				}
+			}
+		}
         return []
     }
     
@@ -166,7 +180,7 @@ extension Node {
     private func testExecutionSuccessFlow(_ tests: [String], executor: TestExecutor) async {
         do {
             let pathToTestsResults = try executor.sendResultsToMaster()
-			self.delegate.handleTestsResults(runner: self, executedTests: tests, pathToResults: pathToTestsResults)
+            await self.delegate.handleTestsResults(runner: self, executedTests: tests, pathToResults: pathToTestsResults)
             await self.runTests(in: executor) // continue running next tests
         } catch let err {
             self.log?.error("\(self.name): \(err)")
@@ -180,7 +194,7 @@ extension Node {
             self.log?.message(verboseMsg: "\(self.name): No more tests for execution")
         case .executionError(let description, let tests):
             self.log?.error(description)
-			self.delegate.handleTestsResults(runner: self, executedTests: tests, pathToResults: nil)
+            await self.delegate.handleTestsResults(runner: self, executedTests: tests, pathToResults: nil)
             if await executor.executionFailureCounter.getValue() < 2 {
                 await self.runTests(in: executor) // continue running next tests
             }

@@ -11,28 +11,21 @@ public class OrchestratorAPI {
     private let endpoint: String
     private let token: String
     private let session = URLSession.shared
-    private let testPlan: String
     private let log: Logging?
-    
-    private let path = "/v1/sift"
-    private let pathRun = "/v1/sift/run"
-    private let pathResult = "/v1/sift/result"
 
-    public init(endpoint: String, token: String, testPlan: String, log: Logging?) {
+    public init(endpoint: String, token: String, log: Logging?) {
         self.endpoint = endpoint
         self.token = token
-        self.testPlan = testPlan
         self.log = log
     }
 
-    public func get(status: Status, platform: String = "IOS") -> Config? {
+    public func get(testplan: String, status: Status, platform: String = "IOS") -> Config? {
         
-        guard let url = URL(string: endpoint + path)?
-            .appending("testplan", value: testPlan)?
+        guard let url = URL(string: endpoint + "/public")?
+            .appending("testplan", value: testplan)?
             .appending("status", value: status.rawValue.uppercased())?
             .appending("platform", value: platform) else {
             log?.error("Can't resolve URL endpoint")
-            log?.error("Data is nil")
             return nil
         }
 
@@ -71,8 +64,7 @@ public class OrchestratorAPI {
     }
     
     public func post(tests: [String], platform: String = "IOS") -> Bool {
-        guard let url = URL(string: endpoint + path)?
-            .appending("platform", value: platform) else {
+        guard let url = URL(string: endpoint + "/public") else {
             log?.error("Can't resolve URL endpoint")
             return false
         }
@@ -98,112 +90,6 @@ public class OrchestratorAPI {
             return false
         }
         
-        return true
-    }
-    
-    public func postRun() -> OrchestratorTestRun? {
-        guard let url = URL(string: endpoint + pathRun)?
-                .appending("testplan", value: testPlan)?
-                .appending("platform", value: "IOS")
-        else {
-            log?.error("Can't resolve URL endpoint")
-            return nil
-        }
-
-        var request = URLRequest(url: url)
-        request.httpMethod = "POST"
-        request.setValue(token, forHTTPHeaderField: "token")
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-
-        let result = session.sendSynchronous(request: request)
-
-        if result.error != nil {
-            log?.error("\(result.error!)")
-           return nil
-        }
-
-        //Response data with run ID
-        guard let data = result.data else {
-            log?.error("Data is nil")
-            return nil
-        }
-
-        guard let response = result.response as? HTTPURLResponse, (200...299).contains(response.statusCode) else {
-            log?.error("Server error!")
-           return nil
-        }
-        guard let mime = result.response?.mimeType, mime == "application/json" else {
-            log?.error("Wrong MIME type!")
-            return nil
-        }
-
-        do {
-            return try JSONDecoder().decode(OrchestratorTestRun.self, from: data)
-        } catch {
-            log?.error("JSON parse error: \(error.localizedDescription)")
-            return nil
-        }
-    }
-
-    public func postResults(testResults: OrchestratorTestResults) -> Bool {
-        guard let url = URL(string: endpoint + pathResult)?
-                .appending("platform", value: "IOS")?
-                .appending("testplan", value: testPlan)
-        else {
-            log?.error("Can't resolve URL endpoint")
-            return false
-        }
-
-        var request = URLRequest(url: url)
-        request.httpMethod = "POST"
-        request.setValue(token, forHTTPHeaderField: "token")
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-
-        let jsonEncoder = JSONEncoder()
-        guard let jsonData = try? jsonEncoder.encode(testResults) else {
-            log?.error("Failed to encode Test Results")
-            return false
-        }
-
-        let str = String(decoding: jsonData, as: UTF8.self)
-
-        request.httpBody = jsonData
-
-        let result = session.sendSynchronous(request: request)
-
-        if result.error != nil {
-            log?.error("\(result.error!)")
-           return false
-        }
-
-        guard let response = result.response as? HTTPURLResponse, (200...299).contains(response.statusCode) else {
-            log?.error("Server error!")
-           return false
-        }
-
-        return true
-    }
-
-    // multi-upload upload; curl TODO: check response output -i
-    public func postImages(runIndex: Int, fileNames: [String]) -> Bool {
-        let fileObjects = fileNames.map { "-F \"file=@\($0.replacingOccurrences(of: "'", with: ""))\"" }.joined(separator: " ")
-
-        let shell = Run()
-        do {
-            try shell.run("curl -X POST \"\(endpoint + "/v1/sift/multi-upload")" +
-                "?platform=IOS" +
-                "&testplan=\(testPlan)\"" +
-                " -H \"accept: */*\"" +
-                " -H \"token: \(token)\"" +
-                " -H \"run-index: \(runIndex)\"" +
-                " -H \"Content-Type: multipart/form-data\"" +
-                " -H \"User-Agent: Sift iOS\"" +
-                " \(fileObjects)")
-        } catch {
-            log?.error("Can not post failure images to testRun")
-            log?.message(verboseMsg: "\(error)")
-            return false
-        }
         return true
     }
 }

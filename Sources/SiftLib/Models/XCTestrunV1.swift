@@ -23,7 +23,7 @@ public struct XCTestRunV1: XCTestRun {
     }
 	
 	//Paths to *.xctest/execution file
-	public var testBundleExecPaths: [(target: String, path: String)] {
+	public func testBundleExecPaths(config: String? = nil) -> [(target: String, path: String)] {
 		var results: [(target: String, path: String)] = []
 		for name in modules() {
 			guard let testBundleExecPath = testBundleExecPath(for: name),
@@ -35,19 +35,19 @@ public struct XCTestRunV1: XCTestRun {
 		return results
 	}
 	
-	public var dependentProductPaths: [String] {
+	public func dependentProductPaths(config: String? = nil) -> [String] {
 		return self.json
 			.filter { $0.0 != "__xctestrun_metadata__" }
 			.flatMap { $0.1["DependentProductPaths"].arrayValue }
 			.map { $0.stringValue.replacingOccurrences(of: "__TESTROOT__", with: self.testRootPath) }
 	}
 	
-	public var onlyTestIdentifiers: [String: [String]] {
+	public func onlyTestIdentifiers(config: String? = nil) -> [String: [String]] {
 		return [:]
 	}
 	
 	// to do
-	public var skipTestIdentifiers: [String: [String]] {
+	public func skipTestIdentifiers(config: String? = nil) -> [String: [String]] {
 		return [:]
 	}
 	

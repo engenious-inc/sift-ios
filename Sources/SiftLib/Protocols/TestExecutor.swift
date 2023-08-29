@@ -13,7 +13,9 @@ public protocol TestExecutor: AnyObject {
     var masterDeploymentPath: String { get }
     var nodeName: String { get }
     var executionFailureCounter: Atomic<Int> { get }
-    
+	var testsExecutionTimeout: Int { get }
+	var onlyTestConfiguration: String? { get }
+	var skipTestConfiguration: String? { get }
     func ready() -> Bool
     func run(tests: [String]) async -> (TestExecutor, Result<[String], TestExecutorError>)
     @discardableResult
@@ -27,31 +29,31 @@ extension TestExecutor {
             return (self, .failure(.noTestsForExecution))
         }
         do {
-            let xcodebuild = Xcodebuild(xcodePath: self.config.xcodePathSafe, shell: self.ssh)
+			let xcodebuild = Xcodebuild(xcodePath: self.config.xcodePathSafe, shell: self.ssh, testsExecutionTimeout: self.testsExecutionTimeout, onlyTestConfiguration: onlyTestConfiguration, skipTestConfiguration: skipTestConfiguration)
             if try self.executeShellScript(path: self.setUpScriptPath, testNameEnv: tests.first ?? "") == 1 {
                 return (self, .failure(.testSkipped))
             }
+
             self.log?.message(verboseMsg: "\(type): \"\(self.UDID)\") run tests:\n\t\t- " +
                                     "\(tests.joined(separator: "\n\t\t- "))")
-            let result = try xcodebuild.execute(tests: tests,
+            let result = try await xcodebuild.execute(tests: tests,
                                                  executorType: self.type,
                                                  UDID: self.UDID,
                                                  xctestrunPath: self.xctestrunPath,
                                                  derivedDataPath: self.config.deploymentPath,
                                                  log: self.log)
             self.log?.message(verboseMsg: "\(type): \"\(self.UDID)\") " +
-                                    "tests run finished with status: \(result.status)")
+                                    "tests run finished with status: \(result)")
 
             try self.executeShellScript(path: self.tearDownScriptPath, testNameEnv: tests.first ?? "")
-            if result.status == 0 || result.status == 65 {
+            if result == 0 || result == 65 {
                 return (self, .success(tests))
             }
-            self.log?.message(verboseMsg: "\"\(self.UDID)\" " +
-            "xcodebuild:\n \(result.output)")
+            
 			self.reset()
             return (self, .failure(.executionError(description: "\(type): \(self.UDID) " +
-            "- status \(result.status) " +
-            "\(result.status == 143 ? "- timeout" : "")",
+            "- status \(result) " +
+            "\(result == 143 ? "- timeout" : "")",
             tests: tests)))
         } catch let err {
             await executionFailureCounter.increment()
@@ -63,9 +65,6 @@ extension TestExecutor {
     @discardableResult
     func executeShellScript(path: String?, testNameEnv: String) throws -> Int32? {
         if let scriptPath = path {
-            if scriptPath == "" {
-                return nil
-            }
             log?.message(verboseMsg: "\"\(self.UDID)\" executing \"\(scriptPath)\" script...")
             let script = try String(contentsOfFile: scriptPath, encoding: .utf8)
             let env = "export TEST_NAME='\(testNameEnv)'\n" +

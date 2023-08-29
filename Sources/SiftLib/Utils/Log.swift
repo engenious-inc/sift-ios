@@ -45,6 +45,12 @@ public extension Logging {
             print((before ?? "") + " ✅ " + prefix + " " + msg.green.bold + "\n")
         }
     }
+    
+    func skipped(before: String? = nil, _ msg: String) {
+        if !quiet {
+            print((before ?? "") + " ⤵️ " + prefix + " " + msg.green.bold + "\n")
+        }
+    }
 
     func failed(before: String? = nil, _ msg: String) {
         if !quiet {

@@ -11,6 +11,9 @@ class Simulator: BaseExecutor {
                   runnerDeploymentPath: String,
                   masterDeploymentPath: String,
                   nodeName: String,
+				  testsExecutionTimeout: Int?,
+				  onlyTestConfiguration: String?,
+				  skipTestConfiguration: String?,
                   log: Logging?) throws {
 
         try super.init(type: type,
@@ -22,6 +25,9 @@ class Simulator: BaseExecutor {
                        runnerDeploymentPath: runnerDeploymentPath,
                        masterDeploymentPath: masterDeploymentPath,
                        nodeName: nodeName,
+					   testsExecutionTimeout: testsExecutionTimeout,
+					   onlyTestConfiguration: onlyTestConfiguration,
+					   skipTestConfiguration: skipTestConfiguration,
                        log: log)
     }
 }
@@ -67,15 +73,12 @@ extension Simulator: TestExecutor {
     @discardableResult
     func reset() -> Result<TestExecutor, Error> {
         self.log?.message(verboseMsg: "Simulator: \"\(self.UDID)\") reseting...")
-        let commands = ""
-//        let commands = "/bin/sh -c '" +
-//            "export DEVELOPER_DIR=\(self.config.xcodePathSafe)/Contents/Developer\n" +
-//                       "xcrun simctl shutdown \(self.UDID)\n" +
-//                       "sleep 5\n" +
-//                       "xcrun simctl erase \(self.UDID)\n" +
-//                       "sleep 5\n" +
-//                       "xcrun simctl boot \(self.UDID)'\n" +
-//   
+        let commands = "/bin/sh -c '" +
+            "export DEVELOPER_DIR=\(self.config.xcodePathSafe)/Contents/Developer\n" +
+                       "xcrun simctl shutdown \(self.UDID)\n" +
+                       "xcrun simctl erase \(self.UDID)\n" +
+                       "xcrun simctl boot \(self.UDID)'\n" +
+                       "sleep 5"
         
         do {
             try self.ssh.run(commands)
