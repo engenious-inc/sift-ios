@@ -17,5 +17,3 @@ https://github.com/engeniousio/sift-ios/discussions
 ## How to setup Sift-ios on Jenkins
 
 https://github.com/engeniousio/sift-ios/wiki/Setup-Sift-on-Jenkins-pipeline
-
-

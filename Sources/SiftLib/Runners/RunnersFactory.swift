@@ -9,6 +9,8 @@ class RunnersFactory {
                                 testsExecutionTimeout: config.testsExecutionTimeout,
                                 setUpScriptPath: config.setUpScriptPath,
                                 tearDownScriptPath: config.tearDownScriptPath,
+								onlyTestConfiguration: config.onlyTestConfiguration,
+								skipTestConfiguration: config.skipTestConfiguration,
                                 delegate: delegate,
                                 log: log)
             } catch let err {

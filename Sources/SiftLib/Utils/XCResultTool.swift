@@ -55,6 +55,6 @@ struct XCResultTool {
         let fullCommand = xcresulttool + "merge " +
                                       inputPaths.map{"\"\($0)\""}.joined(separator: " ") +
                                       " --output-path \(outputPath)"
-        return try Run(timeout: 600.0).run(fullCommand)
+        return try Run().run(fullCommand)
     }
 }
