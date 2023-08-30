@@ -12,7 +12,7 @@ Sift is an ultimate test sharding solution for iOS XCTestand XCUITest. Unlike se
 https://github.com/engeniousio/sift-ios/discussions
 
 
-## [How to setup Sift locally on Mac](https://github.com/engeniousio/sift-ios/wiki/SIFT-Local-Setup)
+## [How to setup Sift locally on Mac](https://engenious.io/sift-ios-local-set-up)
 
 ## How to setup Sift-ios on Jenkins
 
