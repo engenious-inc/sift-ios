@@ -153,7 +153,7 @@ extension Sift {
         mutating func run() throws {
             let config = Config.cliSetup()
             let encoder = JSONEncoder()
-            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+            encoder.outputFormatting = [.prettyPrinted]
             let data = try encoder.encode(config)
             
             print("Your config is ready!")
