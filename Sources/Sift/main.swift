@@ -151,24 +151,24 @@ extension Sift {
         static var configuration = CommandConfiguration(abstract: "Interactive mode, help to setup Sift")
         
         mutating func run() throws {
-            let config = Config.cliSetup()
-            let encoder = JSONEncoder()
-            encoder.outputFormatting = [.prettyPrinted]
-            let data = try encoder.encode(config)
-            
+            let config = CLISetup.start()
+            let currentPath = FileManager.default.currentDirectoryPath
             print("Your config is ready!")
-            print("Provide the path where you going to store your config file", terminator: ": ")
-            let path = readLine() ?? FileManager().homeDirectoryForCurrentUser.path
-            var url = URL(fileURLWithPath: path)
+            print("Provide the path where you going to store your config file | default = \(currentPath)", terminator: ": ")
+            var url = URL(fileURLWithPath: currentPath)
+            if let path = readLine(), !path.isEmpty {
+                url = URL(fileURLWithPath: path)
+            }
             if url.pathExtension != ".json" {
                 url.appendPathComponent("config.json")
             }
-            try data.write(to: url)
+            try config.write(url: url)
             
-            let siftCommand = "\(FileManager().currentDirectoryPath)/Sift run --config \"\(url.path)\""
-            print("All done!")
-            print("Now you can run the Sift by execute this comand:")
+            let siftCommand = "\(currentPath)/Sift run --config \"\(url.path)\""
+            print("All done! 🎉")
+            print("🚀🚀🚀 Now you can run the Sift by execute this comand:")
             print(siftCommand)
+             
             Sift.exit()
         }
         
