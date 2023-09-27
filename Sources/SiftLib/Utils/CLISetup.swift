@@ -13,7 +13,7 @@ public enum CLISetup {
         var config = Config()
         var defaultPrivateKeyPath: String?
         var defaultPublicKeyPath: String?
-        print("Welcom to interactive setup mode. This mode will help you to setup Sift.".bold)
+        print("Welcome to interactive setup mode. This mode will help you to setup Sift.".bold)
         
         // Initial questions
         config.xctestrunPath = getInput(prompt: "Provide the path for the .xctestrun file")
@@ -66,6 +66,9 @@ public enum CLISetup {
                 while true {
                     optionNumber = getInput(prompt: "Provide the number")
                     if optionNumber > 0 && optionNumber < 4 {
+                        print("Hint:")
+                        print("to list all simulators run: xcrun xctrace list")
+                        print("to list all connected devices run: xcrun xctrace list devices")
                         break
                     }
                 }
