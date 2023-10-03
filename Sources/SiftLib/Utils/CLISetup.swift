@@ -121,7 +121,7 @@ public enum CLISetup {
             print("This field is required, please enter a value".red)
             return getInput(prompt: prompt, defaultValue: defaultValue)
         }
-        return value.trimmingCharacters(in: .newlines)
+        return value.trimmingCharacters(in: .whitespacesAndNewlines)
     }
     
     private static func getInput(prompt: String, defaultValue: Int? = nil) -> Int {
