@@ -33,7 +33,7 @@ enum CommandLineExecutor {
             }
         }
 		
-        runCommand.launch()
+        try runCommand.run()
         runCommand.waitUntilExit()
         try stdoutPipe.fileHandleForReading.close()
         try stderrPipe.fileHandleForReading.close()
