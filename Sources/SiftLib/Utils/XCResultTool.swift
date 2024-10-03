@@ -30,7 +30,8 @@ struct XCResultTool {
         let fullCommand = xcresulttool + "get " +
                                       "--format \(format.rawValue) " +
                                       unwrapedId +
-                                      "--path '\(xcresultPath)'"
+                                      "--path '\(xcresultPath)' " +
+                                      "--legacy"
         return try Run().run(fullCommand).output
     }
     
