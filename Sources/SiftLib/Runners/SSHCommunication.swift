@@ -38,13 +38,13 @@ struct SSHCommunication<SSH: SSHExecutor>: Communication {
 		log?.message(verboseMsg: "\(nodeName): Connection successfully established")
 	}
     
-    func getBuildOnRunner(buildPath: String) throws {
+    func getBuildOnRunner(buildPath: String) async throws {
         log?.message(verboseMsg: "Uploading build to \(self.nodeName)...")
         let buildPathOnNode = "\(self.runnerDeploymentPath)/\(self.temporaryBuildZipName)"
-        _ = try? self.ssh.run("mkdir \(self.runnerDeploymentPath)")
-        _ = try? self.ssh.run("rm -r \(self.runnerDeploymentPath)/*")
+        _ = try? await self.ssh.run("mkdir \(self.runnerDeploymentPath)")
+        _ = try? await self.ssh.run("rm -r \(self.runnerDeploymentPath)/*")
         try self.ssh.uploadFile(localPath: buildPath, remotePath: buildPathOnNode)
-        try self.ssh.run("unzip -o -q \(buildPathOnNode) -d \(self.runnerDeploymentPath)")
+        try await self.ssh.run("unzip -o -q \(buildPathOnNode) -d \(self.runnerDeploymentPath)")
         log?.message(verboseMsg: "\(self.nodeName): Build successfully uploaded to: \(self.runnerDeploymentPath)")
     }
     
@@ -57,7 +57,7 @@ struct SSHCommunication<SSH: SSHExecutor>: Communication {
         return xctestrunPath
     }
     
-    func executeOnRunner(command: String) throws -> (status: Int32, output: String) {
-        return try self.ssh.run(command)
+    func executeOnRunner(command: String) async throws -> (status: Int32, output: String) {
+        return try await self.ssh.run(command)
     }
 }

@@ -33,7 +33,7 @@ struct Xcodebuild {
         var result: (status: Int32, output: String) = (1, "")
 		for counter in 1...testsExecutionTimeout where result.status != 0 {
             try await Task.sleep(nanoseconds: UInt64(delay) * 1_000_000_000)
-            result = try shell.run("cat \(exitStatusPath)")
+            result = try await shell.run("cat \(exitStatusPath)")
 			
 			guard counter * delay <= testsExecutionTimeout else {
 				break

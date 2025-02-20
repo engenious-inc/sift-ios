@@ -62,7 +62,7 @@ extension Node: Runner {
     
 	func start() async {
         do {
-            try communication.getBuildOnRunner(buildPath: await delegate.buildPath())
+            try await communication.getBuildOnRunner(buildPath: await delegate.buildPath())
             
             let xctestrun = try injectENVToXctestrun() // all env should be injected in to the .xctestrun file
             let xctestrunPath = try communication.saveOnRunner(xctestrun: xctestrun) // save *.xctestrun file on Node side
@@ -73,11 +73,11 @@ extension Node: Runner {
             }
             
             await executors.concurrentForEach { executor in
-                if executor.ready() {
+                if await executor.ready() {
                     await self.runTests(in: executor)
                 }
             }
-			self.finish(executors: executors)
+            await self.finish(executors: executors)
         } catch {
             self.log?.error("\(name): \(error)")
             return
@@ -183,7 +183,7 @@ extension Node: Runner {
     
     private func testExecutionSuccessFlow(_ tests: [String], executor: TestExecutor) async {
         do {
-            let pathToTestsResults = try executor.sendResultsToMaster()
+            let pathToTestsResults = try await executor.sendResultsToMaster()
             await self.delegate.handleTestsResults(runner: self, executedTests: tests, pathToResults: pathToTestsResults)
             await self.runTests(in: executor) // continue running next tests
         } catch let err {
@@ -218,29 +218,29 @@ extension Node: Runner {
         return xctestrun
     }
     
-	private func finish(executors: [any TestExecutor], reset: Bool = true) {
-		executors.forEach { executor in
+	private func finish(executors: [any TestExecutor], reset: Bool = true) async {
+        await executors.concurrentForEach { executor in
 			self.log?.message(verboseMsg: "\(self.name) \(executor.type.rawValue): \"\(executor.UDID)\") finished")
-            executor.reset()
+            await executor.reset()
 		}
         self.log?.message(verboseMsg: "\(self.name): FINISHED")
     }
     
-    private func launchSimulator() {
+    private func launchSimulator() async {
         log?.message(verboseMsg: "Launch: \(config.xcodePathSafe)/Contents/Developer/Applications/Simulator.app")
-        _ = try? self.communication.executeOnRunner(command: "open \(config.xcodePathSafe)/Contents/Developer/Applications/Simulator.app")
+        _ = try? await self.communication.executeOnRunner(command: "open \(config.xcodePathSafe)/Contents/Developer/Applications/Simulator.app")
     }
     
-    private func killSimulators() {
+    private func killSimulators() async {
         self.log?.message(verboseMsg: "\(self.name) kill simulator process...")
-        _ = try? self.communication.executeOnRunner(command: "osascript -e 'quit app \"Simulator\"'")
+        _ = try? await self.communication.executeOnRunner(command: "osascript -e 'quit app \"Simulator\"'")
         sleep(1)
-        let output = try? self.communication.executeOnRunner(command: "for p in $(pgrep -i simulator); do echo \"Terminating process: $p\"; kill -3 $p; done")
+        let output = try? await self.communication.executeOnRunner(command: "for p in $(pgrep -i simulator); do echo \"Terminating process: $p\"; kill -3 $p; done")
         log?.message(verboseMsg: "\(self.name): \(output?.output ?? "")")
     }
 
-    private func getPidForProccess(name: String) -> [Int] {
-        guard let result = try? self.communication.executeOnRunner(command: "pgrep -i \(name)") else {
+    private func getPidForProccess(name: String) async -> [Int] {
+        guard let result = try? await self.communication.executeOnRunner(command: "pgrep -i \(name)") else {
             return []
         }
         return result.output.components(separatedBy: "\n").compactMap { Int($0) }

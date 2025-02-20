@@ -9,3 +9,17 @@ extension Array where Element: Hashable {
         return Set(self)
     }
 }
+
+extension Sequence {
+    func asyncFilter(
+        _ predicate: (Element) async throws -> Bool
+    ) async rethrows -> [Element] {
+        var result: [Element] = []
+        for element in self {
+            if try await predicate(element) {
+                result.append(element)
+            }
+        }
+        return result
+    }
+}

@@ -1,5 +1,5 @@
 import Foundation
 
 protocol Dump {
-    func dump(path: String, moduleName: String) throws -> [String]
+    func dump(path: String, moduleName: String) async throws -> [String]
 }

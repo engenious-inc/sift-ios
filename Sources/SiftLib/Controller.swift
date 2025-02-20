@@ -14,17 +14,19 @@ public struct Controller {
     private var tasks: Atomic<[Task<(), Never>]> = .init(value: [])
 	private let isTestProcessingDisabled: Bool
 
-	public init(config: Config, tests: [String]? = nil, isTestProcessingDisabled: Bool = false, log: Logging?) throws {
+	public init(config: Config, tests: [String]? = nil, isTestProcessingDisabled: Bool = false, log: Logging?) async throws {
 		self.isTestProcessingDisabled = isTestProcessingDisabled
         self.log = log
         self.config = config
         let xctestrun = try XCTestRunFactory.create(path: config.xctestrunPath, log: log)
 		self.xctestrun = xctestrun
 		self.xcresulttool = XCResultTool()
-		self.bundleTests = self.xctestrun.testBundleExecPaths(config: config.onlyTestConfiguration).flatMap { bundle -> [String] in
+        self.bundleTests = await self.xctestrun
+            .testBundleExecPaths(config: config.onlyTestConfiguration)
+            .concurrentFlatMap { bundle -> [String] in
             let moduleName = bundle.path.components(separatedBy: "/").last ?? bundle.target
             do {
-				let listOfTests: [String] = try TestsDump().dump(path: bundle.path, moduleName: moduleName)
+				let listOfTests: [String] = try await TestsDump().dump(path: bundle.path, moduleName: moduleName)
                 log?.message("\(moduleName): \(listOfTests.count) tests")
                 return listOfTests
             } catch {
@@ -69,7 +71,7 @@ public struct Controller {
             rerunLimit: config.rerunFailedTest
         )
         self.xcresultFiles = Atomic(value: [])
-		self.zipBuildPath = try self.zipBuild()
+        self.zipBuildPath = try await self.zipBuild()
 		self.runners = RunnersFactory.create(config: self.config, delegate: self, log: log)
     }
 	
@@ -77,8 +79,8 @@ public struct Controller {
 		let shell = Run()
 		log?.message("Total tests for execution: \(await self.tests.count)")
 		log?.message(verboseMsg: "Create/Clean: \(self.config.outputDirectoryPath)")
-		_ = try? shell.run("mkdir \(self.config.outputDirectoryPath)")
-		_ = try? shell.run("rm -r \(self.config.outputDirectoryPath)/*")
+		_ = try? await shell.run("mkdir \(self.config.outputDirectoryPath)")
+        _ = try? await shell.run("rm -r \(self.config.outputDirectoryPath)/*")
 		
 		await self.runners.concurrentForEach {
 			await $0.start()
@@ -86,7 +88,7 @@ public struct Controller {
 		await self.checkout()
     }
 
-    private func zipBuild() throws -> String {
+    private func zipBuild() async throws -> String {
 		let filesToZip: Set<String> = .init(self.xctestrun.dependentProductPaths(config: config.onlyTestConfiguration).compactMap { (path) -> String? in
 			var path = path
 			if path.contains("-Runner.app") {
@@ -96,9 +98,13 @@ public struct Controller {
         })
         //filesToZip.append(config.xctestrunPath.replacingOccurrences(of: self.xctestrun.testRootPath + "/", with: ""))
         log?.message(verboseMsg: "Start zip dependent files: \n\t\t- " + filesToZip.joined(separator: "\n\t\t- "))
-        try Run().run(Scripts.zip(workdirectory: self.xctestrun.testRootPath,
-								  zipName: "build.zip",
-								  files: Array(filesToZip)))
+        try await Run().run(
+            Scripts.zip(
+                workdirectory: self.xctestrun.testRootPath,
+                zipName: "build.zip",
+                files: Array(filesToZip)
+            )
+        )
         let zipPath = "\(self.xctestrun.testRootPath)/build.zip"
         log?.message(verboseMsg: "Zip path: " + zipPath)
         return zipPath
@@ -110,11 +116,11 @@ public struct Controller {
             let uuid = UUID().uuidString
             let unzipFolderPath = "\(outputDirectoryPath)/\(uuid)"
             
-            try shell.run("unzip -o -q \"\(path)\" -d \(unzipFolderPath)")
+            try await shell.run("unzip -o -q \"\(path)\" -d \(unzipFolderPath)")
             var files = ""
             for limit in 1...3 where files.isEmpty {
                 if limit > 1 { sleep(1) }
-                files = try shell.run("ls -1 \(unzipFolderPath) | grep -E '.\\.xcresult$'").output
+                files = try await shell.run("ls -1 \(unzipFolderPath) | grep -E '.\\.xcresult$'").output
             }
             let xcresultFiles =  files.components(separatedBy: "\n").filter { $0.contains(".xcresult") }
             guard let xcresultFileName = (xcresultFiles.sorted { $0 > $1 }).first else {
@@ -123,15 +129,15 @@ public struct Controller {
             }
             
             let xcresultAbsolutePath = "\(unzipFolderPath)/\(xcresultFileName)"
-            _ = try? shell.run("mkdir \(outputDirectoryPath)/final")
-            try shell.run("cp -R '\(xcresultAbsolutePath)' " +
+            _ = try? await shell.run("mkdir \(outputDirectoryPath)/final")
+            try await shell.run("cp -R '\(xcresultAbsolutePath)' " +
                                "'\(outputDirectoryPath)/final/\(uuid).xcresult'")
             
             await self.xcresultFiles.append(value: "\(outputDirectoryPath)/final/\(uuid).xcresult")
             let xcresult = XCResult(path: "\(outputDirectoryPath)/final/\(uuid).xcresult",
                 tool: xcresulttool)
-            _ = try? shell.run("rm -r '\(unzipFolderPath)'")
-            _ = try? shell.run("rm -r '\(path)'")
+            _ = try? await shell.run("rm -r '\(unzipFolderPath)'")
+            _ = try? await shell.run("rm -r '\(path)'")
             
             return xcresult
         } catch let err {
@@ -152,9 +158,9 @@ public struct Controller {
 			log?.message(verboseMsg: "Merging results...")
 			var xcresultFiles = await self.xcresultFiles.getValue()
 			if xcresultFiles.isEmpty {
-				xcresultFiles = try unzipTestsResults()
+                xcresultFiles = try await unzipTestsResults()
 			}
-			if let mergeXCResult = try? self.xcresulttool.merge(inputPaths: xcresultFiles, outputPath: mergedResultsPath), mergeXCResult.status != 0 {
+            if let mergeXCResult = try? await self.xcresulttool.merge(inputPaths: xcresultFiles, outputPath: mergedResultsPath), mergeXCResult.status != 0 {
 				log?.message(verboseMsg: mergeXCResult.output)
 			} else {
 				log?.message(verboseMsg: "All results is merged: \(mergedResultsPath)")
@@ -213,31 +219,30 @@ public struct Controller {
 		}
     }
 	
-	private func unzipTestsResults() throws -> [String] {
+    private func unzipTestsResults() async throws -> [String] {
 		let shell = Run()
-		let files = try shell.run("ls -1 '\(self.config.outputDirectoryPath)' | grep -E '.\\.zip$'").output
+        let files = try await shell.run("ls -1 '\(self.config.outputDirectoryPath)' | grep -E '.\\.zip$'").output
 			.components(separatedBy: "\n")
 			.compactMap {
 				return $0.isEmpty ? nil : "\(self.config.outputDirectoryPath)/\($0)"
 			}
-		try shell.run("mkdir \(self.config.outputDirectoryPath)/final")
-		return files.flatMap { zipFile in
+        try await shell.run("mkdir \(self.config.outputDirectoryPath)/final")
+        return await files.concurrentFlatMap { zipFile in
 			let uuid = UUID().uuidString
 			let unzipFolderPath = "\(self.config.outputDirectoryPath)/\(uuid)"
-			_ = try? shell.run("unzip -o -q \"\(zipFile)\" -d \(unzipFolderPath)")
-			_ = try? shell.run("rm -r '\(zipFile)'")
-			let xcresultFilesString = (try? shell.run("ls -1 \(unzipFolderPath) | grep -E '.\\.xcresult$'").output) ?? ""
+            _ = try? await shell.run("unzip -o -q \"\(zipFile)\" -d \(unzipFolderPath)")
+            _ = try? await shell.run("rm -r '\(zipFile)'")
+            let xcresultFilesString = await (try? shell.run("ls -1 \(unzipFolderPath) | grep -E '.\\.xcresult$'").output) ?? ""
 			let xcresultFiles =  xcresultFilesString.components(separatedBy: "\n").filter { $0.contains(".xcresult") }
 			
-			let results = xcresultFiles.map { xcresultFileName in
+            let results = await xcresultFiles.concurrentMap { xcresultFileName in
 				let xcresultAbsoluteTempPath = "\(unzipFolderPath)/\(xcresultFileName)"
 				let xcresultAbsoluteFinalPath = "\(self.config.outputDirectoryPath)/final/\(uuid).xcresult"
-				_ = try? shell.run("cp -R '\(xcresultAbsoluteTempPath)' " +
-							  "'\(xcresultAbsoluteFinalPath)'")
+                _ = try? await shell.run("cp -R '\(xcresultAbsoluteTempPath)' '\(xcresultAbsoluteFinalPath)'")
 				return xcresultAbsoluteFinalPath
 			}
 			
-			_ = try? shell.run("rm -r '\(unzipFolderPath)'")
+            _ = try? await shell.run("rm -r '\(unzipFolderPath)'")
 			
 			return results
 		}
@@ -270,10 +275,10 @@ extension Controller: RunnerDelegate {
 			}
 
 			log?.message(verboseMsg: "\(runner.name) Parsing: \(xcresult.path)")
-			var testsMetadataBuff = try? xcresult.testsMetadata()
+            var testsMetadataBuff = try? await xcresult.testsMetadata()
 			for _ in 1...3 where testsMetadataBuff?.isEmpty ?? true {
 				sleep(1)
-				testsMetadataBuff = try? xcresult.testsMetadata()
+                testsMetadataBuff = try? await xcresult.testsMetadata()
 			}
 			
 			guard let testsMetadataBuff = testsMetadataBuff else {
@@ -308,7 +313,7 @@ extension Controller: RunnerDelegate {
                     self.log?.skipped("\(runner.name): \(executedTest) " +
                                       "- \(testMetaData.testStatus): \(String(format: "%.3f", testMetaData.duration ?? 0)) sec.")
                 } else {
-                    let actionsInvocationRecord = try? xcresult.actionsInvocationRecord()
+                    let actionsInvocationRecord = try? await xcresult.actionsInvocationRecord()
                     let message = actionsInvocationRecord?.issues.testFailureSummaries.map { $0.message }.joined(separator: "\n") ?? ""
                     await self.tests.update(
                         test: executedTest,

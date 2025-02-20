@@ -16,10 +16,10 @@ public protocol TestExecutor: Sendable {
 	var testsExecutionTimeout: Int { get }
 	var onlyTestConfiguration: String? { get }
 	var skipTestConfiguration: String? { get }
-    func ready() -> Bool
+    func ready() async -> Bool
     func run(tests: [String]) async -> (TestExecutor, Result<[String], TestExecutorError>)
     @discardableResult
-    func reset() -> Result<TestExecutor, Error>
+    func reset() async -> Result<TestExecutor, Error>
     func deleteApp(bundleId: String) async
 }
 
@@ -30,7 +30,7 @@ extension TestExecutor {
         }
         do {
 			let xcodebuild = Xcodebuild(xcodePath: self.config.xcodePathSafe, shell: self.ssh, testsExecutionTimeout: self.testsExecutionTimeout, onlyTestConfiguration: onlyTestConfiguration, skipTestConfiguration: skipTestConfiguration)
-            if try self.executeShellScript(path: self.setUpScriptPath, testNameEnv: tests.first ?? "") == 1 {
+            if try await self.executeShellScript(path: self.setUpScriptPath, testNameEnv: tests.first ?? "") == 1 {
                 return (self, .failure(.testSkipped))
             }
 
@@ -45,25 +45,25 @@ extension TestExecutor {
             self.log?.message(verboseMsg: "\(type): \"\(self.UDID)\") " +
                                     "tests run finished with status: \(result)")
 
-            try self.executeShellScript(path: self.tearDownScriptPath, testNameEnv: tests.first ?? "")
+            try await self.executeShellScript(path: self.tearDownScriptPath, testNameEnv: tests.first ?? "")
             if result == 0 || result == 65 {
                 return (self, .success(tests))
             }
             
-			self.reset()
+            await self.reset()
             return (self, .failure(.executionError(description: "\(type): \(self.UDID) " +
             "- status \(result) " +
             "\(result == 143 ? "- timeout" : "")",
             tests: tests)))
         } catch let err {
             await executionFailureCounter.increment()
-			self.reset()
+            await self.reset()
             return (self, .failure(.executionError(description: "\(type): \(self.UDID) - \(err)", tests: tests)))
         }
     }
     
     @discardableResult
-    func executeShellScript(path: String?, testNameEnv: String) throws -> Int32? {
+    func executeShellScript(path: String?, testNameEnv: String) async throws -> Int32? {
         if let scriptPath = path {
             log?.message(verboseMsg: "\"\(self.UDID)\" executing \"\(scriptPath)\" script...")
             let script = try String(contentsOfFile: scriptPath, encoding: .utf8)
@@ -73,17 +73,17 @@ extension TestExecutor {
                     .environmentVariables?
                     .map { "export \($0.key)=\($0.value)" }
                     .joined(separator: "\n") ?? "")
-            let scriptExecutionResult = try self.ssh.run(env + script)
+            let scriptExecutionResult = try await self.ssh.run(env + script)
             log?.message(verboseMsg: "Device: \"\(self.UDID)\"\n\(scriptExecutionResult.output)")
             return scriptExecutionResult.status
         }
         return nil
     }
     
-    func sendResultsToMaster() throws -> String? {
+    func sendResultsToMaster() async throws -> String? {
         log?.message(verboseMsg: "\(self.nodeName): Uploading tests result to master...")
         let resultsFolderPath = "\(self.runnerDeploymentPath)/\(UDID)/Logs/Test"
-        let (_, filesString) = try self.ssh.run("ls -1 \(resultsFolderPath) | grep -E '.\\.xcresult$'")
+        let (_, filesString) = try await self.ssh.run("ls -1 \(resultsFolderPath) | grep -E '.\\.xcresult$'")
         let xcresultFiles =  filesString.components(separatedBy: "\n")
         guard let xcresult = (xcresultFiles.filter { $0.contains(".xcresult") }.sorted { $0 > $1 }).first else {
             log?.error("*.xcresult files not found in \(resultsFolderPath): \n \(filesString)")
@@ -91,9 +91,9 @@ extension TestExecutor {
         }
         log?.message(verboseMsg: "\(self.nodeName): Test results: \(xcresult)")
 		let masterPath = "\(self.masterDeploymentPath)/\(UUID().uuidString).zip"
-        try self.ssh.run("cd '\(resultsFolderPath)'\n" + "zip -r -X -q -0 './\(UDID).zip' './\(xcresult)'")
+        try await self.ssh.run("cd '\(resultsFolderPath)'\n" + "zip -r -X -q -0 './\(UDID).zip' './\(xcresult)'")
         try self.ssh.downloadFile(remotePath: "\(resultsFolderPath)/\(UDID).zip", localPath: "\(masterPath)")
-        _ = try? self.ssh.run("rm -r \(resultsFolderPath)")
+        _ = try? await self.ssh.run("rm -r \(resultsFolderPath)")
         log?.message(verboseMsg: "\(self.nodeName): Successfully uploaded on master: \(masterPath)")
         return masterPath
     }

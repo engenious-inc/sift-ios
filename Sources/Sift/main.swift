@@ -35,44 +35,49 @@ extension Sift {
 		var isTestProcessingDisabled: Bool = false
 
 		mutating func run() {
-			
+            let onlyTesting = self.onlyTesting
+            let testsPath = self.testsPath
+            let path = self.path
+            let isTestProcessingDisabled = self.isTestProcessingDisabled
+            
 			var log = Log()
 			log.verbose = verboseMode
-			do {
-				var tests: [String] = onlyTesting
-				
-				if let testsPath = testsPath {
-					tests = try String(contentsOfFile: testsPath)
-						.components(separatedBy: "\n")
-						.filter { !$0.isEmpty }
-				}
-				
-				let config = try Config(path: path)
-				let testsController = try Controller(
-					config: config,
-					tests: tests,
-					isTestProcessingDisabled: isTestProcessingDisabled,
-					log: log
-				)
-				let mainTask = Task {
-					await testsController.start()
-				}
-				
-				if let timeout = timeout {
-					Task {
-						try? await Task.sleep(nanoseconds: UInt64(timeout) * 1_000_000_000)
-						var log = Log()
-						log.verbose = true
-						log.error("Timeout")
-						mainTask.cancel()
-						Sift.exit()
-					}
-				}
-				RunLoop.main.run()
-			} catch let error {
-				log.error("\(error)")
-				Sift.exit(withError: error)
-			}
+
+            let mainTask = Task {
+                do {
+                    var tests: [String] = onlyTesting
+
+                    if let testsPath = testsPath {
+                        tests = try String(contentsOfFile: testsPath)
+                            .components(separatedBy: "\n")
+                            .filter { !$0.isEmpty }
+                    }
+
+                    let config = try Config(path: path)
+                    let testsController = try await Controller(
+                        config: config,
+                        tests: tests,
+                        isTestProcessingDisabled: isTestProcessingDisabled,
+                        log: log
+                    )
+                    await testsController.start()
+                } catch let error {
+                    log.error("\(error)")
+                    Sift.exit(withError: error)
+                }
+            }
+
+            if let timeout = timeout {
+                Task {
+                    try? await Task.sleep(nanoseconds: UInt64(timeout) * 1_000_000_000)
+                    var log = Log()
+                    log.verbose = true
+                    log.error("Timeout")
+                    mainTask.cancel()
+                    Sift.exit()
+                }
+            }
+            RunLoop.main.run()
         }
     }
 
@@ -83,16 +88,20 @@ extension Sift {
         var path: String
 
         mutating func run() {
-			var log = Log()
-			log.quiet = true
-            do {
-                let config = try Config(path: path)
-                let testsController = try Controller(config: config, log: log)
-                print(testsController.tests)
-            } catch let error {
-                log.error("\(error)")
-                Sift.exit(withError: error)
+            let path = path
+            Task {
+                var log = Log()
+                log.quiet = true
+                do {
+                    let config = try Config(path: path)
+                    let testsController = try await Controller(config: config, log: log)
+                    print(testsController.tests)
+                } catch let error {
+                    log.error("\(error)")
+                    Sift.exit(withError: error)
+                }
             }
+            RunLoop.main.run()
         }
     }
 }

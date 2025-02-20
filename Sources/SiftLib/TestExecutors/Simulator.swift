@@ -69,7 +69,7 @@ struct Simulator: TestExecutor {
 		executionFailureCounter = .init(value: 0)
 	}
 
-    func ready() -> Bool {
+    func ready() async -> Bool {
         self.log?.message(verboseMsg: "check Simulator \"\(self.UDID)\"")
         let prefixCommand = "export DEVELOPER_DIR=\(self.config.xcodePathSafe)/Contents/Developer\n"
         var command = [
@@ -79,7 +79,7 @@ struct Simulator: TestExecutor {
             " | grep -E -o -i \"([0-9a-f]{8}-([0-9a-f]{4}-){3}[0-9a-f]{12})\""
         ]
 
-        guard let output = try? self.ssh.run(command.joined()).output else {
+        guard let output = try? await self.ssh.run(command.joined()).output else {
             self.log?.message(verboseMsg: "Error: can't run \"\(command.joined())\"")
             return false
         }
@@ -89,14 +89,14 @@ struct Simulator: TestExecutor {
         }
                 
         command[2] = ""
-        guard let output = try? self.ssh.run(command.joined()).output else {
+        guard let output = try? await self.ssh.run(command.joined()).output else {
             self.log?.message(verboseMsg: "Error: can't run \"\(command.joined())\"")
             return false
         }
         
         if output.contains(UDID + "\n") {
             self.log?.message("Simulator \"\(UDID)\" is not booted.")
-			reset()
+            await reset()
             return true
         }
         
@@ -106,7 +106,7 @@ struct Simulator: TestExecutor {
     }
     
     @discardableResult
-    func reset() -> Result<TestExecutor, Error> {
+    func reset() async -> Result<TestExecutor, Error> {
         self.log?.message(verboseMsg: "Simulator: \"\(self.UDID)\") reseting...")
         let commands = "/bin/sh -c '" +
         "export DEVELOPER_DIR=\(self.config.xcodePathSafe)/Contents/Developer\n" +
@@ -116,7 +116,7 @@ struct Simulator: TestExecutor {
         "sleep 5"
         
         do {
-            try self.ssh.run(commands)
+            try await self.ssh.run(commands)
             self.log?.message(verboseMsg: "Simulator: \"\(self.UDID)\") reseted")
             return .success(self)
         } catch let err {
@@ -124,7 +124,7 @@ struct Simulator: TestExecutor {
         }
     }
     
-    func deleteApp(bundleId: String) {
-        _ = try? self.ssh.run("xcrun simctl uninstall \(self.UDID) \(bundleId)")
+    func deleteApp(bundleId: String) async {
+        _ = try? await self.ssh.run("xcrun simctl uninstall \(self.UDID) \(bundleId)")
     }
 }
