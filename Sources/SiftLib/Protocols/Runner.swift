@@ -1,7 +1,7 @@
 import Foundation
 
-public protocol Runner: AnyObject {
+public protocol Runner: Sendable {
     var name: String { get }
-    var delegate: RunnerDelegate! { get }
-    func start() async
+    var delegate: RunnerDelegate { get }
+	func start() async
 }

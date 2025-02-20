@@ -1,7 +1,7 @@
 import Foundation
 import CollectionConcurrencyKit
 
-class Node {
+struct Node: Sendable {
     
     private let config: Config.NodeConfig
     private let outputDirectoryPath: String
@@ -10,35 +10,49 @@ class Node {
     private let tearDownScriptPath: String?
 	private var onlyTestConfiguration: String?
 	private var skipTestConfiguration: String?
-    private var executors: [TestExecutor]
-    private var communication: Communication!
+    private let communication: Communication
     private let log: Logging?
     
     let name: String
-    weak var delegate: RunnerDelegate!
+    let delegate: RunnerDelegate
     
-    init(config: Config.NodeConfig,
-		 outputDirectoryPath: String,
-		 testsExecutionTimeout: Int?,
-		 setUpScriptPath: String?,
-		 tearDownScriptPath: String?,
-		 onlyTestConfiguration: String?,
-		 skipTestConfiguration: String?,
-		 delegate: RunnerDelegate,
-		 log: Logging?) throws {
+    init(
+        config: Config.NodeConfig,
+        outputDirectoryPath: String,
+        testsExecutionTimeout: Int?,
+        setUpScriptPath: String?,
+        tearDownScriptPath: String?,
+        onlyTestConfiguration: String?,
+        skipTestConfiguration: String?,
+        delegate: RunnerDelegate,
+        log: Logging?
+    ) throws {
         self.log = log
         self.config = config
         self.outputDirectoryPath = outputDirectoryPath
         self.testsExecutionTimeout = testsExecutionTimeout
         self.setUpScriptPath = setUpScriptPath
         self.tearDownScriptPath = tearDownScriptPath
-        self.executors = []
         self.name = config.name
 		self.onlyTestConfiguration = onlyTestConfiguration
 		self.skipTestConfiguration = skipTestConfiguration
         self.delegate = delegate
         
         log?.message(verboseMsg: "\(self.name) Created")
+		communication = try SSHCommunication<SSH>(
+			host: config.host,
+			port: config.port,
+			username: config.username,
+			password: config.password,
+			privateKey: config.privateKey,
+			publicKey: config.publicKey,
+			passphrase: config.passphrase,
+			runnerDeploymentPath: config.deploymentPath,
+			masterDeploymentPath: outputDirectoryPath,
+			nodeName: config.name,
+			arch: config.arch,
+			log: log
+		)
     }
 }
 
@@ -46,26 +60,14 @@ class Node {
 
 extension Node: Runner {
     
-    func start() async {
+	func start() async {
         do {
-            communication = try SSHCommunication<SSH>(host: config.host,
-                                                           port: config.port,
-                                                       username: config.username,
-                                                       password: config.password,
-                                                     privateKey: config.privateKey,
-                                                      publicKey: config.publicKey,
-                                                     passphrase: config.passphrase,
-                                           runnerDeploymentPath: config.deploymentPath,
-                                           masterDeploymentPath: outputDirectoryPath,
-                                                       nodeName: config.name,
-                                                           arch: config.arch,
-                                                            log: log)
             try communication.getBuildOnRunner(buildPath: await delegate.buildPath())
             
             let xctestrun = try injectENVToXctestrun() // all env should be injected in to the .xctestrun file
             let xctestrunPath = try communication.saveOnRunner(xctestrun: xctestrun) // save *.xctestrun file on Node side
             
-            executors = createExecutors(xctestrunPath: xctestrunPath)
+            let executors = createExecutors(xctestrunPath: xctestrunPath)
             guard !executors.isEmpty else {
                 return
             }
@@ -75,36 +77,34 @@ extension Node: Runner {
                     await self.runTests(in: executor)
                 }
             }
-			self.finish()
-        } catch let err {
-            self.log?.error("\(name): \(err)")
+			self.finish(executors: executors)
+        } catch {
+            self.log?.error("\(name): \(error)")
             return
         }
     }
-}
 
-//MARK: - Internal methods
-
-extension Node {
     private func createExecutors(xctestrunPath: String) -> [TestExecutor] {
         if let simulators = self.config.UDID.simulators, !simulators.isEmpty {
             return simulators.compactMap {
                 do {
-					return try Simulator(type: .simulator,
-										 UDID: $0,
-                                         config: self.config,
-                                         xctestrunPath: xctestrunPath,
-                                         setUpScriptPath: self.setUpScriptPath,
-                                         tearDownScriptPath: self.tearDownScriptPath,
-                                         runnerDeploymentPath: config.deploymentPath,
-                                         masterDeploymentPath: outputDirectoryPath,
-                                         nodeName: config.name,
-										 testsExecutionTimeout: testsExecutionTimeout,
-										 onlyTestConfiguration: onlyTestConfiguration,
-										 skipTestConfiguration: skipTestConfiguration,
-                                         log: log)
-                } catch let err {
-                    self.log?.error("\(self.name): \(err)")
+					return try Simulator(
+						type: .simulator,
+						UDID: $0,
+						config: self.config,
+						xctestrunPath: xctestrunPath,
+						setUpScriptPath: self.setUpScriptPath,
+						tearDownScriptPath: self.tearDownScriptPath,
+						runnerDeploymentPath: config.deploymentPath,
+						masterDeploymentPath: outputDirectoryPath,
+						nodeName: config.name,
+						testsExecutionTimeout: testsExecutionTimeout,
+						onlyTestConfiguration: onlyTestConfiguration,
+						skipTestConfiguration: skipTestConfiguration,
+						log: log
+					)
+                } catch {
+                    self.log?.error("\(self.name): \(error)")
                     return nil
                 }
             }
@@ -113,43 +113,47 @@ extension Node {
         if let devices = self.config.UDID.devices {
             return devices.compactMap {
                 do {
-					return try Device(type: .device,
-									  UDID: $0,
-                                      config: self.config,
-                                      xctestrunPath: xctestrunPath,
-                                      setUpScriptPath: self.setUpScriptPath,
-                                      tearDownScriptPath: self.tearDownScriptPath,
-                                      runnerDeploymentPath: config.deploymentPath,
-                                      masterDeploymentPath: outputDirectoryPath,
-                                      nodeName: config.name,
-									  testsExecutionTimeout: testsExecutionTimeout,
-									  onlyTestConfiguration: onlyTestConfiguration,
-									  skipTestConfiguration: skipTestConfiguration,
-                                      log: log)
+                    return try Device(
+                        type: .device,
+                        UDID: $0,
+                        config: self.config,
+                        xctestrunPath: xctestrunPath,
+                        setUpScriptPath: self.setUpScriptPath,
+                        tearDownScriptPath: self.tearDownScriptPath,
+                        runnerDeploymentPath: config.deploymentPath,
+                        masterDeploymentPath: outputDirectoryPath,
+                        nodeName: config.name,
+                        testsExecutionTimeout: testsExecutionTimeout,
+                        onlyTestConfiguration: onlyTestConfiguration,
+                        skipTestConfiguration: skipTestConfiguration,
+                        log: log
+                    )
                 } catch let err {
                     self.log?.error("\(self.name): \(err)")
                     return nil
                 }
             }
-            
+
         }
 		
 		if let mac = self.config.UDID.mac {
 			return mac.compactMap {
 				do {
-					return try Device(type: .macOS,
-									  UDID: $0,
-									  config: self.config,
-									  xctestrunPath: xctestrunPath,
-									  setUpScriptPath: self.setUpScriptPath,
-									  tearDownScriptPath: self.tearDownScriptPath,
-                                      runnerDeploymentPath: config.deploymentPath,
-                                      masterDeploymentPath: outputDirectoryPath,
-                                      nodeName: config.name,
-									  testsExecutionTimeout: testsExecutionTimeout,
-									  onlyTestConfiguration: onlyTestConfiguration,
-									  skipTestConfiguration: skipTestConfiguration,
-                                      log: log)
+                    return try Device(
+                        type: .macOS,
+                        UDID: $0,
+                        config: self.config,
+                        xctestrunPath: xctestrunPath,
+                        setUpScriptPath: self.setUpScriptPath,
+                        tearDownScriptPath: self.tearDownScriptPath,
+                        runnerDeploymentPath: config.deploymentPath,
+                        masterDeploymentPath: outputDirectoryPath,
+                        nodeName: config.name,
+                        testsExecutionTimeout: testsExecutionTimeout,
+                        onlyTestConfiguration: onlyTestConfiguration,
+                        skipTestConfiguration: skipTestConfiguration,
+                        log: log
+                    )
 				} catch let err {
                     self.log?.error("\(self.name): \(err)")
 					return nil
@@ -214,18 +218,12 @@ extension Node {
         return xctestrun
     }
     
-    private func finish(reset: Bool = true) {
+	private func finish(executors: [any TestExecutor], reset: Bool = true) {
 		executors.forEach { executor in
 			self.log?.message(verboseMsg: "\(self.name) \(executor.type.rawValue): \"\(executor.UDID)\") finished")
-			self.log?.message(verboseMsg: "\(self.name): FINISHED")
-			killSimulators()
-			executors.forEach {
-				$0.reset()
-			}
-			if executor.type == .simulator {
-				launchSimulator()
-			}
+            executor.reset()
 		}
+        self.log?.message(verboseMsg: "\(self.name): FINISHED")
     }
     
     private func launchSimulator() {
@@ -234,9 +232,6 @@ extension Node {
     }
     
     private func killSimulators() {
-        let simulators = self.executors.filter { $0.type == .simulator }
-        guard !simulators.isEmpty else { return }
-        
         self.log?.message(verboseMsg: "\(self.name) kill simulator process...")
         _ = try? self.communication.executeOnRunner(command: "osascript -e 'quit app \"Simulator\"'")
         sleep(1)

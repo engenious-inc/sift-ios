@@ -7,9 +7,9 @@
 
 import CSSH
 
-public struct SSHError: Swift.Error, CustomStringConvertible {
+public struct SSHError: Swift.Error, CustomStringConvertible, Sendable {
     
-    public enum Kind: Int32 {
+	public enum Kind: Int32, Sendable {
         case genericError = 1
         case bannerRecv
         case bannerSend

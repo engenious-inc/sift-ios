@@ -1,6 +1,6 @@
 import Foundation
 
-public protocol TestExecutor: AnyObject {
+public protocol TestExecutor: Sendable {
     var type: TestExecutorType { get }
     var UDID: String { get }
     var log: Logging? { get }
@@ -99,7 +99,7 @@ extension TestExecutor {
     }
 }
 
-public enum TestExecutorType: String {
+public enum TestExecutorType: String, Sendable {
     case simulator = "iOS Simulator"
     case device = "iOS"
 	case macOS = "macOS"

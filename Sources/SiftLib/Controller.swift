@@ -1,6 +1,6 @@
 import Foundation
 
-public class Controller {
+public struct Controller {
     private let config: Config
     private let xctestrun: XCTestRun
     private var runners: [Runner] = []
@@ -10,7 +10,7 @@ public class Controller {
     private var xcresulttool: XCResultTool!
     public var tests: TestCases
     public private(set) var bundleTests: [String]
-    private let log: Logging?
+    private var log: Logging?
     private var tasks: Atomic<[Task<(), Never>]> = .init(value: [])
 	private let isTestProcessingDisabled: Bool
 
@@ -20,6 +20,7 @@ public class Controller {
         self.config = config
         let xctestrun = try XCTestRunFactory.create(path: config.xctestrunPath, log: log)
 		self.xctestrun = xctestrun
+		self.xcresulttool = XCResultTool()
 		self.bundleTests = self.xctestrun.testBundleExecPaths(config: config.onlyTestConfiguration).flatMap { bundle -> [String] in
             let moduleName = bundle.path.components(separatedBy: "/").last ?? bundle.target
             do {
@@ -63,36 +64,28 @@ public class Controller {
 			}
 		}
 		
-        self.tests = TestCases(tests: (tests != nil && !tests!.isEmpty ? tests! : bundleTests).shuffled(),
-                               rerunLimit: config.rerunFailedTest)
+        self.tests = TestCases(
+            tests: (tests != nil && !tests!.isEmpty ? tests! : bundleTests).shuffled(),
+            rerunLimit: config.rerunFailedTest
+        )
         self.xcresultFiles = Atomic(value: [])
+		self.zipBuildPath = try self.zipBuild()
+		self.runners = RunnersFactory.create(config: self.config, delegate: self, log: log)
     }
 	
-    @discardableResult
-	public func start() -> Task<(), Never> {
-        Task {
-            do {
-                let shell = Run()
-                self.xcresulttool = XCResultTool()
-                log?.message("Total tests for execution: \(await self.tests.count)")
-                log?.message(verboseMsg: "Create/Clean: \(self.config.outputDirectoryPath)")
-                _ = try? shell.run("mkdir \(self.config.outputDirectoryPath)")
-                _ = try? shell.run("rm -r \(self.config.outputDirectoryPath)/*")
-                self.zipBuildPath = try self.zipBuild()
-                self.runners = RunnersFactory.create(config: self.config, delegate: self, log: log)
-                await self.runners.concurrentForEach {
-                    await $0.start()
-                }
-				await self.checkout()
-            } catch let err {
-                log?.error("\(err)")
-            }
-        }
+	public func start() async {
+		let shell = Run()
+		log?.message("Total tests for execution: \(await self.tests.count)")
+		log?.message(verboseMsg: "Create/Clean: \(self.config.outputDirectoryPath)")
+		_ = try? shell.run("mkdir \(self.config.outputDirectoryPath)")
+		_ = try? shell.run("rm -r \(self.config.outputDirectoryPath)/*")
+		
+		await self.runners.concurrentForEach {
+			await $0.start()
+		}
+		await self.checkout()
     }
-}
 
-//MARK: - private methods
-extension Controller {
     private func zipBuild() throws -> String {
 		let filesToZip: Set<String> = .init(self.xctestrun.dependentProductPaths(config: config.onlyTestConfiguration).compactMap { (path) -> String? in
 			var path = path
@@ -111,11 +104,11 @@ extension Controller {
         return zipPath
     }
     
-    private func getXCResult(path: String) async -> XCResult? {
+	private func getXCResult(path: String, outputDirectoryPath: String) async -> XCResult? {
         do {
             let shell = Run()
             let uuid = UUID().uuidString
-            let unzipFolderPath = "\(self.config.outputDirectoryPath)/\(uuid)"
+            let unzipFolderPath = "\(outputDirectoryPath)/\(uuid)"
             
             try shell.run("unzip -o -q \"\(path)\" -d \(unzipFolderPath)")
             var files = ""
@@ -130,12 +123,12 @@ extension Controller {
             }
             
             let xcresultAbsolutePath = "\(unzipFolderPath)/\(xcresultFileName)"
-            _ = try? shell.run("mkdir \(self.config.outputDirectoryPath)/final")
+            _ = try? shell.run("mkdir \(outputDirectoryPath)/final")
             try shell.run("cp -R '\(xcresultAbsolutePath)' " +
-                               "'\(self.config.outputDirectoryPath)/final/\(uuid).xcresult'")
+                               "'\(outputDirectoryPath)/final/\(uuid).xcresult'")
             
-            await self.xcresultFiles.append(value: "\(self.config.outputDirectoryPath)/final/\(uuid).xcresult")
-            let xcresult = XCResult(path: "\(self.config.outputDirectoryPath)/final/\(uuid).xcresult",
+            await self.xcresultFiles.append(value: "\(outputDirectoryPath)/final/\(uuid).xcresult")
+            let xcresult = XCResult(path: "\(outputDirectoryPath)/final/\(uuid).xcresult",
                 tool: xcresulttool)
             _ = try? shell.run("rm -r '\(unzipFolderPath)'")
             _ = try? shell.run("rm -r '\(path)'")
@@ -147,7 +140,7 @@ extension Controller {
         }
     }
     
-	@MainActor private func checkout() async {
+	private func checkout() async {
         for task in await self.tasks.values() {
 			await task.value
 		}
@@ -184,7 +177,7 @@ extension Controller {
 			"Failed: \(failed.count) tests")
 				.write(toFile: "\(self.config.outputDirectoryPath)/final/final_result.txt", atomically: true, encoding: .utf8)
 			
-			quiet = false
+//			log?.quiet = false
 			print()
 			log?.message("####################################\n")
 			log?.message("Total Tests: \(await self.tests.count)")
@@ -257,13 +250,20 @@ extension Controller: RunnerDelegate {
 		guard isTestProcessingDisabled == false else {
 			return
 		}
+
+		let outputDirectoryPath = self.config.outputDirectoryPath
         let task = Task {
 			log?.message(verboseMsg: "Parse test results from \(runner.name)")
 			guard let pathToResults = pathToResults,
-				  var xcresult = await self.getXCResult(path: pathToResults) else {
+				  var xcresult = await self.getXCResult(path: pathToResults, outputDirectoryPath: outputDirectoryPath) else {
 				log?.warning("Can't parse file:" + (pathToResults ?? "NO PATH TO .xcresultfile"))
 				await executedTests.asyncForEach {
-					await self.tests.update(test: $0, state: .unexecuted, duration: 0.0, message: "Was not executed")
+					await self.tests.update(
+                        test: $0,
+                        state: .unexecuted,
+                        duration: 0.0,
+                        message: "Was not executed"
+                    )
 					self.log?.failed("\(runner.name): \($0) - Was not executed")
 				}
 				return
@@ -300,18 +300,22 @@ extension Controller: RunnerDelegate {
 					self.log?.success("\(runner.name): \(executedTest) " +
 									  "- \(testMetaData.testStatus): \(String(format: "%.3f", testMetaData.duration ?? 0)) sec.")
                 } else if testMetaData.testStatus == "Skipped" {
-                    await self.tests.update(test: executedTest,
-                                            state: .skipped,
-                                            duration: testMetaData.duration ?? 0.0)
+                    await self.tests.update(
+                        test: executedTest,
+                        state: .skipped,
+                        duration: testMetaData.duration ?? 0.0
+                    )
                     self.log?.skipped("\(runner.name): \(executedTest) " +
                                       "- \(testMetaData.testStatus): \(String(format: "%.3f", testMetaData.duration ?? 0)) sec.")
                 } else {
                     let actionsInvocationRecord = try? xcresult.actionsInvocationRecord()
                     let message = actionsInvocationRecord?.issues.testFailureSummaries.map { $0.message }.joined(separator: "\n") ?? ""
-					await self.tests.update(test: executedTest,
-											state: .failed,
-											duration: testMetaData.duration ?? 0.0,
-											message: message)
+                    await self.tests.update(
+                        test: executedTest,
+                        state: .failed,
+                        duration: testMetaData.duration ?? 0.0,
+                        message: message
+                    )
 					self.log?.failed("\(runner.name): \(executedTest) " +
 									 "- \(testMetaData.testStatus): \(String(format: "%.3f", testMetaData.duration ?? 0)) sec.")
 					self.log?.message(verboseMsg: "\(runner.name): \(executedTest) - \(testMetaData.testStatus):\n\t\t- \(message)")

@@ -1,39 +1,42 @@
 import Foundation
 
 struct SSHCommunication<SSH: SSHExecutor>: Communication {
-    private var ssh: SSHExecutor!
+    private let ssh: SSHExecutor!
     private let temporaryBuildZipName = "build.zip"
     private let runnerDeploymentPath: String
     private let masterDeploymentPath: String
     private let nodeName: String
     private let log: Logging?
     
-    init(host: String,
-         port: Int32 = 22,
-         username: String,
-         password: String?,
-         privateKey: String?,
-         publicKey: String?,
-         passphrase: String?,
-         runnerDeploymentPath: String,
-         masterDeploymentPath: String,
-         nodeName: String,
-		 arch: Config.NodeConfig.Arch?,
-         log: Logging?) throws {
-        self.log = log
-        self.runnerDeploymentPath = runnerDeploymentPath
-        self.masterDeploymentPath = masterDeploymentPath
-        self.nodeName = nodeName
-        log?.message(verboseMsg: "Connecting to: \(nodeName) (\(host):\(port))...")
-        self.ssh = try SSH(host: host, port: port, arch: arch)
-        try self.ssh.authenticate(username: username,
-                                  password: password,
-                                  privateKey: privateKey,
-                                  publicKey: publicKey,
-                                  passphrase: passphrase)
-        log?.message(verboseMsg: "\(nodeName): Connection successfully established")
-        
-    }
+	init(
+		host: String,
+		port: Int32 = 22,
+		username: String,
+		password: String?,
+		privateKey: String?,
+		publicKey: String?,
+		passphrase: String?,
+		runnerDeploymentPath: String,
+		masterDeploymentPath: String,
+		nodeName: String,
+		arch: Config.NodeConfig.Arch?,
+		log: Logging?
+	) throws {
+		self.log = log
+		self.runnerDeploymentPath = runnerDeploymentPath
+		self.masterDeploymentPath = masterDeploymentPath
+		self.nodeName = nodeName
+		log?.message(verboseMsg: "Connecting to: \(nodeName) (\(host):\(port))...")
+		self.ssh = try SSH(host: host, port: port, arch: arch)
+		try self.ssh.authenticate(
+			username: username,
+			password: password,
+			privateKey: privateKey,
+			publicKey: publicKey,
+			passphrase: passphrase
+		)
+		log?.message(verboseMsg: "\(nodeName): Connection successfully established")
+	}
     
     func getBuildOnRunner(buildPath: String) throws {
         log?.message(verboseMsg: "Uploading build to \(self.nodeName)...")

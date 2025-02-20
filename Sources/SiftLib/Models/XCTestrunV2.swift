@@ -105,7 +105,7 @@ public struct XCTestRunV2: XCTestRun {
 extension XCTestRunV2 {
 	
 	// MARK: - TestConfiguration
-	class TestConfiguration: Codable {
+	class TestConfiguration: Codable, @unchecked Sendable {
 		var name: String?
 		var testTargets: [TestTarget]
 
