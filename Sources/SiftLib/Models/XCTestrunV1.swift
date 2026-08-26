@@ -1,5 +1,5 @@
 import Foundation
-import SwiftyJSON
+@preconcurrency import SwiftyJSON
 
 public struct XCTestRunV1: XCTestRun {
     

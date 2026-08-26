@@ -3,11 +3,11 @@ import Foundation
 public actor Run: ShellExecutor {
         
     @discardableResult
-    nonisolated public func run(_ command: String) throws -> (status: Int32, output: String)  {
+    public func run(_ command: String) async throws -> (status: Int32, output: String)  {
         let parsedCommand = "/bin/sh"
         let arguments = ["-c", command]
         
-        let output = try CommandLineExecutor.launchProcess(command: parsedCommand, arguments: arguments)
+        let output = try await CommandLineExecutor.launchProcess(command: parsedCommand, arguments: arguments)
         return (output.terminationStatus, output.standardOut ?? "")
     }
     

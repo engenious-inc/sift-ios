@@ -1,6 +1,6 @@
 import Foundation
 
-public struct Config: Codable {
+public struct Config: Codable, Sendable {
     public var id: Int?
     public var xctestrunPath: String
     public var outputDirectoryPath: String
@@ -13,14 +13,6 @@ public struct Config: Codable {
 	public var skipTestConfiguration: String?
     public var nodes: [NodeConfig]
     public var tests: [String]?
-    
-    init() {
-        xctestrunPath = ""
-        outputDirectoryPath = ""
-        rerunFailedTest = 0
-        testsBucket = 0
-        nodes = []
-    }
     
     public init(data: Data) throws {
         self = try JSONDecoder().decode(Config.self, from: data)
@@ -48,7 +40,7 @@ public struct Config: Codable {
 }
 
 extension Config {
-    public struct NodeConfig: Codable {
+	public struct NodeConfig: Codable, Sendable {
         public var id: Int
         public var name: String
         public var host: String
@@ -65,33 +57,16 @@ extension Config {
         public var environmentVariables: [String: String]?
 		public var arch: Arch?
 		
-		public enum Arch: String, Codable {
+		public enum Arch: String, Codable, Sendable {
 			case i386
 			case x86_64
 			case arm64
 		}
-        
-        init(id: Int, name: String, host: String, port: Int32, username: String, password: String? = nil, privateKey: String? = nil, publicKey: String? = nil, passphrase: String? = nil, deploymentPath: String, UDID: UDID, xcodePath: String, environmentVariables: [String : String]? = nil, arch: Arch? = nil) {
-            self.id = id
-            self.name = name
-            self.host = host
-            self.port = port
-            self.username = username
-            self.password = password
-            self.privateKey = privateKey
-            self.publicKey = publicKey
-            self.passphrase = passphrase
-            self.deploymentPath = deploymentPath
-            self.UDID = UDID
-            self.xcodePath = xcodePath
-            self.environmentVariables = environmentVariables
-            self.arch = arch
-        }
     }
 }
 
 extension Config.NodeConfig {
-    public struct UDID: Codable {
+    public struct UDID: Codable, Sendable {
         public var simulators: [String]?
         public var devices: [String]?
 		public var mac: [String]?

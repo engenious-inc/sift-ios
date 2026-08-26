@@ -88,7 +88,7 @@ enum Overlook: String, CodingKey {
     case type = "_type"
 }
 
-enum XCResultTypeFamily: String, ClassFamily {
+enum XCResultTypeFamily: String, ClassFamily, Sendable {
     case ActionAbstractTestSummary
     case ActionDeviceRecord
     case ActionPlatformRecord
@@ -142,7 +142,7 @@ enum XCResultTypeFamily: String, ClassFamily {
     case TestFailureIssueSummary
     case TypeDefinition
     
-    static var overlook: Overlook = .type
+    static let overlook: Overlook = .type
     
     func getType() -> Decodable.Type {
         switch self {

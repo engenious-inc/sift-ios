@@ -10,8 +10,16 @@ extension Array where Element: Hashable {
     }
 }
 
-extension Collection {
-    subscript(safe index: Index) -> Element? {
-        return indices.contains(index) ? self[index] : nil
+extension Sequence {
+    func asyncFilter(
+        _ predicate: (Element) async throws -> Bool
+    ) async rethrows -> [Element] {
+        var result: [Element] = []
+        for element in self {
+            if try await predicate(element) {
+                result.append(element)
+            }
+        }
+        return result
     }
 }

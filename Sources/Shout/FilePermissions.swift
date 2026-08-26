@@ -8,7 +8,7 @@
 import Foundation
 import CSSH
 
-public struct Permissions: OptionSet {
+public struct Permissions: OptionSet, Sendable {
     public let rawValue: UInt
     public init(rawValue: UInt) {
         self.rawValue = rawValue
@@ -19,8 +19,8 @@ public struct Permissions: OptionSet {
     public static let execute = Permissions(rawValue: 1 << 3)
 }
 
-public struct FilePermissions: RawRepresentable {
-    public var owner: Permissions
+public struct FilePermissions: RawRepresentable, Sendable {
+    public let owner: Permissions
     public var group: Permissions
     public var others: Permissions
 

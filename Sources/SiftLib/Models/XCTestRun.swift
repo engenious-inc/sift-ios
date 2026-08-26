@@ -1,6 +1,6 @@
 import Foundation
 
-public protocol XCTestRun: Codable {
+public protocol XCTestRun: Codable, Sendable {
 	var xctestrunFileName: String { get }
 	var testRootPath: String { get }
 	func testBundleExecPaths(config: String?) -> [(target: String, path: String)]
