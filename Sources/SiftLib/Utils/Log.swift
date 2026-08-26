@@ -2,10 +2,11 @@ import Foundation
 
 import Rainbow
 
-public var quiet = false
-public var verbose = false
 
-public protocol Logging {
+public protocol Logging: Sendable {
+	var quiet: Bool { get set}
+	var verbose: Bool {get set }
+	
     var prefix: String { get set }
     func warning(before: String?, _ msg: String)
     func error(before: String?, _ msg: String)
@@ -60,6 +61,8 @@ public extension Logging {
 }
 
 public struct Log: Logging {
+	public var quiet: Bool = false
+	public var verbose: Bool = false
     public var prefix: String
     public init(prefix: String = "") {
         self.prefix = prefix

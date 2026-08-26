@@ -8,8 +8,8 @@ struct TestsDump: Dump {
         self.shell = shell
     }
     
-    func dump(path: String, moduleName: String) throws -> [String] {
-        let result = try self.shell.run(Scripts.dumpTests(path: path))
+    func dump(path: String, moduleName: String) async throws -> [String] {
+        let result = try await self.shell.run(Scripts.dumpTests(path: path))
         
         guard result.status == 0 else {
             throw NSError(domain: result.output, code: Int(result.status), userInfo: nil)
