@@ -195,6 +195,9 @@ final class SSH: SSHExecutor, @unchecked Sendable {
         // would otherwise escape the KILL escalation. The bounded wait between
         // TERM and KILL happens Swift-side (no remote sleep loops — see
         // startBackgroundProcess for the bash-3.2 wait4 hazard).
+        // Each tree member is identified by pid AND process start time; both the
+        // aliveness probe and the KILL escalation revalidate that identity so a
+        // pid recycled during the grace window can never be signalled.
         let termScript = """
         collect_tree() {
             echo "$1"
@@ -203,25 +206,41 @@ final class SSH: SSHExecutor, @unchecked Sendable {
         PID=$(cat \(handle.pidPath.shellQuoted) 2>/dev/null)
         [ -n "$PID" ] || exit 0
         ps -p "$PID" -o command= 2>/dev/null | grep -qF \(marker.shellQuoted) || exit 0
-        TREE=$(collect_tree "$PID")
-        for p in $TREE; do kill -TERM "$p" 2>/dev/null; done
-        echo "$TREE"
+        for p in $(collect_tree "$PID"); do
+            START=$(ps -p "$p" -o lstart= 2>/dev/null)
+            [ -n "$START" ] || continue
+            kill -TERM "$p" 2>/dev/null
+            echo "$p|$START"
+        done
         exit 0
         """
         guard let termResult = try? await run(termScript) else { return }
-        let treePids = termResult.output
+        let identities: [(pid: String, start: String)] = termResult.output
             .split(whereSeparator: \.isNewline)
-            .map { $0.trimmingCharacters(in: .whitespaces) }
-            .filter { !$0.isEmpty && $0.allSatisfy(\.isNumber) }
-        guard !treePids.isEmpty else { return } // marker mismatch or already gone
+            .compactMap { line in
+                let parts = line.split(separator: "|", maxSplits: 1)
+                guard parts.count == 2 else { return nil }
+                let pid = parts[0].trimmingCharacters(in: .whitespaces)
+                guard !pid.isEmpty, pid.allSatisfy(\.isNumber) else { return nil }
+                return (pid, parts[1].trimmingCharacters(in: .whitespaces))
+            }
+        guard !identities.isEmpty else { return } // marker mismatch or already gone
 
-        let pidList = treePids.joined(separator: " ")
-        let probeScript = "ALIVE=0\nfor p in \(pidList); do kill -0 \"$p\" 2>/dev/null && ALIVE=1; done\necho \"alive=$ALIVE\""
+        // signalMatching(signal): signals only pids whose start time still matches.
+        func signalScript(_ signalName: String) -> String {
+            var lines = ["ALIVE=0"]
+            for identity in identities {
+                lines.append("START=$(ps -p \(identity.pid) -o lstart= 2>/dev/null)")
+                lines.append("if [ \"$START\" = \(identity.start.shellQuoted) ]; then ALIVE=1; kill -\(signalName) \(identity.pid) 2>/dev/null; fi")
+            }
+            lines.append("echo \"alive=$ALIVE\"")
+            return lines.joined(separator: "\n")
+        }
         for _ in 0..<10 {
             try? await Task.sleep(nanoseconds: 1_000_000_000)
-            guard let probe = try? await run(probeScript) else { continue }
+            guard let probe = try? await run(signalScript("0")) else { continue }
             if probe.output.contains("alive=0") { return }
         }
-        _ = try? await run("for p in \(pidList); do kill -KILL \"$p\" 2>/dev/null; done\nexit 0")
+        _ = try? await run(signalScript("KILL"))
     }
 }

@@ -42,13 +42,18 @@ public struct TestOutcome: Sendable {
     }
 }
 
-/// One recorded execution attempt (real run or infrastructure failure) of one test.
+/// One recorded execution attempt (real run, infrastructure failure, or
+/// abandoned lease) of one test.
 public struct TestAttempt: Sendable {
     public let test: String
     public let executorID: String
     public let kind: TestOutcome.Kind
     public let duration: Double
     public let message: String
+    /// When the lease containing this test was handed to the executor.
+    public let startedAt: Date
+    /// When the lease was completed or abandoned.
+    public let endedAt: Date
 }
 
 /// Immutable view of all test states, taken in a single actor hop — reports consume only this.

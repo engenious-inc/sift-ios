@@ -44,7 +44,9 @@ enum JSONReport {
                 executor: $0.executorID,
                 outcome: outcomeName($0.kind),
                 duration: $0.duration,
-                message: $0.message
+                message: $0.message,
+                startedAt: $0.startedAt,
+                endedAt: $0.endedAt
             )
         }
         return report

@@ -6,6 +6,7 @@ public struct TestLease: Sendable {
     public let id: UUID
     public let executorID: String
     public let tests: [String]
+    public let grantedAt: Date
 }
 
 /// Lease-based scheduler. Owns pending tests, retry queues, and in-flight leases in one
@@ -71,7 +72,7 @@ public actor TestScheduler {
             }
         }
         guard !tests.isEmpty else { return nil }
-        let lease = TestLease(id: UUID(), executorID: executorID, tests: tests)
+        let lease = TestLease(id: UUID(), executorID: executorID, tests: tests, grantedAt: Date())
         inFlight[lease.id] = lease
         return lease
     }
@@ -90,6 +91,7 @@ public actor TestScheduler {
         for outcome in outcomes {
             outcomeByTest[TestName.canonical(outcome.test)] = outcome
         }
+        let now = Date()
         for test in lease.tests {
             let outcome = outcomeByTest[test] ?? TestOutcome(test: test, kind: .notExecuted, message: "Was not executed")
             attempts.append(TestAttempt(
@@ -97,7 +99,9 @@ public actor TestScheduler {
                 executorID: lease.executorID,
                 kind: outcome.kind,
                 duration: outcome.duration,
-                message: outcome.message
+                message: outcome.message,
+                startedAt: lease.grantedAt,
+                endedAt: now
             ))
             apply(outcome, to: test)
         }
@@ -108,7 +112,17 @@ public actor TestScheduler {
     /// Tests are re-queued as infrastructure retries.
     public func abandon(_ lease: TestLease) {
         guard inFlight.removeValue(forKey: lease.id) != nil else { return }
+        let now = Date()
         for test in lease.tests {
+            attempts.append(TestAttempt(
+                test: test,
+                executorID: lease.executorID,
+                kind: .notExecuted,
+                duration: 0,
+                message: "Lease abandoned (executor failed before execution)",
+                startedAt: lease.grantedAt,
+                endedAt: now
+            ))
             apply(TestOutcome(test: test, kind: .notExecuted, message: "Executor failed before execution"), to: test)
         }
         pump()
