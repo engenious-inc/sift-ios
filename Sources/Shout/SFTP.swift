@@ -26,7 +26,7 @@ public class SFTP {
             guard let sftpHandle = libssh2_sftp_open_ex(
                 sftpSession,
                 remotePath,
-                UInt32(remotePath.count),
+                UInt32(remotePath.utf8.count),
                 UInt(flags),
                 Int(mode),
                 openType) else {
@@ -101,14 +101,18 @@ public class SFTP {
             let fileHandle = try? FileHandle(forWritingTo: localURL) else {
             throw SSHError.genericError("couldn't create file at \(localURL.path)")
         }
-        
-        defer { fileHandle.closeFile() }
+
+        defer { try? fileHandle.close() }
 
         var dataLeft = true
         while dataLeft {
             switch sftpHandle.read() {
             case .data(let data):
-                fileHandle.write(data)
+                do {
+                    try fileHandle.write(contentsOf: data)
+                } catch {
+                    throw SSHError.genericError("local write failed at \(localURL.path): \(error)")
+                }
             case .done:
                 dataLeft = false
             case .eagain:
@@ -127,7 +131,9 @@ public class SFTP {
     ///   - permissions: the file permissions to create the new file with; defaults to FilePermissions.default
     /// - Throws: SSHError if local file can't be read or upload fails
     public func upload(localURL: URL, remotePath: String, permissions: FilePermissions = .default) throws {
-        let data = try Data(contentsOf: localURL, options: .alwaysMapped)
+        // Read into memory (not memory-mapped): a mapped file that changes or
+        // disappears mid-upload would SIGBUS the process.
+        let data = try Data(contentsOf: localURL)
         try upload(data: data, remotePath: remotePath, permissions: permissions)
     }
     
@@ -153,27 +159,35 @@ public class SFTP {
     ///   - permissions: the file permissions to create the new file with; defaults to FilePermissions.default
     /// - Throws: SSHError if upload fails
     public func upload(data: Data, remotePath: String, permissions: FilePermissions = .default) throws {
+        // TRUNC: overwriting a longer pre-existing file must not leave stale tail bytes.
         let sftpHandle = try SFTPHandle(
             cSession: cSession,
             sftpSession: sftpSession,
             remotePath: remotePath,
-            flags: LIBSSH2_FXF_WRITE | LIBSSH2_FXF_CREAT,
+            flags: LIBSSH2_FXF_WRITE | LIBSSH2_FXF_CREAT | LIBSSH2_FXF_TRUNC,
             mode: LIBSSH2_SFTP_S_IFREG | permissions.rawValue
         )
-        
+
         var offset = 0
+        var zeroProgressCount = 0
         while offset < data.count {
             let upTo = Swift.min(offset + SFTPHandle.bufferSize, data.count)
             let subdata = data.subdata(in: offset ..< upTo)
-            if subdata.count > 0 {
-                switch sftpHandle.write(subdata) {
-                case .written(let bytesSent):
+            switch sftpHandle.write(subdata) {
+            case .written(let bytesSent):
+                if bytesSent <= 0 {
+                    zeroProgressCount += 1
+                    if zeroProgressCount > 1000 {
+                        throw SSHError.genericError("SFTP upload to \(remotePath) made no progress at offset \(offset)")
+                    }
+                } else {
+                    zeroProgressCount = 0
                     offset += bytesSent
-                case .eagain:
-                    break
-                case .error(let error):
-                    throw error
                 }
+            case .eagain:
+                continue
+            case .error(let error):
+                throw error
             }
         }
     }
@@ -275,7 +289,9 @@ public class SFTP {
         case .written( _):
             break
         case .eagain:
-            break
+            // The session is blocking; EAGAIN here means the operation did not
+            // complete — surfacing it as success would silently skip mkdir/rm/rename.
+            throw SSHError.genericError("SFTP command returned EAGAIN on a blocking session")
         case .error(let error):
             throw error
         }

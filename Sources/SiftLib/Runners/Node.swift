@@ -1,248 +1,272 @@
 import Foundation
-import CollectionConcurrencyKit
 
+/// One remote (or local-over-SSH) machine: deploys the build, spins up one worker
+/// per executor, and drives worker loops against the shared scheduler.
 struct Node: Sendable {
-    
+
+    let name: String
     private let config: Config.NodeConfig
-    private let outputDirectoryPath: String
-    private let testsExecutionTimeout: Int?
+    private let workspace: RunWorkspace
+    private let testsExecutionTimeout: Int
     private let setUpScriptPath: String?
     private let tearDownScriptPath: String?
-	private var onlyTestConfiguration: String?
-	private var skipTestConfiguration: String?
-    private let communication: Communication
+    private let onlyTestConfiguration: String?
+    private let skipTestConfiguration: String?
+    private let testsBucket: Int
+    private let scheduler: TestScheduler
+    private let collector: ResultCollector
+    private let communication: SSHCommunication
+    private let sshFactory: @Sendable (Config.NodeConfig) -> SSHExecutor
+    private let xctestrunProvider: @Sendable () throws -> XCTestRun
+    private let buildZipPath: String
     private let log: Logging?
-    
-    let name: String
-    let delegate: RunnerDelegate
-    
+
+    /// Consecutive infrastructure failures before an executor is retired.
+    private static let executorFailureLimit = 3
+
     init(
         config: Config.NodeConfig,
-        outputDirectoryPath: String,
-        testsExecutionTimeout: Int?,
-        setUpScriptPath: String?,
-        tearDownScriptPath: String?,
-        onlyTestConfiguration: String?,
-        skipTestConfiguration: String?,
-        delegate: RunnerDelegate,
+        globalConfig: Config,
+        workspace: RunWorkspace,
+        scheduler: TestScheduler,
+        collector: ResultCollector,
+        buildZipPath: String,
+        xctestrunProvider: @escaping @Sendable () throws -> XCTestRun,
+        sshFactory: @escaping @Sendable (Config.NodeConfig) -> SSHExecutor,
         log: Logging?
-    ) throws {
-        self.log = log
+    ) {
         self.config = config
-        self.outputDirectoryPath = outputDirectoryPath
-        self.testsExecutionTimeout = testsExecutionTimeout
-        self.setUpScriptPath = setUpScriptPath
-        self.tearDownScriptPath = tearDownScriptPath
         self.name = config.name
-		self.onlyTestConfiguration = onlyTestConfiguration
-		self.skipTestConfiguration = skipTestConfiguration
-        self.delegate = delegate
-        
-        log?.message(verboseMsg: "\(self.name) Created")
-		communication = try SSHCommunication<SSH>(
-			host: config.host,
-			port: config.port,
-			username: config.username,
-			password: config.password,
-			privateKey: config.privateKey,
-			publicKey: config.publicKey,
-			passphrase: config.passphrase,
-			runnerDeploymentPath: config.deploymentPath,
-			masterDeploymentPath: outputDirectoryPath,
-			nodeName: config.name,
-			arch: config.arch,
-			log: log
-		)
+        self.workspace = workspace
+        self.testsExecutionTimeout = globalConfig.testsExecutionTimeout ?? 300
+        self.setUpScriptPath = globalConfig.setUpScriptPath
+        self.tearDownScriptPath = globalConfig.tearDownScriptPath
+        self.onlyTestConfiguration = globalConfig.onlyTestConfiguration
+        self.skipTestConfiguration = globalConfig.skipTestConfiguration
+        self.testsBucket = globalConfig.testsBucket
+        self.scheduler = scheduler
+        self.collector = collector
+        self.buildZipPath = buildZipPath
+        self.xctestrunProvider = xctestrunProvider
+        self.sshFactory = sshFactory
+        self.log = log
+        self.communication = SSHCommunication(
+            config: config,
+            remoteWorkPath: workspace.remoteWorkPath(deploymentPath: config.deploymentPath),
+            sshFactory: sshFactory,
+            log: log
+        )
     }
-}
 
-// MARK: - Runner Protocol implementation
+    private var remoteWorkPath: String { workspace.remoteWorkPath(deploymentPath: config.deploymentPath) }
 
-extension Node: Runner {
-    
-	func start() async {
+    // MARK: - Lifecycle
+
+    func start() async {
         do {
-            try await communication.getBuildOnRunner(buildPath: await delegate.buildPath())
-            
-            let xctestrun = try injectENVToXctestrun() // all env should be injected in to the .xctestrun file
-            let xctestrunPath = try communication.saveOnRunner(xctestrun: xctestrun) // save *.xctestrun file on Node side
-            
-            let executors = createExecutors(xctestrunPath: xctestrunPath)
+            try await communication.connect()
+            try await communication.getBuildOnRunner(buildPath: buildZipPath)
+            var xctestrun = try xctestrunProvider()
+            xctestrun.addEnvironmentVariables(config.environmentVariables)
+            xctestrun.add(timeout: testsExecutionTimeout)
+            let xctestrunPath = try await communication.saveOnRunner(xctestrun: xctestrun)
+
+            let executors = createExecutors()
             guard !executors.isEmpty else {
+                log?.warning("\(name): no executors configured — node contributes nothing to this run")
                 return
             }
-            
-            await executors.concurrentForEach { executor in
-                if await executor.ready() {
-                    await self.runTests(in: executor)
+
+            await withTaskGroup(of: Void.self) { group in
+                for executor in executors {
+                    group.addTask {
+                        await self.runWorker(executor: executor, xctestrunPath: xctestrunPath)
+                    }
                 }
             }
-            await self.finish(executors: executors)
+            await communication.cleanup()
+            log?.message(verboseMsg: "\(name): finished")
         } catch {
-            self.log?.error("\(name): \(error)")
-            return
+            log?.error("\(name): \(error)")
         }
     }
 
-    private func createExecutors(xctestrunPath: String) -> [TestExecutor] {
-        if let simulators = self.config.UDID.simulators, !simulators.isEmpty {
-            return simulators.compactMap {
-                do {
-					return try Simulator(
-						type: .simulator,
-						UDID: $0,
-						config: self.config,
-						xctestrunPath: xctestrunPath,
-						setUpScriptPath: self.setUpScriptPath,
-						tearDownScriptPath: self.tearDownScriptPath,
-						runnerDeploymentPath: config.deploymentPath,
-						masterDeploymentPath: outputDirectoryPath,
-						nodeName: config.name,
-						testsExecutionTimeout: testsExecutionTimeout,
-						onlyTestConfiguration: onlyTestConfiguration,
-						skipTestConfiguration: skipTestConfiguration,
-						log: log
-					)
-                } catch {
-                    self.log?.error("\(self.name): \(error)")
-                    return nil
-                }
-            }
+    /// All three categories aggregate — a node may drive simulators AND devices AND its own macOS.
+    private func createExecutors() -> [TestExecutor] {
+        var executors: [TestExecutor] = []
+        for udid in config.UDID.simulators ?? [] {
+            executors.append(Simulator(UDID: udid, config: config, sshFactory: sshFactory, log: log))
         }
-        
-        if let devices = self.config.UDID.devices {
-            return devices.compactMap {
-                do {
-                    return try Device(
-                        type: .device,
-                        UDID: $0,
-                        config: self.config,
-                        xctestrunPath: xctestrunPath,
-                        setUpScriptPath: self.setUpScriptPath,
-                        tearDownScriptPath: self.tearDownScriptPath,
-                        runnerDeploymentPath: config.deploymentPath,
-                        masterDeploymentPath: outputDirectoryPath,
-                        nodeName: config.name,
-                        testsExecutionTimeout: testsExecutionTimeout,
-                        onlyTestConfiguration: onlyTestConfiguration,
-                        skipTestConfiguration: skipTestConfiguration,
-                        log: log
-                    )
-                } catch let err {
-                    self.log?.error("\(self.name): \(err)")
-                    return nil
-                }
-            }
+        for udid in config.UDID.devices ?? [] {
+            executors.append(Device(type: .device, UDID: udid, config: config, sshFactory: sshFactory, log: log))
+        }
+        for udid in config.UDID.mac ?? [] {
+            executors.append(Device(type: .macOS, UDID: udid, config: config, sshFactory: sshFactory, log: log))
+        }
+        return executors
+    }
 
-        }
-		
-		if let mac = self.config.UDID.mac {
-			return mac.compactMap {
-				do {
-                    return try Device(
-                        type: .macOS,
-                        UDID: $0,
-                        config: self.config,
-                        xctestrunPath: xctestrunPath,
-                        setUpScriptPath: self.setUpScriptPath,
-                        tearDownScriptPath: self.tearDownScriptPath,
-                        runnerDeploymentPath: config.deploymentPath,
-                        masterDeploymentPath: outputDirectoryPath,
-                        nodeName: config.name,
-                        testsExecutionTimeout: testsExecutionTimeout,
-                        onlyTestConfiguration: onlyTestConfiguration,
-                        skipTestConfiguration: skipTestConfiguration,
-                        log: log
-                    )
-				} catch let err {
-                    self.log?.error("\(self.name): \(err)")
-					return nil
-				}
-			}
-		}
-        return []
-    }
-    
-    private func runTests(in executor: TestExecutor) async {
-        let testsForExecution = await self.delegate.getTests() // request tests for execution
-        if testsForExecution.isEmpty {
-            return
-        }
-        let (executor, result) = await executor.run(tests: testsForExecution)
-        /*
-         .success - doesn't mean that tests is passed, just means that tests was successfully executed
-         .failure - tests was not executed.
-        */
-        switch result {
-        case .success(let tests):
-            await self.testExecutionSuccessFlow(tests, executor: executor)
-        case .failure(let error):
-            await self.testExecutionFailureFlow(error, executor: executor)
-        }
-    }
-    
-    private func testExecutionSuccessFlow(_ tests: [String], executor: TestExecutor) async {
+    // MARK: - Worker loop
+
+    private func runWorker(executor: TestExecutor, xctestrunPath: String) async {
         do {
-            let pathToTestsResults = try await executor.sendResultsToMaster()
-            await self.delegate.handleTestsResults(runner: self, executedTests: tests, pathToResults: pathToTestsResults)
-            await self.runTests(in: executor) // continue running next tests
-        } catch let err {
-            self.log?.error("\(self.name): \(err)")
-            await self.runTests(in: executor)
+            try await executor.connect()
+        } catch {
+            log?.error("\(executor.executorID): connection failed — \(error)")
+            return
         }
-    }
-    
-    private func testExecutionFailureFlow(_ error: TestExecutorError, executor: TestExecutor) async {
-        switch error {
-        case .noTestsForExecution:
-            self.log?.message(verboseMsg: "\(self.name): No more tests for execution")
-        case .executionError(let description, let tests):
-            self.log?.error(description)
-            await self.delegate.handleTestsResults(runner: self, executedTests: tests, pathToResults: nil)
-            if await executor.executionFailureCounter.getValue() < 2 {
-                await self.runTests(in: executor) // continue running next tests
+        guard await executor.ready() else { return }
+
+        let xcodebuild = Xcodebuild(
+            xcodePath: config.xcodePathRaw,
+            shell: executor.ssh,
+            testsExecutionTimeout: testsExecutionTimeout,
+            onlyTestConfiguration: onlyTestConfiguration,
+            skipTestConfiguration: skipTestConfiguration
+        )
+
+        var consecutiveFailures = 0
+        while let lease = await scheduler.lease(maxCount: testsBucket, executorID: executor.executorID) {
+            if Task.isCancelled {
+                await scheduler.abandon(lease)
+                break
             }
-        case .testSkipped:
-            self.log?.message(verboseMsg: "\(self.name): test skipped")
-            await self.runTests(in: executor) // continue running next tests
+            let outcome = await runChunk(lease: lease, executor: executor, xcodebuild: xcodebuild, xctestrunPath: xctestrunPath)
+            switch outcome {
+            case .completed(let outcomes):
+                consecutiveFailures = 0
+                await scheduler.complete(lease, outcomes: outcomes)
+            case .infrastructureFailure(let description):
+                consecutiveFailures += 1
+                log?.error("\(executor.executorID): \(description)")
+                await scheduler.complete(lease, outcomes: [])   // all tests → notExecuted, rerun-eligible
+                let recovered = await executor.reset()
+                if !recovered || consecutiveFailures >= Node.executorFailureLimit {
+                    log?.error("\(executor.executorID): retiring executor after \(consecutiveFailures) consecutive failures")
+                    return
+                }
+            }
         }
-    }
-    
-    private func injectENVToXctestrun() throws -> XCTestRun {
-        var xctestrun = try self.delegate.XCTestRun()
-        self.log?.message(verboseMsg: "\(self.name): Injecting environment variables: \(self.config.environmentVariables ?? [:])")
-        xctestrun.addEnvironmentVariables(self.config.environmentVariables)
-        if let testsExecutionTimeout = testsExecutionTimeout {
-            xctestrun.add(timeout: testsExecutionTimeout)
-        }
-        return xctestrun
-    }
-    
-	private func finish(executors: [any TestExecutor], reset: Bool = true) async {
-        await executors.concurrentForEach { executor in
-			self.log?.message(verboseMsg: "\(self.name) \(executor.type.rawValue): \"\(executor.UDID)\") finished")
-            await executor.reset()
-		}
-        self.log?.message(verboseMsg: "\(self.name): FINISHED")
-    }
-    
-    private func launchSimulator() async {
-        log?.message(verboseMsg: "Launch: \(config.xcodePathSafe)/Contents/Developer/Applications/Simulator.app")
-        _ = try? await self.communication.executeOnRunner(command: "open \(config.xcodePathSafe)/Contents/Developer/Applications/Simulator.app")
-    }
-    
-    private func killSimulators() async {
-        self.log?.message(verboseMsg: "\(self.name) kill simulator process...")
-        _ = try? await self.communication.executeOnRunner(command: "osascript -e 'quit app \"Simulator\"'")
-        sleep(1)
-        let output = try? await self.communication.executeOnRunner(command: "for p in $(pgrep -i simulator); do echo \"Terminating process: $p\"; kill -3 $p; done")
-        log?.message(verboseMsg: "\(self.name): \(output?.output ?? "")")
+        log?.message(verboseMsg: "\(executor.executorID): no more tests — worker done")
     }
 
-    private func getPidForProccess(name: String) async -> [Int] {
-        guard let result = try? await self.communication.executeOnRunner(command: "pgrep -i \(name)") else {
-            return []
+    private enum ChunkOutcome {
+        case completed([TestOutcome])
+        case infrastructureFailure(String)
+    }
+
+    private func runChunk(lease: TestLease, executor: TestExecutor, xcodebuild: Xcodebuild, xctestrunPath: String) async -> ChunkOutcome {
+        // Setup script: nonzero exit means "don't run this chunk here".
+        do {
+            if let status = try await runScript(path: setUpScriptPath, executor: executor, tests: lease.tests), status != 0 {
+                return .infrastructureFailure("setup script exited with status \(status) — chunk returned to the queue")
+            }
+        } catch {
+            return .infrastructureFailure("setup script failed: \(error)")
         }
-        return result.output.components(separatedBy: "\n").compactMap { Int($0) }
+
+        log?.message(verboseMsg: "\(executor.executorID): running \(lease.tests.count) tests:\n\t- " + lease.tests.joined(separator: "\n\t- "))
+        let outcome = await executeAndCollect(lease: lease, executor: executor, xcodebuild: xcodebuild, xctestrunPath: xctestrunPath)
+        // Teardown always runs, in its own error boundary — a teardown failure can
+        // never discard the results of a chunk that already ran.
+        _ = try? await runScript(path: tearDownScriptPath, executor: executor, tests: lease.tests)
+        return outcome
+    }
+
+    private func executeAndCollect(lease: TestLease, executor: TestExecutor, xcodebuild: Xcodebuild, xctestrunPath: String) async -> ChunkOutcome {
+
+        let chunkResult: Xcodebuild.ChunkResult
+        do {
+            chunkResult = try await xcodebuild.execute(
+                tests: lease.tests,
+                executorType: executor.type,
+                UDID: executor.UDID,
+                xctestrunPath: xctestrunPath,
+                workDirectory: remoteWorkPath,
+                log: log
+            )
+        } catch {
+            return .infrastructureFailure("xcodebuild failed to run: \(error)")
+        }
+
+        log?.message(verboseMsg: "\(executor.executorID): chunk finished with status \(chunkResult.status)")
+
+        // Try to collect results even for unexpected statuses — partial results beat none.
+        do {
+            let localZip = try await downloadResults(executor: executor, remoteBundlePath: chunkResult.resultBundlePath)
+            let outcomes = try await collector.ingest(zipPath: localZip)
+            // A result bundle that covers none of the leased tests is not a completed
+            // chunk regardless of xcodebuild's exit status — treating it as one would
+            // let a corrupt-result producer drain the queue with its health counter
+            // being reset every time.
+            let leasedTests = Set(lease.tests)
+            let coversLease = outcomes.contains { leasedTests.contains(TestName.canonical($0.test)) }
+            guard coversLease else {
+                return .infrastructureFailure("result bundle contains no outcomes for the leased tests — " + statusDescription(chunkResult))
+            }
+            reportOutcomes(outcomes, executor: executor)
+            return .completed(outcomes)
+        } catch {
+            if chunkResult.status == 0 || chunkResult.status == 65 {
+                return .infrastructureFailure("tests ran (status \(chunkResult.status)) but results could not be collected: \(error)")
+            }
+            return .infrastructureFailure(statusDescription(chunkResult) + " — results unavailable: \(error)")
+        }
+    }
+
+    private func statusDescription(_ result: Xcodebuild.ChunkResult) -> String {
+        var description = "xcodebuild exited with status \(result.status)"
+        if result.status == 143 { description += " (timeout — process was terminated)" }
+        if !result.logTail.isEmpty {
+            description += "\n--- log tail ---\n\(result.logTail)"
+        }
+        return description
+    }
+
+    private func downloadResults(executor: TestExecutor, remoteBundlePath: String) async throws -> String {
+        let zipName = "\(UUID().uuidString).zip"
+        let remoteZipPath = "\(remoteWorkPath)/\(zipName)"
+        let bundleDirectory = (remoteBundlePath as NSString).deletingLastPathComponent
+        let bundleName = (remoteBundlePath as NSString).lastPathComponent
+        let zip = try await executor.ssh.run(
+            "cd \(bundleDirectory.shellQuoted) && zip -r -X -q -0 \(remoteZipPath.shellQuoted) \(bundleName.shellQuoted)"
+        )
+        guard zip.status == 0 else {
+            throw NSError(domain: "zipping result bundle failed on \(executor.executorID): \(zip.output)", code: 1)
+        }
+        let localZipPath = "\(workspace.workPath)/\(zipName)"
+        try await executor.ssh.downloadFile(remotePath: remoteZipPath, localPath: localZipPath)
+        _ = try? await executor.ssh.run("rm -rf \(remoteZipPath.shellQuoted) \(remoteBundlePath.shellQuoted)")
+        return localZipPath
+    }
+
+    private func reportOutcomes(_ outcomes: [TestOutcome], executor: TestExecutor) {
+        for outcome in outcomes {
+            let duration = String(format: "%.3f", outcome.duration)
+            switch outcome.kind {
+            case .pass: log?.success("\(executor.executorID): \(outcome.test) - Passed: \(duration) sec.")
+            case .failed: log?.failed("\(executor.executorID): \(outcome.test) - Failed: \(duration) sec.")
+            case .skipped: log?.skipped("\(executor.executorID): \(outcome.test) - Skipped")
+            case .notExecuted: log?.failed("\(executor.executorID): \(outcome.test) - Not executed")
+            }
+        }
+    }
+
+    private func runScript(path: String?, executor: TestExecutor, tests: [String]) async throws -> Int32? {
+        guard let path else { return nil }
+        log?.message(verboseMsg: "\(executor.executorID): executing script \(path)")
+        let script = try String(contentsOfFile: path, encoding: .utf8)
+        var environment = [
+            "TEST_NAME=\((tests.first ?? "").shellQuoted)",
+            "TEST_NAMES=\(tests.joined(separator: " ").shellQuoted)",
+            "UDID=\(executor.UDID.shellQuoted)",
+        ]
+        for (key, value) in config.environmentVariables ?? [:] {
+            environment.append("\(key)=\(value.shellQuoted)")
+        }
+        let prologue = environment.map { "export \($0)" }.joined(separator: "\n")
+        let result = try await executor.ssh.run(prologue + "\n" + script)
+        log?.message(verboseMsg: "\(executor.executorID): script exited \(result.status)\n\(result.output)")
+        return result.status
     }
 }

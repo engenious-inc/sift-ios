@@ -70,7 +70,7 @@ public struct SSHError: Swift.Error, CustomStringConvertible, Sendable {
         return SSHError(kind: Kind(rawValue: -code) ?? .genericError, session: session)
     }
     
-    static func genericError(_ message: String) -> SSHError {
+    public static func genericError(_ message: String) -> SSHError {
         return SSHError(kind: .genericError, message: message)
     }
     

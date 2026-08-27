@@ -1,6 +1,17 @@
 import Foundation
 
-import Rainbow
+@preconcurrency import Rainbow
+
+/// Disable colors when stdout is not a terminal or NO_COLOR is set (CI logs).
+/// Global-let initialization runs exactly once, before any logging happens.
+private final class RainbowConfigurator: @unchecked Sendable {
+    static let shared = RainbowConfigurator()
+    private init() {
+        if isatty(fileno(stdout)) == 0 || ProcessInfo.processInfo.environment["NO_COLOR"] != nil {
+            Rainbow.enabled = false
+        }
+    }
+}
 
 
 public protocol Logging: Sendable {
@@ -65,6 +76,7 @@ public struct Log: Logging {
 	public var verbose: Bool = false
     public var prefix: String
     public init(prefix: String = "") {
+        _ = RainbowConfigurator.shared
         self.prefix = prefix
     }
 }

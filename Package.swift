@@ -30,5 +30,9 @@ let package = Package(
             name: "Shout",
             dependencies: ["CSSH", .product(name: "Socket", package: "BlueSocket")]),
         .binaryTarget(name: "CSSH", path: "CSSH.xcframework"),
+        .testTarget(
+            name: "SiftLibTests",
+            dependencies: ["SiftLib"],
+            resources: [.copy("Fixtures")]),
     ]
 )
