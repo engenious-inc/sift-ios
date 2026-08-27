@@ -71,7 +71,19 @@ public struct XCTestRunV2: XCTestRun {
     // MARK: - Queries
 
     public func validate(configurationName: String?) throws {
-        guard let configurationName else { return }
+        guard let configurationName else {
+            // With several configurations, xcodebuild would run all of them while
+            // Sift schedules only the first — later configurations' failures would
+            // silently overwrite scheduled verdicts. Refuse the ambiguity.
+            if configurations.count > 1 {
+                let known = configurations.compactMap(\.name).joined(separator: "', '")
+                throw XCTestRunError(
+                    "\(xctestrunFileName) contains \(configurations.count) test configurations ('\(known)') — " +
+                    "select one with onlyTestConfiguration in the config"
+                )
+            }
+            return
+        }
         guard configurations.contains(where: { $0.name == configurationName }) else {
             let known = configurations.compactMap(\.name).joined(separator: "', '")
             throw XCTestRunError(

@@ -29,11 +29,17 @@ struct XCResultTool: Sendable {
         guard let jsonData = result.stdout.data(using: .utf8) else {
             throw NSError(domain: "xcresulttool returned undecodable output for \(xcresultPath)", code: 1)
         }
-        let document = try JSONDecoder().decode(TestResultsDocument.self, from: jsonData)
+        return try Self.outcomes(fromTestResultsJSON: jsonData)
+    }
 
+    /// Pure parsing entry, shared with the unit tests so they exercise the
+    /// production traversal rather than a reimplementation.
+    static func outcomes(fromTestResultsJSON jsonData: Data) throws -> [TestOutcome] {
+        let document = try JSONDecoder().decode(TestResultsDocument.self, from: jsonData)
+        let tool = XCResultTool()
         var outcomes: [TestOutcome] = []
         for planNode in document.testNodes {
-            collectOutcomes(node: planNode, bundleName: nil, into: &outcomes)
+            tool.collectOutcomes(node: planNode, bundleName: nil, into: &outcomes)
         }
         return outcomes
     }

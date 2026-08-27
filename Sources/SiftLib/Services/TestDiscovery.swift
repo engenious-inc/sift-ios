@@ -12,18 +12,25 @@ public struct TestDiscovery: Sendable {
     }
 
     /// All tests in the xctestrun's bundles, as canonical "Module/Class/test()" names.
+    /// A bundle whose binary cannot be enumerated fails discovery outright —
+    /// silently skipping it would let part of the suite vanish behind exit 0.
     public func tests(xctestrun: XCTestRun, configuration: String?) async throws -> [String] {
         var allTests: [String] = []
+        var failures: [String] = []
         for bundle in xctestrun.testBundleExecPaths(config: configuration) {
             do {
                 let tests = try await dump(binaryPath: bundle.path, moduleName: bundle.target)
                 log?.message("\(bundle.target): \(tests.count) tests")
                 allTests.append(contentsOf: tests)
             } catch {
-                // A bundle whose binary can't be dumped is a real problem for that
-                // module — surface it; the caller decides whether zero total is fatal.
-                log?.warning("Target \(bundle.target): test discovery failed — \(error)")
+                failures.append("\(bundle.target): \(error)")
             }
+        }
+        guard failures.isEmpty else {
+            throw NSError(
+                domain: "Test discovery failed for \(failures.count) bundle(s):\n" + failures.joined(separator: "\n"),
+                code: 1
+            )
         }
         return allTests
     }
@@ -52,8 +59,8 @@ public struct TestDiscovery: Sendable {
     }
 
     /// Matches "Module.Class.testSomething() -> ()" and variants; XCTest discovers
-    /// zero-argument instance methods prefixed "test".
-    private func testIdentifier(fromDemangled line: String, moduleName: String) -> String? {
+    /// zero-argument instance methods prefixed "test". Internal for unit testing.
+    func testIdentifier(fromDemangled line: String, moduleName: String) -> String? {
         let trimmed = line.trimmingCharacters(in: .whitespaces)
         // Expected shapes: "Module.Class.testFoo() -> ()", "Module.Class.testFoo()",
         // possibly "@objc Module.Class.testFoo() -> ()".

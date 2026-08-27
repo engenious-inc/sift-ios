@@ -33,13 +33,19 @@ public class SSH {
     /// - Parameters:
     ///   - host: the host to connect to
     ///   - port: the port to connect to; default 22
-    ///   - timeout: timeout to use (in msec); default 0
+    ///   - timeout: TCP connect timeout in msec; default 0 (none). Also installed
+    ///     as the initial libssh2 operation timeout BEFORE the handshake, so a
+    ///     server that accepts TCP but never completes the SSH handshake cannot
+    ///     hang the caller forever.
     /// - Throws: SSHError if the SSH session couldn't be created
     public init(host: String, port: Int32 = 22, timeout: UInt = 0) throws {
         self.sock = try Socket.create()
         self.session = try Session()
 
         session.blocking = 1
+        if timeout > 0 {
+            session.operationTimeoutMsec = Int(timeout)
+        }
         try sock.connect(to: host, port: port, timeout: timeout)
         try session.handshake(over: sock)
     }
@@ -113,38 +119,23 @@ public class SSH {
 
         try channel.exec(command: command)
 
-        var stdoutData = Data()
-        var stderrData = Data()
-        var stdoutOpen = true
-        var stderrOpen = true
-
-        while stdoutOpen || stderrOpen {
-            if stdoutOpen {
-                switch channel.readData(stream: 0) {
-                case .data(let data): stdoutData.append(data)
-                case .done: stdoutOpen = false
-                case .eagain: break
-                case .error(let error): throw error
-                }
-            }
-            if stderrOpen {
-                switch channel.readData(stream: SSH_EXTENDED_DATA_STDERR) {
-                case .data(let data): stderrData.append(data)
-                case .done: stderrOpen = false
-                case .eagain: break
-                case .error(let error): throw error
-                }
+        // stderr is merged into stream 0 at exec time (see Channel.exec), so a
+        // single drain loop covers both without any window-fill deadlock.
+        var outputData = Data()
+        var streamOpen = true
+        while streamOpen {
+            switch channel.readData(stream: 0) {
+            case .data(let data): outputData.append(data)
+            case .done: streamOpen = false
+            case .eagain: break
+            case .error(let error): throw error
             }
         }
 
         try channel.close()
         try? channel.waitClosed()
 
-        var output = String(decoding: stdoutData, as: UTF8.self)
-        let stderrString = String(decoding: stderrData, as: UTF8.self)
-        if !stderrString.isEmpty {
-            output += (output.isEmpty || output.hasSuffix("\n") ? "" : "\n") + stderrString
-        }
+        let output = String(decoding: outputData, as: UTF8.self)
 
         if let signal = channel.exitSignal() {
             // A signal-killed command has no meaningful exit status; report failure.
@@ -166,4 +157,3 @@ public class SSH {
 
 }
 
-private let SSH_EXTENDED_DATA_STDERR: Int32 = 1

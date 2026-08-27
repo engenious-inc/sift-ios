@@ -22,7 +22,10 @@ public struct Config: Codable, Sendable {
     public var tests: [String]?
 
     public init(data: Data) throws {
-        self = try JSONDecoder().decode(Config.self, from: data)
+        // Same pipeline as init(path:): substitution and validation must not
+        // depend on which initializer loaded the bytes.
+        let substituted = try Config.substituteEnvironmentVariables(inJSON: data)
+        self = try JSONDecoder().decode(Config.self, from: substituted)
         try validate()
     }
 
@@ -30,9 +33,7 @@ public struct Config: Codable, Sendable {
         guard let raw = FileManager.default.contents(atPath: path) else {
             throw ConfigError(violations: ["config file not found or unreadable: \(path)"])
         }
-        let substituted = try Config.substituteEnvironmentVariables(inJSON: raw)
-        self = try JSONDecoder().decode(Config.self, from: substituted)
-        try validate()
+        try self.init(data: raw)
     }
 
     public func write(url: URL) throws {
@@ -128,7 +129,7 @@ public struct Config: Codable, Sendable {
             if node.host.trimmingCharacters(in: .whitespaces).isEmpty {
                 violations.append("\(label): host must not be empty")
             }
-            if node.port < 1 {
+            if node.port < 1 || node.port > 65535 {
                 violations.append("\(label): port must be in 1...65535 (got \(node.port))")
             }
             let udidCount = (node.UDID.simulators?.count ?? 0)

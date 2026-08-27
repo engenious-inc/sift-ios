@@ -90,15 +90,18 @@ final class SSH: SSHExecutor, @unchecked Sendable {
 
     @discardableResult
     func run(_ command: String) async throws -> (status: Int32, output: String) {
-        let wrapped = wrapForArch(command)
+        // Always execute through /bin/sh: sshd hands the command to the user's
+        // login shell, and zsh's parsing differs from sh in ways that silently
+        // break scripts (no implicit word splitting of unquoted expansions).
+        let wrapped: String
+        if let arch {
+            wrapped = "arch -\(arch.rawValue) /bin/sh -c \(command.shellQuoted)"
+        } else {
+            wrapped = "/bin/sh -c \(command.shellQuoted)"
+        }
         return try await onQueue { [self] in
             try requireSession().capture(wrapped)
         }
-    }
-
-    private func wrapForArch(_ command: String) -> String {
-        guard let arch else { return command }
-        return "arch -\(arch.rawValue) /bin/sh -c \(command.shellQuoted)"
     }
 
     // MARK: - File transfer
@@ -110,8 +113,11 @@ final class SSH: SSHExecutor, @unchecked Sendable {
     }
 
     func uploadFile(data: Data, remotePath: String) async throws {
+        // Data uploads carry the xctestrun (with injected environment secrets):
+        // owner-only, never world-readable.
+        let ownerOnly = FilePermissions(owner: [.read, .write], group: [], others: [])
         try await onQueue { [self] in
-            try requireSession().openSftp().upload(data: data, remotePath: remotePath)
+            try requireSession().openSftp().upload(data: data, remotePath: remotePath, permissions: ownerOnly)
         }
     }
 
@@ -142,18 +148,33 @@ final class SSH: SSHExecutor, @unchecked Sendable {
         ) > \(handle.logPath.shellQuoted) 2>&1
         echo $? > \(handle.statusPath.shellQuoted).tmp && mv \(handle.statusPath.shellQuoted).tmp \(handle.statusPath.shellQuoted)
         """
-        // The launcher waits for the pid file before returning: until the wrapper's
-        // trap is installed it is killable by that channel-close HUP — returning
-        // only once the pid exists closes the race.
-        let launcher = "mkdir -p \(handle.directory.shellQuoted) && " +
+        // Fire-and-forget launcher: no remote wait loop. macOS's bash-3.2 /bin/sh
+        // can lose a SIGCHLD race in tight fork loops under sshd and end up
+        // blocked in wait4 on the background job — holding the exec channel open
+        // for the wrapper's whole lifetime. All waiting happens Swift-side below,
+        // each poll on its own short-lived exec channel.
+        // `&` must background a SIMPLE command: in `a && b > /dev/null &` the `&`
+        // binds to the whole and-list, backgrounding a subshell whose stdout and
+        // stderr are still the channel pipes — sshd then holds the exec channel
+        // open until the entire background tree dies.
+        let launcher = "mkdir -p \(handle.directory.shellQuoted) || exit 1\n" +
             "/bin/sh -c \(inner.shellQuoted) > /dev/null 2>&1 < /dev/null &\n" +
-            "for i in $(seq 1 100); do [ -f \(handle.pidPath.shellQuoted) ] && exit 0; sleep 0.1; done\n" +
-            "exit 1"
+            "exit 0"
         let result = try await run(launcher)
         guard result.status == 0 else {
             throw SSHError.genericError("failed to start background process (status \(result.status)): \(result.output)")
         }
-        return handle
+        // Wait for the pid file: its presence proves the wrapper is running with
+        // its HUP trap installed (the write happens after the trap), so later
+        // channel-close HUPs cannot kill it.
+        for _ in 0..<50 {
+            let pid = try await run("cat \(handle.pidPath.shellQuoted) 2>/dev/null")
+            if pid.status == 0, !pid.output.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                return handle
+            }
+            try await Task.sleep(nanoseconds: 100_000_000)
+        }
+        throw SSHError.genericError("background process did not start (no pid recorded in \(handle.pidPath))")
     }
 
     func pollBackgroundProcess(_ handle: BackgroundProcessHandle) async throws -> Int32? {
@@ -169,22 +190,38 @@ final class SSH: SSHExecutor, @unchecked Sendable {
         // Verify identity before signalling (a recycled pid must never be killed),
         // then TERM the wrapper's children (xcodebuild) and the wrapper itself,
         // escalating to KILL after a bounded wait.
-        let script = """
-        kill_tree() {
-            for child in $(pgrep -P "$1" 2>/dev/null); do kill_tree "$child" "$2"; done
-            kill "-$2" "$1" 2>/dev/null
+        // The descendant list is snapshotted BEFORE TERM: once the wrapper dies,
+        // a TERM-ignoring xcodebuild would be unreachable via the tree walk and
+        // would otherwise escape the KILL escalation. The bounded wait between
+        // TERM and KILL happens Swift-side (no remote sleep loops — see
+        // startBackgroundProcess for the bash-3.2 wait4 hazard).
+        let termScript = """
+        collect_tree() {
+            echo "$1"
+            for child in $(pgrep -P "$1" 2>/dev/null); do collect_tree "$child"; done
         }
         PID=$(cat \(handle.pidPath.shellQuoted) 2>/dev/null)
         [ -n "$PID" ] || exit 0
         ps -p "$PID" -o command= 2>/dev/null | grep -qF \(marker.shellQuoted) || exit 0
-        kill_tree "$PID" TERM
-        for i in 1 2 3 4 5 6 7 8 9 10; do
-            ps -p "$PID" > /dev/null 2>&1 || exit 0
-            sleep 1
-        done
-        kill_tree "$PID" KILL
+        TREE=$(collect_tree "$PID")
+        for p in $TREE; do kill -TERM "$p" 2>/dev/null; done
+        echo "$TREE"
         exit 0
         """
-        _ = try? await run(script)
+        guard let termResult = try? await run(termScript) else { return }
+        let treePids = termResult.output
+            .split(whereSeparator: \.isNewline)
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty && $0.allSatisfy(\.isNumber) }
+        guard !treePids.isEmpty else { return } // marker mismatch or already gone
+
+        let pidList = treePids.joined(separator: " ")
+        let probeScript = "ALIVE=0\nfor p in \(pidList); do kill -0 \"$p\" 2>/dev/null && ALIVE=1; done\necho \"alive=$ALIVE\""
+        for _ in 0..<10 {
+            try? await Task.sleep(nanoseconds: 1_000_000_000)
+            guard let probe = try? await run(probeScript) else { continue }
+            if probe.output.contains("alive=0") { return }
+        }
+        _ = try? await run("for p in \(pidList); do kill -KILL \"$p\" 2>/dev/null; done\nexit 0")
     }
 }

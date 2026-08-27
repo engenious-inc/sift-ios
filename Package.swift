@@ -34,5 +34,8 @@ let package = Package(
             name: "SiftLibTests",
             dependencies: ["SiftLib"],
             resources: [.copy("Fixtures")]),
+        .testTarget(
+            name: "SiftCLITests",
+            dependencies: []),
     ]
 )

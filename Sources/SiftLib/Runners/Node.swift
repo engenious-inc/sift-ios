@@ -88,6 +88,7 @@ struct Node: Sendable {
             log?.message(verboseMsg: "\(name): finished")
         } catch {
             log?.error("\(name): \(error)")
+            await communication.cleanup()
         }
     }
 
@@ -136,6 +137,15 @@ struct Node: Sendable {
             case .completed(let outcomes):
                 consecutiveFailures = 0
                 await scheduler.complete(lease, outcomes: outcomes)
+            case .completedDegraded(let outcomes, let description):
+                consecutiveFailures += 1
+                log?.warning("\(executor.executorID): \(description)")
+                await scheduler.complete(lease, outcomes: outcomes)
+                let recovered = await executor.reset()
+                if !recovered || consecutiveFailures >= Node.executorFailureLimit {
+                    log?.error("\(executor.executorID): retiring executor after \(consecutiveFailures) consecutive unhealthy chunks")
+                    return
+                }
             case .infrastructureFailure(let description):
                 consecutiveFailures += 1
                 log?.error("\(executor.executorID): \(description)")
@@ -152,6 +162,9 @@ struct Node: Sendable {
 
     private enum ChunkOutcome {
         case completed([TestOutcome])
+        /// Real outcomes were recovered, but the chunk did not finish healthily
+        /// (timeout, crash status): keep the verdicts, count the executor failure.
+        case completedDegraded([TestOutcome], String)
         case infrastructureFailure(String)
     }
 
@@ -205,7 +218,13 @@ struct Node: Sendable {
                 return .infrastructureFailure("result bundle contains no outcomes for the leased tests — " + statusDescription(chunkResult))
             }
             reportOutcomes(outcomes, executor: executor)
-            return .completed(outcomes)
+            // 0 = clean pass, 65 = clean run with test failures; anything else
+            // (timeout 143, crashes) keeps the recovered verdicts but counts
+            // against executor health so a chronically sick device retires.
+            if chunkResult.status == 0 || chunkResult.status == 65 {
+                return .completed(outcomes)
+            }
+            return .completedDegraded(outcomes, statusDescription(chunkResult))
         } catch {
             if chunkResult.status == 0 || chunkResult.status == 65 {
                 return .infrastructureFailure("tests ran (status \(chunkResult.status)) but results could not be collected: \(error)")

@@ -53,6 +53,10 @@ class Channel {
     }
 
     func exec(command: String) throws {
+        // Merge stderr into the stdout stream: with a blocking session, draining
+        // two streams sequentially can deadlock when the unread stream's window
+        // fills. One merged stream cannot.
+        _ = libssh2_channel_handle_extended_data2(cChannel, LIBSSH2_CHANNEL_EXTENDED_DATA_MERGE)
         let code = libssh2_channel_process_startup(cChannel,
                                                    Channel.exec,
                                                    UInt32(Channel.exec.utf8.count),
