@@ -35,10 +35,14 @@ actor ResultCollector {
 
         var outcomes: [TestOutcome] = []
         for name in xcresults {
+            // Parse BEFORE recording: a corrupted bundle (e.g. from a killed
+            // xcodebuild) must never reach the final merge set.
+            let unzippedPath = "\(unzipDirectory)/\(name)"
+            let bundleOutcomes = try await tool.testOutcomes(xcresultPath: unzippedPath)
             let finalPath = "\(workspace.finalPath)/\(unzipID)-\(name)"
-            try FileManager.default.moveItem(atPath: "\(unzipDirectory)/\(name)", toPath: finalPath)
+            try FileManager.default.moveItem(atPath: unzippedPath, toPath: finalPath)
             collectedResultPaths.append(finalPath)
-            outcomes.append(contentsOf: try await tool.testOutcomes(xcresultPath: finalPath))
+            outcomes.append(contentsOf: bundleOutcomes)
         }
         return outcomes
     }
