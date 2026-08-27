@@ -237,17 +237,18 @@ struct Node: Sendable {
         }
     }
 
-    /// In a chunk that did not finish healthily, passes are demoted to
-    /// notExecuted (requeued, bounded by the infrastructure retry limit);
-    /// failures and skips are kept.
+    /// In a chunk that did not finish healthily, run-greening verdicts (pass,
+    /// skip) are demoted to notExecuted and requeued (bounded by the
+    /// infrastructure retry limit) — they must be re-earned in a clean chunk.
+    /// Only failures are kept: they can only make the run redder.
     static func degradeOutcomes(_ outcomes: [TestOutcome]) -> [TestOutcome] {
         outcomes.map { outcome in
-            guard outcome.kind == .pass else { return outcome }
+            guard outcome.kind == .pass || outcome.kind == .skipped else { return outcome }
             return TestOutcome(
                 test: outcome.test,
                 kind: .notExecuted,
                 duration: outcome.duration,
-                message: "Passed in a degraded chunk (xcodebuild did not exit cleanly) — requeued for confirmation"
+                message: "\(outcome.kind == .pass ? "Passed" : "Skipped") in a degraded chunk (xcodebuild did not exit cleanly) — requeued for confirmation"
             )
         }
     }

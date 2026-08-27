@@ -114,22 +114,29 @@ final class TestSchedulerTests: XCTestCase {
         let degraded = Node.degradeOutcomes(passOutcome)
         XCTAssertEqual(degraded.count, 1)
         XCTAssertEqual(degraded[0].kind, .notExecuted)
-        // Failures and skips survive degradation untouched.
+        // Skips are demoted too — a skip also greens the run and must be re-earned.
+        let skipOutcome = Node.degradeOutcomes([TestOutcome(test: "M/C/testS()", kind: .skipped)])
+        XCTAssertEqual(skipOutcome[0].kind, .notExecuted)
+        // Only failures survive degradation untouched.
         let failOutcome = Node.degradeOutcomes([TestOutcome(test: "M/C/testB()", kind: .failed, message: "boom")])
         XCTAssertEqual(failOutcome[0].kind, .failed)
 
         // End-to-end through the scheduler: every chunk is degraded, retries
-        // exhaust, and the final state is unexecuted (exit 1), never green.
-        let scheduler = TestScheduler(tests: ["M/C/testA()"], rerunLimit: 0, infrastructureRetryLimit: 1)
-        while let lease = await scheduler.lease(maxCount: 1, executorID: "sick") {
-            let outcomes = Node.degradeOutcomes([TestOutcome(test: "M/C/testA()", kind: .pass, duration: 1)])
-            await scheduler.complete(lease, outcomes: outcomes)
+        // exhaust, and the final state is unexecuted (exit 1), never green —
+        // for a degraded pass AND a degraded skip.
+        for kind in [TestOutcome.Kind.pass, .skipped] {
+            let scheduler = TestScheduler(tests: ["M/C/testA()"], rerunLimit: 0, infrastructureRetryLimit: 1)
+            while let lease = await scheduler.lease(maxCount: 1, executorID: "sick") {
+                let outcomes = Node.degradeOutcomes([TestOutcome(test: "M/C/testA()", kind: kind, duration: 1)])
+                await scheduler.complete(lease, outcomes: outcomes)
+            }
+            let snapshot = await scheduler.snapshot()
+            XCTAssertEqual(snapshot.unexecuted.count, 1, "kind \(kind)")
+            XCTAssertEqual(snapshot.passed.count, 0)
+            XCTAssertEqual(snapshot.skipped.count, 0)
+            let outcome = RunOutcome(snapshot: snapshot, duration: 1, mergedResultPath: nil, reportsWritten: true)
+            XCTAssertFalse(outcome.succeeded, "kind \(kind)")
         }
-        let snapshot = await scheduler.snapshot()
-        XCTAssertEqual(snapshot.unexecuted.count, 1)
-        XCTAssertEqual(snapshot.passed.count, 0)
-        let outcome = RunOutcome(snapshot: snapshot, duration: 1, mergedResultPath: nil, reportsWritten: true)
-        XCTAssertFalse(outcome.succeeded)
     }
 
     func testAttemptHistoryRecordsCompletionsAndAbandons() async {
