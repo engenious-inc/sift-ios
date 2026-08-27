@@ -488,7 +488,9 @@ struct Node: Sendable {
         let remoteManifest = "\(scriptsDirectory)/\(scriptID).tests"
         _ = try await executor.ssh.run("umask 077; mkdir -p \(scriptsDirectory.shellQuoted)")
         try await executor.ssh.uploadFile(data: script, remotePath: remoteScript)
-        try await executor.ssh.uploadFile(data: Data(tests.joined(separator: "\n").utf8), remotePath: remoteManifest)
+        // POSIX text file: every line newline-TERMINATED (so `wc -l`/`while read` see
+        // the last test too).
+        try await executor.ssh.uploadFile(data: Data(tests.map { $0 + "\n" }.joined().utf8), remotePath: remoteManifest)
         _ = try await executor.ssh.run("chmod 700 \(remoteScript.shellQuoted)")
 
         var environment = [
