@@ -42,17 +42,18 @@ public struct TestDiscovery: Sendable {
         case .symbols:
             tests = try await symbolTests(configuration: configuration, descriptors: descriptors)
         }
-        // A bundle with ZERO discovered tests fails discovery OUTRIGHT: silently
-        // skipping it would let part of the suite vanish behind exit 0. (Remove a
-        // genuinely test-less target from the test plan instead.)
+        // A bundle with ZERO discovered tests is surfaced LOUDLY but does not fail
+        // discovery: all-disabled or genuinely empty bundles are legitimate (and an
+        // all-empty selection is governed by --allow-empty-tests in the controller).
+        // Parser-level drops still fail hard: an unexpanded identifier throws above.
         let emptyBundles = descriptors.filter { descriptor in
             !tests.contains { $0.bundleName == descriptor.bundleName }
         }
-        guard emptyBundles.isEmpty else {
-            throw XCTestRunError(
-                "discovery found 0 tests for bundle(s): "
+        if !emptyBundles.isEmpty {
+            log?.warning(
+                "discovery found 0 enabled tests for bundle(s): "
                 + emptyBundles.map(\.bundleName).joined(separator: ", ")
-                + " (backend: \(backend.rawValue)) — a partial suite must never run silently"
+                + " (backend: \(backend.rawValue)) — nothing from them will run"
             )
         }
         return tests
@@ -145,6 +146,7 @@ public struct TestDiscovery: Sendable {
     ) throws -> [ScheduledTest] {
         let byBundle = Dictionary(uniqueKeysWithValues: descriptors.map { ($0.bundleName, $0) })
         var seen = Set<String>()
+        var duplicates = Set<String>()
         var tests: [ScheduledTest] = []
         var disabled = 0
         for entry in document.values {
@@ -180,8 +182,21 @@ public struct TestDiscovery: Sendable {
                 )
                 if seen.insert(scheduled.id).inserted {
                     tests.append(scheduled)
+                } else {
+                    duplicates.insert(scheduled.id)
                 }
             }
+        }
+        // The bundle/class/method namespace is the ONE namespace `-only-testing:`
+        // speaks: two tests sharing an identifier (e.g. an XCTest class and a Swift
+        // Testing suite with the same name and method) cannot be selected, retried,
+        // or reported apart. That ambiguity is an error, never a silent dedupe.
+        guard duplicates.isEmpty else {
+            throw XCTestRunError(
+                "enumeration produced colliding test identifiers (two frameworks/classes share a name?):\n"
+                + duplicates.sorted().map { "  - \($0)" }.joined(separator: "\n")
+                + "\nrename one side — xcodebuild cannot address these tests separately"
+            )
         }
         if disabled > 0 {
             log?.message(verboseMsg: "Enumeration: \(disabled) test(s) disabled by the test plan — not scheduled")
@@ -244,12 +259,19 @@ public struct TestDiscovery: Sendable {
 
     private func localPhysicalDeviceUDID() async throws -> String? {
         guard let result = try? await shell.runChecked("/usr/bin/xcrun", ["xcdevice", "list"]) else { return nil }
-        // xcdevice may prefix warnings; locate the JSON array.
-        guard let start = result.stdout.firstIndex(of: "["),
-              let data = String(result.stdout[start...]).data(using: .utf8),
-              let entries = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] else {
-            return nil
+        // xcdevice may prefix warnings that themselves contain "[" (e.g. "[MT] …"):
+        // try every candidate array start until one parses — same as `Device`'s parser.
+        var entries: [[String: Any]]?
+        var searchRange = result.stdout.startIndex..<result.stdout.endIndex
+        while let start = result.stdout.range(of: "[", range: searchRange) {
+            if let data = String(result.stdout[start.lowerBound...]).data(using: .utf8),
+               let parsed = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] {
+                entries = parsed
+                break
+            }
+            searchRange = start.upperBound..<result.stdout.endIndex
         }
+        guard let entries else { return nil }
         let device = entries.first { entry in
             (entry["simulator"] as? Bool) == false
                 && ((entry["platform"] as? String)?.contains("iphoneos") ?? false)

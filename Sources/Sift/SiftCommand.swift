@@ -97,6 +97,12 @@ extension Sift {
             setbuf(__stdoutp, nil)
             var log = Log()
             log.verbose = verboseMode
+            // --events-stdout hands stdout to the NDJSON stream: human log lines
+            // would corrupt it, so they are quieted (warnings/errors stay on stderr).
+            if eventsStdout {
+                log.quiet = true
+                log.verbose = false
+            }
 
             if isTestProcessingDisabled {
                 // Kept for CLI compatibility. Result processing now uses the modern

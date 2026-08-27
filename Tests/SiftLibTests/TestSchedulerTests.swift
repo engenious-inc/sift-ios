@@ -139,6 +139,25 @@ final class TestSchedulerTests: XCTestCase {
         }
     }
 
+    /// Timings-store hygiene: verdicts from UNHEALTHY chunks (degraded, cancelled)
+    /// never contribute durations, and a retired executor stops counting toward
+    /// tail-shrink accounting.
+    func testDegradedChunkVerdictsExcludedFromTimings() async {
+        let scheduler = TestScheduler(tests: ["M/C/testA()", "M/C/testB()"], rerunLimit: 0)
+        // testA fails in a HEALTHY chunk; testB fails in a DEGRADED one.
+        while let lease = await scheduler.lease(maxCount: 1, executorID: "e1") {
+            let test = lease.tests[0]
+            await scheduler.complete(
+                lease,
+                outcomes: [TestOutcome(test: test, kind: .failed, duration: 7, message: "boom")],
+                healthy: test == "M/C/testA()"
+            )
+        }
+        let observations = await scheduler.timingObservations()
+        XCTAssertEqual(observations.map(\.unit.test), ["M/C/testA()"])
+        await scheduler.retire(executorID: "e1")
+    }
+
     // MARK: - Duration-aware scheduling (Phase 6)
 
     func testLongestEstimatedTestsLeaseFirst() async {

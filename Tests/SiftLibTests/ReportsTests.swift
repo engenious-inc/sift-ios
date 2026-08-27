@@ -84,6 +84,25 @@ final class ReportsTests: XCTestCase {
         XCTAssertEqual(suiteB?.unexecutedDetails.first?.infrastructureAttempts, 2)
         // Legacy fields keep their shapes.
         XCTAssertEqual(suiteB?.unexecutedTests, ["ModuleB/ClassB/testNever()"])
+        // bundleName is the first identifier component; configuration is null for
+        // single-configuration runs.
+        XCTAssertEqual(report.results.map(\.bundleName), ["ModuleA", "ModuleA", "ModuleB"])
+        XCTAssertTrue(report.results.allSatisfy { $0.configuration == nil })
+    }
+
+    /// Multi-configuration runs produce one Result per (suite, configuration),
+    /// each carrying its structured configuration name.
+    func testJSONReportSplitsSuitesByConfiguration() throws {
+        let cases = [
+            TestCase(name: "B/C/testA() [Cfg1]", state: .pass, launchCounter: 1, infrastructureAttempts: 0,
+                     duration: 1, message: "", configuration: "Cfg1"),
+            TestCase(name: "B/C/testA() [Cfg2]", state: .failed, launchCounter: 1, infrastructureAttempts: 0,
+                     duration: 2, message: "boom", configuration: "Cfg2"),
+        ]
+        let report = JSONReport.generate(tests: TestCasesSnapshot(cases: cases), context: makeContext())
+        XCTAssertEqual(report.results.count, 2)
+        XCTAssertEqual(report.results.compactMap(\.configuration).sorted(), ["Cfg1", "Cfg2"])
+        XCTAssertTrue(report.results.allSatisfy { $0.testSuite == "B/C" && $0.bundleName == "B" })
     }
 
     func testJUnitHostnameTimestampAndControlCharacterSanitization() throws {

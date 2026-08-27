@@ -4,7 +4,8 @@ import Foundation
 struct JSONReportModel: Codable {
     /// Schema version 3 (additive over 2): `hostname`, `mergeStatus`, `healthEvents`,
     /// `retainedArtifacts`, `summary.executionDuration`, `results[].className`,
-    /// `results[].unexecutedDetails`. Version 2 added `rerun` + `attempts`.
+    /// `results[].bundleName`, `results[].configuration`, `results[].unexecutedDetails`.
+    /// Version 2 added `rerun` + `attempts`.
     var schemaVersion: Int = 3
     var summary: Summary
     var hostname: String = ""
@@ -25,6 +26,10 @@ extension JSONReportModel {
         /// Dotted form matching JUnit's classname ("Bundle.Class") — `testSuite`
         /// keeps its historical slash form.
         var className: String
+        /// `.xctest` bundle basename — the first identifier component.
+        var bundleName: String
+        /// Test-plan configuration this suite's tests ran under (null: none recorded).
+        var configuration: String?
         var passed, rerunned, skipped, failed, unexecuted: Int
         var rerun: Int
         var passedTests: [PassedTest]
@@ -36,11 +41,14 @@ extension JSONReportModel {
         /// its historical string-array shape).
         var unexecutedDetails: [UnexecutedTest]
 
-        init(testSuite: String, passed: Int, rerunned: Int, skipped: Int, failed: Int, unexecuted: Int,
+        init(testSuite: String, configuration: String? = nil,
+             passed: Int, rerunned: Int, skipped: Int, failed: Int, unexecuted: Int,
              passedTests: [PassedTest], rerunnedTests: [String], skippedTests: [String],
              failedTests: [FailedTest], unexecutedTests: [String], unexecutedDetails: [UnexecutedTest] = []) {
             self.testSuite = testSuite
             self.className = testSuite.replacingOccurrences(of: "/", with: ".")
+            self.bundleName = testSuite.components(separatedBy: "/").first ?? testSuite
+            self.configuration = configuration
             self.passed = passed
             self.rerunned = rerunned
             self.rerun = rerunned

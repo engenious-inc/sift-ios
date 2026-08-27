@@ -22,7 +22,8 @@ enum ProcessScripts {
     /// SIGCHLD race and block in wait4 holding the exec channel open). `&` must
     /// background a SIMPLE command or sshd holds the channel until the tree dies.
     static func launcher(handle: BackgroundProcessHandle, command: String) -> String {
-        "mkdir -p \(handle.directory.shellQuoted) || exit 1\n" +
+        // umask BEFORE mkdir: the proc/<attempt> directory itself must be born 0700.
+        "umask 077; mkdir -p \(handle.directory.shellQuoted) || exit 1\n" +
         "/bin/sh -c \(inner(handle: handle, command: command).shellQuoted) > /dev/null 2>&1 < /dev/null &\n" +
         "exit 0"
     }

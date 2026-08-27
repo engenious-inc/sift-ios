@@ -82,19 +82,21 @@ actor Simulator: TestExecutor {
             return true
         }
         log?.message("\(executorID): simulator not booted — booting")
-        guard await boot() else { return false }
-        bootedBySift = true
-        return true
+        return await boot(recordOwnership: true)
     }
 
-    /// Boot (no erase) and wait for it to complete.
-    private func boot() async -> Bool {
+    /// Boot (no erase) and wait for it to complete. `recordOwnership` marks the
+    /// simulator Sift-booted the moment `simctl boot` SUCCEEDS — before the
+    /// readiness wait — so a failed/interrupted bootstatus still restores the
+    /// user's original shut-down state at cleanup.
+    private func boot(recordOwnership: Bool = false) async -> Bool {
         let quotedUDID = UDID.shellQuoted
         guard let boot = try? await ssh.run(developerDirExport + "xcrun simctl boot \(quotedUDID)"),
               boot.status == 0 else {
             log?.error("\(executorID): simulator boot failed")
             return false
         }
+        if recordOwnership { bootedBySift = true }
         guard let bootstatus = try? await ssh.run(developerDirExport + "xcrun simctl bootstatus \(quotedUDID) -b"),
               bootstatus.status == 0 else {
             log?.error("\(executorID): simulator did not finish booting")

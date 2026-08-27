@@ -227,26 +227,30 @@ public class SFTP {
             mode: LIBSSH2_SFTP_S_IFREG | permissions.rawValue
         )
 
-        var offset = 0
-        var zeroProgressCount = 0
-        while offset < data.count {
-            let upTo = Swift.min(offset + SFTPHandle.bufferSize, data.count)
-            let subdata = data.subdata(in: offset ..< upTo)
-            switch sftpHandle.write(subdata) {
-            case .written(let bytesSent):
-                if bytesSent <= 0 {
-                    zeroProgressCount += 1
-                    if zeroProgressCount > 1000 {
-                        throw SSHError.genericError("SFTP upload to \(remotePath) made no progress at offset \(offset)")
+        // Zero-copy: 32 KiB writes read straight from the Data's buffer — same
+        // bounded-slice loop as the file-upload path, no per-write subdata copy.
+        try data.withUnsafeBytes { (raw: UnsafeRawBufferPointer) in
+            var offset = 0
+            var zeroProgressCount = 0
+            while offset < raw.count {
+                let upTo = Swift.min(offset + SFTPHandle.bufferSize, raw.count)
+                let slice = UnsafeRawBufferPointer(rebasing: raw[offset ..< upTo])
+                switch sftpHandle.write(buffer: slice) {
+                case .written(let bytesSent):
+                    if bytesSent <= 0 {
+                        zeroProgressCount += 1
+                        if zeroProgressCount > 1000 {
+                            throw SSHError.genericError("SFTP upload to \(remotePath) made no progress at offset \(offset)")
+                        }
+                    } else {
+                        zeroProgressCount = 0
+                        offset += bytesSent
                     }
-                } else {
-                    zeroProgressCount = 0
-                    offset += bytesSent
+                case .eagain:
+                    continue
+                case .error(let error):
+                    throw error
                 }
-            case .eagain:
-                continue
-            case .error(let error):
-                throw error
             }
         }
     }

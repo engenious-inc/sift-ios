@@ -67,8 +67,8 @@ Config reference:
 |---|---|
 | `xctestrunPath` | Absolute path to the `.xctestrun` produced by `build-for-testing`. FormatVersion 1 and 2 are supported. |
 | `outputDirectoryPath` | Absolute path where `final/` (merged `.xcresult`, `final_result.xml` JUnit, `final_result.json`, `final_result.txt`) is written. |
-| `rerunFailedTest` | How many times a failed test is retried. |
-| `testsBucket` | Number of tests handed to an executor per `xcodebuild` invocation. |
+| `rerunFailedTest` | How many times a failed test is retried (default 0). |
+| `testsBucket` | Number of tests handed to an executor per `xcodebuild` invocation (required for `run`). |
 | `testsExecutionTimeout` | Wall-clock seconds allowed for one bucket; the remote `xcodebuild` is terminated (TERM→KILL) on expiry. Also injected as the per-test time allowance. |
 | `setUpScriptPath` / `tearDownScriptPath` | Optional scripts run on the node before/after each bucket. Uploaded as 0700 files and executed directly — the shebang is honored. Env: `TEST_NAME`, `TEST_MANIFEST` (path to a newline-delimited test list), `UDID`, plus your `environmentVariables` (`TEST_NAMES` is deprecated, kept one release). A nonzero setup exit returns the bucket to the queue; a nonzero teardown is reported as a health event. |
 | `onlyTestConfiguration` / `skipTestConfiguration` | Test-plan configuration selection (FormatVersion 2 only): `selected = enabled ∩ (only ?? all) ∖ {skip}`. Unknown names and empty selections are errors. With several selected configurations, every test runs once per configuration and report names are qualified (`test() [Config B]`). |
@@ -99,10 +99,13 @@ Sift doctor --config config.json         # preflight: tooling, artifact, output,
 Sift run --config config.json --events-path run.ndjson  # machine-readable event stream (v1)
 ```
 
-On a TTY, `run` shows a live progress line (`⏳ 12/30 done · 2 failed · 3 chunk(s)
-running`). `--events-path`/`--events-stdout` emit an NDJSON stream (`runStarted`,
-`chunkStarted`, `testFinished`, `chunkFinished`, `runFinished`; schema v1) for CI
-dashboards. Runs also persist per-test durations to `outputDirectoryPath/.sift/
+On a TTY, `run` shows a live progress line (done/pending/in-flight counts, failures,
+active chunks, elapsed time); off a TTY the per-test result lines serve as the
+line-oriented progress stream. `--events-path`/`--events-stdout` emit an NDJSON
+stream (`runStarted`, `chunkStarted`, `testFinished`, `chunkFinished`, `runFinished`;
+schema v1) for CI dashboards — `--events-stdout` quiets human stdout output so the
+stream stays machine-parsable, and `runFinished` (with a `status` field) is emitted
+only after `final/` is published (an error emits `status: "error"` instead). Runs also persist per-test durations to `outputDirectoryPath/.sift/
 timings.json` and schedule longest-first on the next run, shrinking the final
 buckets so no executor idles behind a ragged tail.
 
@@ -115,8 +118,11 @@ deprecated (a warning is printed) and used only when neither CLI selector is giv
 
 Test identifiers use the `.xctest` **bundle name** as their first component (the same
 namespace `xcodebuild -only-testing:` uses) — for a target named "My UITests" that is
-`My UITests/LoginTests/testLogin()`. A selector that matches nothing is an error with
-close-match suggestions, never a silently scheduled phantom test.
+`My UITests/LoginTests/testLogin()`. A trailing `()` always selects a method; a
+selector WITHOUT it matches a class *or* a paren-less method against the discovered
+tests (so `Bundle/someTopLevelTest` reaches a suite-less Swift Testing function). A
+selector that matches nothing is an error with close-match suggestions, never a
+silently scheduled phantom test.
 
 ### Test discovery
 
@@ -148,8 +154,10 @@ Errors and warnings go to **stderr**; stdout carries results and progress only.
 Reports are staged privately and published to `final/` in one atomic rename — a failed
 or killed run leaves the previous `final/` untouched, and an advisory lock keeps two
 runs from sharing one `outputDirectoryPath` (the error names the owning run).
-Simulators are never erased: an unbooted simulator is booted (and shut back down when
-the run ends), and recovery is shutdown+boot only.
+USER-PROVIDED simulators are never erased: an unbooted simulator is booted (and shut
+back down when the run ends), and recovery is shutdown+boot only. The one exception
+is Sift-OWNED provisioned clones (`provisionSimulators`), which are erased on
+recovery for a maximally clean retry and deleted when the run ends.
 
 ## Development
 

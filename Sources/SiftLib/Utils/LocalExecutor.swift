@@ -28,10 +28,11 @@ final class LocalExecutor: SSHExecutor, @unchecked Sendable {
         // Mirrors the SSH transport: /bin/sh semantics, and the command must run to
         // completion even on a cancelled task (teardown/terminate sequences execute
         // during cancellation), bounded so nothing can hang shutdown forever.
-        let wrapped = arch.map { "arch -\($0.rawValue) /bin/sh -c \(command.shellQuoted)" }
-            ?? "/bin/sh -c \(command.shellQuoted)"
+        // Direct argv (no extra quoting layer): the command string IS the sh script.
+        let executable = arch == nil ? "/bin/sh" : "/usr/bin/arch"
+        let arguments = arch.map { ["-\($0.rawValue)", "/bin/sh", "-c", command] } ?? ["-c", command]
         let result = try await CommandLineExecutor.launch(
-            executable: "/bin/sh", arguments: ["-c", wrapped],
+            executable: executable, arguments: arguments,
             onCancellation: .runToCompletion, timeout: 900
         )
         return (result.status, result.stdout)

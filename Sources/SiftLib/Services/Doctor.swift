@@ -54,6 +54,15 @@ public struct Doctor {
                 only: config.onlyTestConfiguration, skip: config.skipTestConfiguration
             )
             report(true, "xctestrun", "\(platform.displayName), \(selected.count) configuration(s) selected")
+            // Every bundle the artifact references must actually be on disk — a
+            // missing executable fails at chunk time otherwise.
+            for configuration in selected {
+                for descriptor in xctestrun.testBundles(config: configuration) {
+                    let present = FileManager.default.isReadableFile(atPath: descriptor.executablePath)
+                    report(present, "bundle \(descriptor.bundleName)",
+                           present ? "executable present" : "executable missing: \(descriptor.executablePath)")
+                }
+            }
             if platform == .simulator {
                 let discovery = TestDiscovery(log: nil)
                 if (try? await discovery.enumerationDestination(for: .simulator)) != nil {
@@ -64,6 +73,11 @@ public struct Doctor {
             }
         } catch {
             report(false, "xctestrun", "\(error)")
+        }
+        for (label, path) in [("setUpScript", config.setUpScriptPath), ("tearDownScript", config.tearDownScriptPath)] {
+            guard let path else { continue }
+            let readable = FileManager.default.isReadableFile(atPath: path)
+            report(readable, label, readable ? path : "not readable: \(path)")
         }
     }
 
@@ -107,14 +121,41 @@ public struct Doctor {
         } else {
             report(false, "\(label) tools", "zip, unzip, or xcrun missing from PATH")
         }
+        // EVERY probe reports: a probe that cannot run or parse is a FAILED check,
+        // never a silently missing line.
         if let df = try? await executor.run("df -g \(node.deploymentPath.shellQuoted) | tail -1 | awk '{print $4}'"),
            let freeGB = Int(df.output.trimmingCharacters(in: .whitespacesAndNewlines)) {
             report(freeGB >= 5, "\(label) disk", "\(freeGB) GB free (need >= 5)")
+        } else {
+            report(false, "\(label) disk", "disk-space probe failed (df/awk unavailable or unparsable)")
         }
         if let xcode = try? await executor.run("test -d \(node.xcodePathSafeForDoctor) && echo ok"), xcode.output.contains("ok") {
             report(true, "\(label) Xcode", node.developerDirPath)
         } else {
             report(false, "\(label) Xcode", "not found at \(node.developerDirPath)")
+        }
+        let developerDir = "export DEVELOPER_DIR=\(node.developerDirPath.shellQuoted); "
+        if let version = try? await executor.run(developerDir + "xcrun xcodebuild -version | head -1"), version.status == 0 {
+            let line = version.output.trimmingCharacters(in: .whitespacesAndNewlines)
+            let major = Int(line.components(separatedBy: " ").last?.components(separatedBy: ".").first ?? "") ?? 0
+            report(major >= 16, "\(label) Xcode version", "\(line) (need 16+)")
+        } else {
+            report(false, "\(label) Xcode version", "xcodebuild not runnable via \(node.developerDirPath)")
+        }
+        // Clock information: a large skew corrupts timestamps in logs and reports.
+        if let date = try? await executor.run("date +%s"), let nodeEpoch = Int(date.output.trimmingCharacters(in: .whitespacesAndNewlines)) {
+            let skew = abs(Int(Date().timeIntervalSince1970) - nodeEpoch)
+            report(skew <= 60, "\(label) clock", "skew vs controller: \(skew)s\(skew > 60 ? " (sync the node's clock)" : "")")
+        } else {
+            report(false, "\(label) clock", "clock probe failed")
+        }
+        if let provision = node.provisionSimulators {
+            if let types = try? await executor.run(developerDir + "xcrun simctl list devicetypes"), types.status == 0,
+               types.output.contains(provision.deviceType) {
+                report(true, "\(label) provisioning", "device type '\(provision.deviceType)' available (\(provision.count) clone(s) requested)")
+            } else {
+                report(false, "\(label) provisioning", "device type '\(provision.deviceType)' not offered by simctl on this node")
+            }
         }
 
         // Executors.

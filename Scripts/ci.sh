@@ -3,8 +3,11 @@
 #
 #   ./Scripts/ci.sh          fast gate: resolve + build + unit/CLI tests
 #   ./Scripts/ci.sh --full   adds a throwaway local sshd (SSH integration tests),
-#                            the fixture Xcode project build, and a real
-#                            enumeration-discovery check (needs an iOS simulator)
+#                            the fixture Xcode project build, a real enumeration-
+#                            discovery check, a full `sift run` of the fixture
+#                            (local transport), and a SIGINT-cancellation run
+#                            verifying partial reports + no leaked processes
+#                            (needs an iOS simulator)
 #
 # Extra env respected by the test suite:
 #   SIFT_TEST_SSH_PORT/_USER/_KEY  — external sshd instead of the throwaway one
@@ -82,6 +85,57 @@ if [ "$FULL" = 1 ]; then
       || { echo "FAIL: ObjC tests missing from enumeration"; exit 1; }
   echo "$LISTING" | grep -q "testStaticHelper" \
       && { echo "FAIL: static helper leaked into discovery"; exit 1; }
+
+  echo "==> Full E2E: sift run of the fixture (local transport)"
+  E2E_UDID=$(xcrun simctl list devices --json | python3 -c "
+import json, sys
+devices = json.load(sys.stdin)['devices']
+best = None
+for runtime in sorted(devices, reverse=True):
+    if 'SimRuntime.iOS' not in runtime: continue
+    for device in devices[runtime]:
+        if not device.get('isAvailable'): continue
+        if device['state'] == 'Booted':
+            print(device['udid']); sys.exit()
+        best = best or device['udid']
+print(best or '')")
+  [ -n "$E2E_UDID" ] || { echo "FAIL: no iOS simulator available for the E2E run"; exit 1; }
+  E2E_DIR=$(mktemp -d)
+  XCODE_APP=$(dirname "$(dirname "$(xcode-select -p)")")
+  cat > "$E2E_DIR/config.json" <<EOF
+{ "xctestrunPath": "$XCTESTRUN", "outputDirectoryPath": "$E2E_DIR/out",
+  "rerunFailedTest": 0, "testsBucket": 2, "testsExecutionTimeout": 300,
+  "nodes": [{ "name": "ci-local", "transport": "local", "deploymentPath": "$E2E_DIR/deploy",
+              "UDID": { "simulators": ["$E2E_UDID"] }, "xcodePath": "$XCODE_APP" }] }
+EOF
+  "$BIN" run --config "$E2E_DIR/config.json" --timeout 900
+  python3 - "$E2E_DIR/out/final/final_result.json" <<'PY'
+import json, sys
+summary = json.load(open(sys.argv[1]))["summary"]
+assert summary["tests"] >= 6, f"expected the full fixture suite, got {summary['tests']}"
+assert summary["passed"] == summary["tests"], f"fixture tests failed: {summary}"
+assert summary["unexecuted"] == 0, f"unexecuted tests in a clean run: {summary}"
+print(f"    fixture run: {summary['passed']}/{summary['tests']} passed")
+PY
+
+  echo "==> Full E2E: SIGINT mid-run (exit 130, partial reports, terminal event, no orphans)"
+  rm -rf "$E2E_DIR/out"
+  "$BIN" run --config "$E2E_DIR/config.json" --timeout 900 \
+      --events-path "$E2E_DIR/events.ndjson" >/dev/null 2>&1 &
+  RUN_PID=$!
+  for _ in $(seq 1 120); do
+    grep -q chunkStarted "$E2E_DIR/events.ndjson" 2>/dev/null && break
+    sleep 1
+  done
+  grep -q chunkStarted "$E2E_DIR/events.ndjson" 2>/dev/null \
+      || { echo "FAIL: run never started a chunk before the SIGINT window"; kill "$RUN_PID" 2>/dev/null; exit 1; }
+  kill -INT "$RUN_PID"
+  SIGINT_CODE=0; wait "$RUN_PID" || SIGINT_CODE=$?
+  [ "$SIGINT_CODE" = 130 ] || { echo "FAIL: SIGINT run exited $SIGINT_CODE, expected 130"; exit 1; }
+  [ -f "$E2E_DIR/out/final/final_result.json" ] \
+      || { echo "FAIL: cancelled run published no partial reports"; exit 1; }
+  grep -q runFinished "$E2E_DIR/events.ndjson" \
+      || { echo "FAIL: event stream has no terminal runFinished event"; exit 1; }
 
   echo "==> Process-leak sweep"
   LEAKED=$(pgrep -fl "sift-attempt:" | grep -v pgrep || true)

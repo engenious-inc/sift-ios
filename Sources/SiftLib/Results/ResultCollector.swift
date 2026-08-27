@@ -69,16 +69,26 @@ actor ResultCollector {
             let bundleOutcomes = try await tool.testOutcomes(xcresultPath: unzippedPath)
             parsed.append((name, unzippedPath, bundleOutcomes))
         }
-        // Pass 2: commit.
-        var outcomes: [TestOutcome] = []
-        for bundle in parsed {
-            let stagedPath = "\(workspace.stagingPath)/\(unzipID)-\(bundle.name)"
-            try FileManager.default.moveItem(atPath: bundle.path, toPath: stagedPath)
-            collectedResultPaths.append(stagedPath)
-            outcomes.append(contentsOf: bundle.outcomes)
+        // Pass 2: commit ATOMICALLY — every bundle moves before any joins the merge
+        // set. A failed move rolls the already-moved bundles back, so a thrown
+        // ingest can never leave a partial archive behind to be merged (and then
+        // duplicated when the chunk's tests retry).
+        var moved: [(from: String, to: String)] = []
+        do {
+            for bundle in parsed {
+                let stagedPath = "\(workspace.stagingPath)/\(unzipID)-\(bundle.name)"
+                try FileManager.default.moveItem(atPath: bundle.path, toPath: stagedPath)
+                moved.append((bundle.path, stagedPath))
+            }
+        } catch {
+            for step in moved.reversed() {
+                try? FileManager.default.moveItem(atPath: step.to, toPath: step.from)
+            }
+            throw error
         }
+        collectedResultPaths.append(contentsOf: moved.map(\.to))
         try? FileManager.default.removeItem(atPath: zipPath)
-        return outcomes
+        return parsed.flatMap(\.outcomes)
     }
 
     /// Merges every collected bundle into final_result.xcresult. On failure the

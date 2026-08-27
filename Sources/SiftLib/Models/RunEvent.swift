@@ -55,13 +55,19 @@ public actor EventBus {
     }
 }
 
-/// Live single-line TTY progress, driven purely by run events.
+/// Live single-line TTY progress, driven purely by run events: done/pending/
+/// in-flight counts, failures, active chunks, and elapsed execution time.
+/// (Off a TTY the per-test result lines in the normal log are the line-oriented
+/// progress stream; this single rewriting line is TTY-only.)
 public final class ProgressReporter: @unchecked Sendable {
     private let lock = NSLock()
     private var total = 0
     private var finished = Set<String>()
     private var failed = 0
     private var activeChunks = 0
+    /// Tests currently leased, per executor (chunkStarted carries the count).
+    private var inFlightByExecutor: [String: Int] = [:]
+    private var startedAt: Double?
     private let enabled: Bool
 
     public init(enabled: Bool) {
@@ -72,16 +78,27 @@ public final class ProgressReporter: @unchecked Sendable {
         { [weak self] event in self?.consume(event) }
     }
 
+    private static func monotonicNow() -> Double {
+        Double(clock_gettime_nsec_np(CLOCK_MONOTONIC)) / 1_000_000_000
+    }
+
     private func consume(_ event: RunEvent) {
         guard enabled else { return }
         lock.lock()
         switch event.kind {
         case "runStarted":
             total = Int(event.data["tests"] ?? "") ?? 0
+            startedAt = Self.monotonicNow()
         case "chunkStarted":
             activeChunks += 1
+            if let executor = event.data["executor"] {
+                inFlightByExecutor[executor] = Int(event.data["tests"] ?? "") ?? 0
+            }
         case "chunkFinished":
             activeChunks = max(0, activeChunks - 1)
+            if let executor = event.data["executor"] {
+                inFlightByExecutor[executor] = nil
+            }
         case "testFinished":
             if let test = event.data["test"], event.data["outcome"] != "notExecuted" {
                 finished.insert(test)
@@ -94,7 +111,10 @@ public final class ProgressReporter: @unchecked Sendable {
         default:
             break
         }
-        let line = "\r⏳ \(finished.count)/\(total) done · \(failed) failed · \(activeChunks) chunk(s) running   "
+        let inFlight = inFlightByExecutor.values.reduce(0, +)
+        let pending = max(0, total - finished.count - inFlight)
+        let elapsed = startedAt.map { Int(Self.monotonicNow() - $0) } ?? 0
+        let line = "\r⏳ \(finished.count)/\(total) done · \(pending) pending · \(inFlight) running in \(activeChunks) chunk(s) · \(failed) failed · \(elapsed)s   "
         lock.unlock()
         if total > 0 {
             FileHandle.standardOutput.write(Data(line.utf8))
