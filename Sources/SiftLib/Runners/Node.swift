@@ -352,6 +352,20 @@ struct Node: Sendable {
                 await health.record(RunHealthEvent(kind: .teardownFailed, source: executor.executorID, detail: "\(error)"))
             }
         }
+        // Cancellation observed at chunk end (e.g. during a teardown that ran to
+        // completion and exited 0): KEEP the chunk's verdicts, but the worker must
+        // stop leasing — returning .completed here would lease another chunk only
+        // to abandon it.
+        if Task.isCancelled {
+            switch outcome {
+            case .cancelled:
+                break // already classified, with its own description
+            case .completed(let outcomes), .completedDegraded(let outcomes, _):
+                return .cancelled(outcomes, "run cancelled — chunk verdicts committed, worker stopping")
+            case .infrastructureFailure:
+                return .cancelled([], "run cancelled — chunk produced no verdicts")
+            }
+        }
         return outcome
     }
 
