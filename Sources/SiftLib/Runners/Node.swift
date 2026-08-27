@@ -312,8 +312,16 @@ struct Node: Sendable {
     private func runChunk(lease: TestLease, executor: TestExecutor, xcodebuild: Xcodebuild, xctestrunPath: String) async -> ChunkOutcome {
         // Setup script: nonzero exit means "don't run this chunk here".
         do {
-            if let status = try await runScript(path: setUpScriptPath, executor: executor, tests: lease.tests), status != 0 {
-                return .infrastructureFailure("setup script exited with status \(status) — chunk returned to the queue")
+            let setupStatus = try await runScript(path: setUpScriptPath, executor: executor, tests: lease.tests)
+            // Script execution runs to completion even under cancellation (both
+            // transports), so a Ctrl-C during setup usually RETURNS normally —
+            // check the flag before interpreting the status: the chunk must not
+            // launch xcodebuild, and a nonzero exit must not blame the executor.
+            if Task.isCancelled {
+                return .cancelled([], "run cancelled during chunk setup")
+            }
+            if let setupStatus, setupStatus != 0 {
+                return .infrastructureFailure("setup script exited with status \(setupStatus) — chunk returned to the queue")
             }
         } catch {
             // Ctrl-C mid-setup (e.g. the script upload aborted): worker control,
@@ -332,7 +340,10 @@ struct Node: Sendable {
         do {
             if let status = try await runScript(path: tearDownScriptPath, executor: executor, tests: lease.tests), status != 0 {
                 log?.warning("\(executor.executorID): teardown script exited with status \(status)")
-                await health.record(RunHealthEvent(kind: .teardownFailed, source: executor.executorID, detail: "exit status \(status)"))
+                // A teardown disturbed by the cancellation itself is not a failure.
+                if !Task.isCancelled {
+                    await health.record(RunHealthEvent(kind: .teardownFailed, source: executor.executorID, detail: "exit status \(status)"))
+                }
             }
         } catch {
             log?.warning("\(executor.executorID): teardown script failed: \(error)")

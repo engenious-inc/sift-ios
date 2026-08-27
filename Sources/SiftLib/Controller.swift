@@ -167,7 +167,19 @@ public struct Controller {
 
     public mutating func run() async throws -> RunOutcome {
         let startTime = dependencies.now()
+        // ONE terminal event per run, wherever it ends: success paths emit
+        // `runFinished` after publication; EVERY thrown error lands here and emits
+        // status "error" first — discovery, selector, and preflight failures included.
+        do {
+            return try await runGuarded(startTime: startTime)
+        } catch {
+            await events?.emit("runFinished", ["status": "error", "error": "\(error)"])
+            await events?.finish()
+            throw error
+        }
+    }
 
+    private mutating func runGuarded(startTime: Double) async throws -> RunOutcome {
         _ = try await discoverTests()
 
         // Requested selectors are expanded against the discovered set: class/module
@@ -220,15 +232,7 @@ public struct Controller {
             "configurations": "\(selectedConfigurations.count)",
             "nodes": "\(config.nodes.count)",
         ])
-        // From here on the event stream is guaranteed a TERMINAL event: any error
-        // path emits runFinished(status: error) before rethrowing.
-        do {
-            return try await executeRun(startTime: startTime, unitsForRun: unitsForRun)
-        } catch {
-            await events?.emit("runFinished", ["status": "error", "error": "\(error)"])
-            await events?.finish()
-            throw error
-        }
+        return try await executeRun(startTime: startTime, unitsForRun: unitsForRun)
     }
 
     private mutating func executeRun(startTime: Double, unitsForRun: [TestUnit]) async throws -> RunOutcome {
@@ -236,8 +240,11 @@ public struct Controller {
         let lock = try workspace.acquireLock()
         defer { lock.release() }
         try workspace.prepareLocal()
+        // Error paths clean up here; the success path cleans up EXPLICITLY before
+        // the terminal event so an incomplete cleanup reaches the health set.
         defer {
-            if let error = workspace.cleanupLocal() {
+            if FileManager.default.fileExists(atPath: workspace.workPath),
+               let error = workspace.cleanupLocal() {
                 log?.warning("run-scratch cleanup incomplete at \(workspace.workPath): \(error)")
             }
         }
@@ -255,7 +262,8 @@ public struct Controller {
             rerunLimit: config.rerunFailedTest,
             infrastructureRetryLimit: 1,
             estimates: estimates,
-            log: log
+            log: log,
+            monotonicNow: dependencies.now
         )
         let collector = ResultCollector(workspace: workspace, tool: dependencies.resultTool, log: log)
         let health = HealthSink()
@@ -293,7 +301,10 @@ public struct Controller {
         await scheduler.drain()
 
         let snapshot = await scheduler.snapshot()
-        let executionDuration = dependencies.now() - executionStart
+        // The scheduler stamps the moment it drained — node teardown (simulator
+        // deletion, remote cleanup) happens after that and must not inflate the
+        // reported execution span.
+        let executionDuration = (await scheduler.executionEnded() ?? dependencies.now()) - executionStart
 
         // Feed real verdict durations back into the timings store for the next run.
         if let platform = artifactPlatform {
@@ -332,6 +343,17 @@ public struct Controller {
         // Everything was staged under the run directory; one atomic rename makes it
         // `final/` — the previous final survives any failure before this point.
         let publishedPath = try workspace.publish()
+        // Scratch cleanup runs BEFORE the terminal event so an incomplete cleanup
+        // reaches the health set (CLI summary, RunOutcome, exit consumers). The
+        // already-published JSON report reflects pre-publication health only.
+        if let cleanupError = workspace.cleanupLocal() {
+            log?.warning("run-scratch cleanup incomplete at \(workspace.workPath): \(cleanupError)")
+            await health.record(RunHealthEvent(
+                kind: .cleanupIncomplete, source: "controller",
+                detail: "local scratch \(workspace.workPath): \(cleanupError)"
+            ))
+        }
+        let finalHealthEvents = await health.all()
         // Terminal event AFTER publication: a consumer that sees runFinished can
         // trust that `final/` exists (a failed publish emits status "error" instead).
         await events?.emit("runFinished", [
@@ -345,9 +367,9 @@ public struct Controller {
         await events?.finish()
         printSummary(snapshot: snapshot, duration: duration)
 
-        if !healthEvents.isEmpty {
-            log?.warning("Infrastructure health (\(healthEvents.count) event(s)):")
-            for event in healthEvents {
+        if !finalHealthEvents.isEmpty {
+            log?.warning("Infrastructure health (\(finalHealthEvents.count) event(s)):")
+            for event in finalHealthEvents {
                 log?.warning(before: "\t", "[\(event.kind.rawValue)] \(event.source): \(event.detail)")
             }
         }
@@ -358,7 +380,7 @@ public struct Controller {
             mergedResultPath: mergedPath.map { _ in "\(publishedPath)/final_result.xcresult" },
             reportsWritten: true,
             mergeFailed: mergeStatus == "failed",
-            healthEvents: healthEvents
+            healthEvents: finalHealthEvents
         )
     }
 
