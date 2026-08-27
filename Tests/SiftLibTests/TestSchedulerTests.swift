@@ -139,6 +139,85 @@ final class TestSchedulerTests: XCTestCase {
         }
     }
 
+    // MARK: - Duration-aware scheduling (Phase 6)
+
+    func testLongestEstimatedTestsLeaseFirst() async {
+        let units = (1...4).map { TestUnit(configuration: nil, test: "M/C/test\($0)()") }
+        let estimates: [TestUnit: Double] = [
+            units[0]: 1, units[1]: 30, units[2]: 5, units[3]: 300,
+        ]
+        let scheduler = TestScheduler(units: units, rerunLimit: 0, estimates: estimates)
+        let first = await scheduler.lease(maxCount: 2, executorID: "e1")
+        XCTAssertEqual(first?.tests, ["M/C/test4()", "M/C/test2()"], "300s and 30s tests go out first")
+        await scheduler.complete(first!, outcomes: first!.tests.map { TestOutcome(test: $0, kind: .pass) })
+        while let lease = await scheduler.lease(maxCount: 2, executorID: "e1") {
+            await scheduler.complete(lease, outcomes: lease.tests.map { TestOutcome(test: $0, kind: .pass) })
+        }
+    }
+
+    func testUnknownTestsAssumeTheMedianEstimate() async {
+        let known = TestUnit(configuration: nil, test: "M/C/known()")
+        let unknown = TestUnit(configuration: nil, test: "M/C/unknown()")
+        let slow = TestUnit(configuration: nil, test: "M/C/slow()")
+        // median of known estimates = 10; unknown assumes 10 → slow (60) first.
+        let scheduler = TestScheduler(units: [unknown, known, slow], rerunLimit: 0,
+                                      estimates: [known: 10, slow: 60])
+        let first = await scheduler.lease(maxCount: 1, executorID: "e1")
+        XCTAssertEqual(first?.tests, ["M/C/slow()"])
+        await scheduler.complete(first!, outcomes: [TestOutcome(test: first!.tests[0], kind: .pass)])
+        await scheduler.drain()
+    }
+
+    func testTailShrinksLeasesToSingleTests() async {
+        // Two executors, bucket 4, 3 remaining short tests: remaining estimated work
+        // (3×10) < 4×2×10 → leases shrink to 1 so both executors share the tail.
+        let units = (1...3).map { TestUnit(configuration: nil, test: "M/C/test\($0)()") }
+        let estimates = Dictionary(uniqueKeysWithValues: units.map { ($0, 10.0) })
+        let scheduler = TestScheduler(units: units, rerunLimit: 0, estimates: estimates)
+        let a = await scheduler.lease(maxCount: 4, executorID: "e1")
+        let b = await scheduler.lease(maxCount: 4, executorID: "e2")
+        XCTAssertEqual(a?.tests.count, 1, "tail lease shrinks to one test")
+        XCTAssertEqual(b?.tests.count, 1)
+        await scheduler.complete(a!, outcomes: a!.tests.map { TestOutcome(test: $0, kind: .pass) })
+        await scheduler.complete(b!, outcomes: b!.tests.map { TestOutcome(test: $0, kind: .pass) })
+        while let lease = await scheduler.lease(maxCount: 4, executorID: "e1") {
+            await scheduler.complete(lease, outcomes: lease.tests.map { TestOutcome(test: $0, kind: .pass) })
+        }
+        let snapshot = await scheduler.snapshot()
+        XCTAssertEqual(snapshot.passed.count, 3)
+    }
+
+    func testNoEstimatesKeepsFullBuckets() async {
+        let scheduler = TestScheduler(tests: (1...8).map { "M/C/test\($0)()" }, rerunLimit: 0)
+        let lease = await scheduler.lease(maxCount: 4, executorID: "e1")
+        XCTAssertEqual(lease?.tests.count, 4, "no history → no shrink")
+        await scheduler.complete(lease!, outcomes: lease!.tests.map { TestOutcome(test: $0, kind: .pass) })
+        await scheduler.drain()
+    }
+
+    func testTimingsStoreRoundTripRollingMeanAndCorruptFile() throws {
+        let base = NSTemporaryDirectory() + "sift-timings-\(UUID().uuidString)"
+        try FileManager.default.createDirectory(atPath: base, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: base) }
+        let unit = TestUnit(configuration: "C1", test: "M/C/testA()")
+
+        var timings = TestTimings.load(outputDirectoryPath: base, log: nil)
+        timings.record(platform: .simulator, unit: unit, duration: 10)
+        timings.record(platform: .simulator, unit: unit, duration: 20)
+        timings.save(outputDirectoryPath: base, log: nil)
+
+        let reloaded = TestTimings.load(outputDirectoryPath: base, log: nil)
+        XCTAssertEqual(reloaded.estimates(platform: .simulator, units: [unit])[unit], 15)
+        // Same test on a different platform/config is a different key.
+        XCTAssertTrue(reloaded.estimates(platform: .macOS, units: [unit]).isEmpty)
+        XCTAssertTrue(reloaded.estimates(platform: .simulator, units: [TestUnit(configuration: nil, test: "M/C/testA()")]).isEmpty)
+
+        // Corrupt file → empty store, never a crash.
+        try "not json".write(toFile: "\(base)/.sift/timings.json", atomically: true, encoding: .utf8)
+        let corrupt = TestTimings.load(outputDirectoryPath: base, log: nil)
+        XCTAssertTrue(corrupt.entries.isEmpty)
+    }
+
     func testAttemptHistoryRecordsCompletionsAndAbandons() async {
         let scheduler = TestScheduler(tests: ["M/C/testA()", "M/C/testB()"], rerunLimit: 0, infrastructureRetryLimit: 0)
         let lease1 = await scheduler.lease(maxCount: 1, executorID: "e1")

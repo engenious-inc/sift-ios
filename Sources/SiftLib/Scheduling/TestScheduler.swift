@@ -32,11 +32,18 @@ public actor TestScheduler {
     /// True when the scheduled set spans more than one configuration — report names
     /// are then configuration-qualified.
     private let multiConfiguration: Bool
+    /// Historical per-unit duration estimates (seconds). Empty = no history:
+    /// scheduling stays randomized.
+    private let estimates: [TestUnit: Double]
+    /// Median of the known estimates — the stand-in for unknown tests.
+    private let medianEstimate: Double
+    private var activeExecutors: Set<String> = []
     private let log: Logging?
 
     private var waiters: [(executorID: String, maxCount: Int, continuation: CheckedContinuation<TestLease?, Never>)] = []
 
-    public init(units: [TestUnit], rerunLimit: Int, infrastructureRetryLimit: Int = 1, log: Logging? = nil) {
+    public init(units: [TestUnit], rerunLimit: Int, infrastructureRetryLimit: Int = 1,
+                estimates: [TestUnit: Double] = [:], log: Logging? = nil) {
         var seen = Set<TestUnit>()
         var canonical: [TestUnit] = []
         for unit in units {
@@ -44,7 +51,18 @@ public actor TestScheduler {
             guard !unit.test.isEmpty, seen.insert(unit).inserted else { continue }
             canonical.append(unit)
         }
-        self.pending = canonical.shuffled()
+        self.estimates = estimates
+        let known = canonical.compactMap { estimates[$0] }.sorted()
+        self.medianEstimate = known.isEmpty ? 0 : known[known.count / 2]
+        // Longest-estimated first (unknowns assume the median) so the slowest tests
+        // can never land as the final tail; shuffle first for random tie-breaks.
+        let shuffled = canonical.shuffled()
+        if known.isEmpty {
+            self.pending = shuffled
+        } else {
+            let median = self.medianEstimate
+            self.pending = shuffled.sorted { (estimates[$0] ?? median) > (estimates[$1] ?? median) }
+        }
         self.rerunLimit = rerunLimit
         self.infrastructureRetryLimit = infrastructureRetryLimit
         self.multiConfiguration = Set(canonical.map(\.configuration)).count > 1
@@ -73,6 +91,7 @@ public actor TestScheduler {
     // MARK: - Leasing
 
     public func lease(maxCount: Int, executorID: String) async -> TestLease? {
+        activeExecutors.insert(executorID)
         let amount = max(1, maxCount)
         if let lease = makeLease(maxCount: amount, executorID: executorID) {
             return lease
@@ -103,11 +122,23 @@ public actor TestScheduler {
         return taken
     }
 
+    /// Near exhaustion, big buckets create a ragged tail (one executor grinding a
+    /// final 4-test chunk while the rest idle). Once the estimated remaining work
+    /// is under one bucket per active executor, leases shrink to single tests.
+    private func effectiveLeaseSize(requested: Int) -> Int {
+        guard requested > 1, medianEstimate > 0 else { return requested }
+        let median = medianEstimate
+        let remaining = (pending + pendingRetries).reduce(0.0) { $0 + (estimates[$1] ?? median) }
+        let threshold = Double(requested) * Double(max(1, activeExecutors.count)) * median
+        return remaining < threshold ? 1 : requested
+    }
+
     private func makeLease(maxCount: Int, executorID: String) -> TestLease? {
-        var units = takeUnits(from: &pending, upTo: maxCount)
+        let amount = effectiveLeaseSize(requested: maxCount)
+        var units = takeUnits(from: &pending, upTo: amount)
         if units.isEmpty {
             // Batch retries too — a rerun chunk pays one xcodebuild launch, not one per test.
-            units = takeUnits(from: &pendingRetries, upTo: maxCount)
+            units = takeUnits(from: &pendingRetries, upTo: amount)
         }
         guard !units.isEmpty else { return nil }
         let lease = TestLease(
@@ -262,5 +293,13 @@ public actor TestScheduler {
 
     public func snapshot() -> TestCasesSnapshot {
         TestCasesSnapshot(cases: cases.values.sorted { $0.name < $1.name }, attempts: attempts)
+    }
+
+    /// Per-unit durations from REAL verdicts (pass/fail) — feeds the timings store.
+    public func timingObservations() -> [(unit: TestUnit, duration: Double)] {
+        cases.compactMap { unit, testCase in
+            guard testCase.launchCounter > 0, testCase.state == .pass || testCase.state == .failed else { return nil }
+            return (unit, testCase.duration)
+        }
     }
 }
