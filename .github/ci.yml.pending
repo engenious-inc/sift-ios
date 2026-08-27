@@ -16,3 +16,7 @@ jobs:
         run: swift build --build-tests
       - name: Test
         run: swift test
+# NOTE: parked as .pending because the push credential lacks the `workflow`
+# scope required to create workflow files. To activate CI:
+#   git mv .github/ci.yml.pending .github/workflows/ci.yml
+# and push with a token that has the `workflow` scope.
