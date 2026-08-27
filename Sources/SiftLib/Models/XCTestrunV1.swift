@@ -68,6 +68,11 @@ public struct XCTestRunV1: XCTestRun {
         }
     }
 
+    public func selectedConfigurationNames(only: String?, skip: String?) throws -> [String?] {
+        try validate(configurationName: only ?? skip)
+        return [nil]
+    }
+
     public func platform() throws -> TestPlatform {
         guard let module = modules.first else {
             throw XCTestRunError("xctestrun V1 contains no test modules: \(xctestrunPath)")

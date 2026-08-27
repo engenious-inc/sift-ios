@@ -195,6 +195,7 @@ struct Node: Sendable {
         do {
             chunkResult = try await xcodebuild.execute(
                 tests: lease.tests,
+                configuration: lease.configuration,
                 executorType: executor.type,
                 UDID: executor.UDID,
                 xctestrunPath: xctestrunPath,
