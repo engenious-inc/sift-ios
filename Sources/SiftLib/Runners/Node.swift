@@ -21,6 +21,7 @@ struct Node: Sendable {
     private let xctestrunProvider: @Sendable () throws -> XCTestRun
     private let buildZipPath: String
     private let health: HealthSink
+    private let events: EventBus?
     private let log: Logging?
 
     /// Consecutive infrastructure failures before an executor is retired.
@@ -36,6 +37,7 @@ struct Node: Sendable {
         xctestrunProvider: @escaping @Sendable () throws -> XCTestRun,
         sshFactory: @escaping @Sendable (Config.NodeConfig) -> SSHExecutor,
         health: HealthSink = HealthSink(),
+        events: EventBus? = nil,
         log: Logging?
     ) {
         self.config = config
@@ -54,6 +56,7 @@ struct Node: Sendable {
         self.xctestrunProvider = xctestrunProvider
         self.sshFactory = sshFactory
         self.health = health
+        self.events = events
         self.log = log
         // Node-specific remote workspace: two node entries sharing host+deploymentPath
         // must never share upload/results/DerivedData/proc directories.
@@ -74,6 +77,7 @@ struct Node: Sendable {
     // MARK: - Lifecycle
 
     func start() async {
+        var provisionedUDIDs: [String] = []
         do {
             try await communication.connect()
             try await communication.getBuildOnRunner(buildPath: buildZipPath)
@@ -82,9 +86,11 @@ struct Node: Sendable {
             xctestrun.add(timeout: testsExecutionTimeout)
             let xctestrunPath = try await communication.saveOnRunner(xctestrun: xctestrun)
 
-            let executors = createExecutors()
+            provisionedUDIDs = await provisionSimulators()
+            let executors = createExecutors(provisionedUDIDs: provisionedUDIDs)
             guard !executors.isEmpty else {
                 log?.warning("\(name): no executors configured — node contributes nothing to this run")
+                await deleteProvisionedSimulators(provisionedUDIDs)
                 return
             }
 
@@ -95,18 +101,61 @@ struct Node: Sendable {
                     }
                 }
             }
+            await deleteProvisionedSimulators(provisionedUDIDs)
             await communication.cleanup()
             log?.message(verboseMsg: "\(name): finished")
         } catch {
             log?.error("\(name): \(error)")
             await health.record(RunHealthEvent(kind: .nodeFailed, source: name, detail: "\(error)"))
+            await deleteProvisionedSimulators(provisionedUDIDs)
             await communication.cleanup()
         }
     }
 
+    // MARK: - Simulator auto-provisioning (Sift-owned clones)
+
+    /// Creates the configured number of clones named `sift-<runID>-<i>`. A creation
+    /// failure is a health event, not a run abort — whatever was created still works.
+    private func provisionSimulators() async -> [String] {
+        guard let provision = config.provisionSimulators else { return [] }
+        let developerDir = "export DEVELOPER_DIR=\(config.developerDirPath.shellQuoted); "
+        var udids: [String] = []
+        for index in 0..<provision.count {
+            let simulatorName = "sift-\(workspace.runID.prefix(8))-\(index)"
+            var command = developerDir + "xcrun simctl create \(simulatorName.shellQuoted) \(provision.deviceType.shellQuoted)"
+            if let runtime = provision.runtime {
+                command += " \(runtime.shellQuoted)"
+            }
+            guard let result = try? await communication.ssh.run(command), result.status == 0 else {
+                let detail = "simctl create failed for \(provision.deviceType)"
+                log?.error("\(name): \(detail)")
+                await health.record(RunHealthEvent(kind: .executorUnavailable, source: name, detail: detail))
+                continue
+            }
+            let udid = result.output.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !udid.isEmpty else { continue }
+            udids.append(udid)
+            log?.message("\(name): provisioned simulator \(simulatorName) (\(udid))")
+        }
+        return udids
+    }
+
+    private func deleteProvisionedSimulators(_ udids: [String]) async {
+        guard !udids.isEmpty, config.provisionSimulators?.deleteAfterRun ?? true else { return }
+        let developerDir = "export DEVELOPER_DIR=\(config.developerDirPath.shellQuoted); "
+        for udid in udids {
+            _ = try? await communication.ssh.run(developerDir + "xcrun simctl shutdown \(udid.shellQuoted)")
+            _ = try? await communication.ssh.run(developerDir + "xcrun simctl delete \(udid.shellQuoted)")
+            log?.message(verboseMsg: "\(name): deleted provisioned simulator \(udid)")
+        }
+    }
+
     /// All three categories aggregate — a node may drive simulators AND devices AND its own macOS.
-    private func createExecutors() -> [TestExecutor] {
+    private func createExecutors(provisionedUDIDs: [String] = []) -> [TestExecutor] {
         var executors: [TestExecutor] = []
+        for udid in provisionedUDIDs {
+            executors.append(Simulator(UDID: udid, config: config, sshFactory: sshFactory, siftOwned: true, log: log))
+        }
         for udid in config.UDID.simulators ?? [] {
             executors.append(Simulator(UDID: udid, config: config, sshFactory: sshFactory, log: log))
         }
@@ -156,7 +205,9 @@ struct Node: Sendable {
                 await scheduler.abandon(lease)
                 break
             }
+            await events?.emit("chunkStarted", ["executor": executor.executorID, "tests": "\(lease.tests.count)"])
             let outcome = await runChunk(lease: lease, executor: executor, xcodebuild: xcodebuild, xctestrunPath: xctestrunPath)
+            await emitChunkEvents(outcome, lease: lease, executor: executor)
             switch outcome {
             case .completed(let outcomes):
                 consecutiveFailures = 0
@@ -190,6 +241,33 @@ struct Node: Sendable {
             }
         }
         log?.message(verboseMsg: "\(executor.executorID): no more tests — worker done")
+    }
+
+    private func emitChunkEvents(_ outcome: ChunkOutcome, lease: TestLease, executor: TestExecutor) async {
+        guard let events else { return }
+        let (outcomes, state): ([TestOutcome], String)
+        switch outcome {
+        case .completed(let o): (outcomes, state) = (o, "completed")
+        case .completedDegraded(let o, _): (outcomes, state) = (o, "degraded")
+        case .infrastructureFailure: (outcomes, state) = ([], "infrastructureFailure")
+        case .cancelled(let o, _): (outcomes, state) = (o, "cancelled")
+        }
+        for one in outcomes {
+            let outcomeName: String
+            switch one.kind {
+            case .pass: outcomeName = "passed"
+            case .failed: outcomeName = "failed"
+            case .skipped: outcomeName = "skipped"
+            case .notExecuted: outcomeName = "notExecuted"
+            }
+            await events.emit("testFinished", [
+                "test": one.test, "outcome": outcomeName,
+                "duration": String(format: "%.3f", one.duration),
+                "executor": executor.executorID,
+                "configuration": lease.configuration ?? "",
+            ])
+        }
+        await events.emit("chunkFinished", ["executor": executor.executorID, "state": state])
     }
 
     /// Failure recovery: a dead transport is repaired by reconnecting (the failure

@@ -16,9 +16,17 @@ public struct ControllerDependencies: Sendable {
         self.now = { Date.timeIntervalSinceReferenceDate }
         self.localShell = Run()
         self.sshFactory = { config in
-            SSH(
-                host: config.host,
-                port: config.port,
+            // The transport seam: "local" runs on this machine (no sshd, login-session
+            // context); everything else goes over libssh2.
+            if config.transport == .local {
+                return LocalExecutor(
+                    host: config.hostValue, port: config.portValue, arch: config.arch,
+                    hostKeyVerification: config.hostKeyVerification ?? .acceptNew
+                )
+            }
+            return SSH(
+                host: config.hostValue,
+                port: config.portValue,
                 arch: config.arch,
                 hostKeyVerification: config.hostKeyVerification ?? .acceptNew
             )
@@ -49,6 +57,7 @@ public struct Controller {
     private let listSelectors: (only: [String], skip: [String])?
 
     private let dependencies: ControllerDependencies
+    private let events: EventBus?
 
     public init(
         config: Config,
@@ -57,8 +66,10 @@ public struct Controller {
         discoveryBackend: DiscoveryBackend = .enumeration,
         listSelectors: (only: [String], skip: [String])? = nil,
         dependencies: ControllerDependencies = ControllerDependencies(),
+        events: EventBus? = nil,
         log: Logging?
     ) {
+        self.events = events
         self.config = config
         self.xctestrunPath = config.xctestrunPath
         self.workspace = RunWorkspace(outputDirectoryPath: config.outputDirectoryPath)
@@ -199,6 +210,11 @@ public struct Controller {
         }
 
         log?.message("Total tests for execution: \(unitsForRun.count)")
+        await events?.emit("runStarted", [
+            "tests": "\(unitsForRun.count)",
+            "configurations": "\(selectedConfigurations.count)",
+            "nodes": "\(config.nodes.count)",
+        ])
         // Serialize runs sharing this output directory; the lock dies with the process.
         let lock = try workspace.acquireLock()
         defer { lock.release() }
@@ -240,6 +256,7 @@ public struct Controller {
                 xctestrunProvider: { try XCTestRunFactory.create(path: xctestrunPath, log: nil) },
                 sshFactory: dependencies.sshFactory,
                 health: health,
+                events: events,
                 log: log
             )
         }
@@ -277,6 +294,14 @@ public struct Controller {
             await health.record(RunHealthEvent(kind: .mergeFailed, source: "controller", detail: "\(error)"))
         }
 
+        await events?.emit("runFinished", [
+            "passed": "\(snapshot.passed.count)",
+            "failed": "\(snapshot.failed.count)",
+            "skipped": "\(snapshot.skipped.count)",
+            "unexecuted": "\(snapshot.unexecuted.count)",
+            "duration": String(format: "%.3f", executionDuration),
+        ])
+        await events?.finish()
         let healthEvents = await health.all()
         let retainedArtifacts = await collector.retainedArtifacts().map {
             $0.replacingOccurrences(of: workspace.stagingPath, with: "final")

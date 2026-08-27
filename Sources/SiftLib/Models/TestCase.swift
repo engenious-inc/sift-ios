@@ -102,8 +102,11 @@ public struct ScheduledTest: Sendable, Hashable {
         self.method = method
     }
 
-    /// Stable report/scheduling identifier: "Bundle/Class/test()".
-    public var id: String { "\(bundleName)/\(classPath)/\(method)" }
+    /// Stable report/scheduling identifier: "Bundle/Class/test()" — or
+    /// "Bundle/test()" for suite-less tests (top-level Swift Testing functions).
+    public var id: String {
+        classPath.isEmpty ? "\(bundleName)/\(method)" : "\(bundleName)/\(classPath)/\(method)"
+    }
 }
 
 /// One schedulable unit: a test identifier bound to the test-plan configuration it

@@ -173,13 +173,20 @@ public struct Config: Codable, Sendable {
             let label = "node '\(node.name)'"
             validate(path: node.deploymentPath, name: "\(label) deploymentPath", into: &violations)
             validate(path: node.xcodePathRaw, name: "\(label) xcodePath", into: &violations)
-            if node.host.trimmingCharacters(in: .whitespaces).isEmpty {
-                violations.append("\(label): host must not be empty")
-            } else if node.host != node.host.trimmingCharacters(in: .whitespaces) || node.host.contains(" ") {
-                violations.append("\(label): host contains whitespace ('\(node.host)')")
-            }
-            if node.username.trimmingCharacters(in: .whitespaces).isEmpty {
-                violations.append("\(label): username must not be empty")
+            if node.transport == .local {
+                if node.password != nil || node.privateKey != nil {
+                    violations.append("\(label): local transport takes no credentials")
+                }
+            } else {
+                let host = node.host ?? ""
+                if host.trimmingCharacters(in: .whitespaces).isEmpty {
+                    violations.append("\(label): host is required for the ssh transport")
+                } else if host != host.trimmingCharacters(in: .whitespaces) || host.contains(" ") {
+                    violations.append("\(label): host contains whitespace ('\(host)')")
+                }
+                if (node.username ?? "").trimmingCharacters(in: .whitespaces).isEmpty {
+                    violations.append("\(label): username is required for the ssh transport")
+                }
             }
             if node.name.trimmingCharacters(in: .whitespaces).isEmpty {
                 violations.append("node with host \(node.host): name must not be empty")
@@ -194,27 +201,37 @@ public struct Config: Codable, Sendable {
             for key in (node.environmentVariables ?? [:]).keys where !Config.isValidEnvironmentName(key) {
                 violations.append("\(label): invalid environment variable name '\(key)' (allowed: [A-Za-z_][A-Za-z0-9_]*)")
             }
-            if node.port < 1 || node.port > 65535 {
-                violations.append("\(label): port must be in 1...65535 (got \(node.port))")
+            if node.transport != .local, node.portValue < 1 || node.portValue > 65535 {
+                violations.append("\(label): port must be in 1...65535 (got \(node.portValue))")
+            }
+            let provisioned = node.provisionSimulators?.count ?? 0
+            if let provision = node.provisionSimulators {
+                if !(1...16).contains(provision.count) {
+                    violations.append("\(label): provisionSimulators.count must be in 1...16 (got \(provision.count))")
+                }
+                if provision.deviceType.trimmingCharacters(in: .whitespaces).isEmpty {
+                    violations.append("\(label): provisionSimulators.deviceType must not be empty")
+                }
             }
             let udidCount = (node.UDID.simulators?.count ?? 0)
                 + (node.UDID.devices?.count ?? 0)
                 + (node.UDID.mac?.count ?? 0)
-            if udidCount == 0 {
-                violations.append("\(label): at least one simulator, device, or mac UDID is required")
+            if udidCount == 0 && provisioned == 0 {
+                violations.append("\(label): at least one simulator, device, or mac UDID (or provisionSimulators) is required")
             }
             // Duplicate identities produce colliding remote workspaces or two
             // executors hammering one destination — reject them up front.
             if !seenNames.insert(node.name).inserted {
                 violations.append("duplicate node name '\(node.name)' — node names must be unique")
             }
-            let endpoint = "\(node.host):\(node.port)|\(node.deploymentPath)"
+            let endpointHost = node.transport == .local ? "local" : "\(node.hostValue):\(node.portValue)"
+            let endpoint = "\(endpointHost)|\(node.deploymentPath)"
             if !seenEndpoints.insert(endpoint).inserted {
-                violations.append("\(label): duplicate endpoint (host \(node.host):\(node.port), deploymentPath \(node.deploymentPath)) — merge the UDID lists into one node entry")
+                violations.append("\(label): duplicate endpoint (\(endpointHost), deploymentPath \(node.deploymentPath)) — merge the UDID lists into one node entry")
             }
             let allUDIDs = (node.UDID.simulators ?? []) + (node.UDID.devices ?? []) + (node.UDID.mac ?? [])
-            for udid in allUDIDs where !seenUDIDs.insert("\(node.host)|\(udid.uppercased())").inserted {
-                violations.append("\(label): duplicate UDID \(udid) on host \(node.host) — one executor per device")
+            for udid in allUDIDs where !seenUDIDs.insert("\(endpointHost)|\(udid.uppercased())").inserted {
+                violations.append("\(label): duplicate UDID \(udid) on \(endpointHost) — one executor per device")
             }
         }
 
@@ -293,15 +310,21 @@ public struct Config: Codable, Sendable {
 extension Config {
     public struct NodeConfig: Codable, Sendable {
         public var name: String
-        public var host: String
-        public var port: Int32
-        public var username: String
+        /// "ssh" (default) or "local" — local runs on this machine with no sshd,
+        /// inside the user's login session (macOS UI tests reach testmanagerd).
+        public var transport: Transport?
+        public var host: String?
+        public var port: Int32?
+        public var username: String?
         public var password: String?
         public var privateKey: String?
         public var publicKey: String?
         public var passphrase: String?
         public var deploymentPath: String
         public var UDID: UDID
+        /// Sift-owned simulators created for this run (and deleted after it, by
+        /// default). These are the ONLY simulators Sift will ever erase.
+        public var provisionSimulators: ProvisionSimulators?
         private var xcodePath: String
         public var environmentVariables: [String: String]?
         public var arch: Arch?
@@ -310,8 +333,26 @@ extension Config {
         public var hostKeyVerification: HostKeyVerification?
 
         var xcodePathRaw: String { xcodePath }
+        var hostValue: String { host ?? "" }
+        var portValue: Int32 { port ?? 22 }
+        var usernameValue: String { username ?? "" }
         /// Unquoted DEVELOPER_DIR path.
         public var developerDirPath: String { xcodePath + "/Contents/Developer" }
+
+        public struct ProvisionSimulators: Codable, Sendable {
+            /// simctl device type, e.g. "iPhone 17".
+            public var deviceType: String
+            /// simctl runtime (e.g. "iOS 26.0"); nil = newest available.
+            public var runtime: String?
+            public var count: Int
+            /// Default true: clones are deleted when the run ends.
+            public var deleteAfterRun: Bool?
+        }
+
+        public enum Transport: String, Codable, Sendable {
+            case ssh
+            case local
+        }
 
         public enum Arch: String, Codable, Sendable {
             case x86_64

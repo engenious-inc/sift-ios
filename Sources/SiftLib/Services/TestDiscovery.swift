@@ -42,8 +42,18 @@ public struct TestDiscovery: Sendable {
         case .symbols:
             tests = try await symbolTests(configuration: configuration, descriptors: descriptors)
         }
-        for descriptor in descriptors where !tests.contains(where: { $0.bundleName == descriptor.bundleName }) {
-            log?.warning("\(descriptor.bundleName): 0 tests discovered (backend: \(backend.rawValue))")
+        // A bundle with ZERO discovered tests fails discovery OUTRIGHT: silently
+        // skipping it would let part of the suite vanish behind exit 0. (Remove a
+        // genuinely test-less target from the test plan instead.)
+        let emptyBundles = descriptors.filter { descriptor in
+            !tests.contains { $0.bundleName == descriptor.bundleName }
+        }
+        guard emptyBundles.isEmpty else {
+            throw XCTestRunError(
+                "discovery found 0 tests for bundle(s): "
+                + emptyBundles.map(\.bundleName).joined(separator: ", ")
+                + " (backend: \(backend.rawValue)) — a partial suite must never run silently"
+            )
         }
         return tests
     }
@@ -141,9 +151,19 @@ public struct TestDiscovery: Sendable {
             disabled += entry.disabledTests.count
             for test in entry.enabledTests {
                 let components = test.identifier.components(separatedBy: "/")
-                // Bundle-only or class-only rows appear when expansion failed upstream;
-                // a method row always has >= 3 components.
-                guard components.count >= 3, let method = components.last else { continue }
+                // A method row has >= 2 components: "Bundle/Class/test()", ObjC's
+                // paren-less "Bundle/Class/testMethod", or "Bundle/test()" for a
+                // suite-less top-level Swift Testing function (TestName.canonical
+                // normalizes the parens). A SINGLE-component row is a bundle whose
+                // tests xcodebuild could not expand (e.g. its runner crashed) — a
+                // FAILED enumeration attempt, never a row to skip: throwing here
+                // feeds the bounded retry, then fails the run loudly.
+                guard components.count >= 2, let method = components.last else {
+                    throw XCTestRunError(
+                        "test enumeration returned an unexpanded identifier '\(test.identifier)' — "
+                        + "the bundle's tests could not be listed (transient runner crash?)"
+                    )
+                }
                 let bundleName = components[0]
                 let classPath = components.dropFirst().dropLast().joined(separator: "/")
                 let descriptor = byBundle[bundleName]

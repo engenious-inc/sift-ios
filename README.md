@@ -4,7 +4,7 @@
 
 Sift is an open-source tool that parallelizes XCTest runs across multiple simulators and physical devices, on one machine or a whole farm of remote nodes, dramatically reducing total test time. It distributes prebuilt test bundles over SSH, runs chunks of tests via `xcodebuild test-without-building`, retries failures, merges all results into a single `.xcresult`, and emits JUnit XML and JSON reports.
 
-**Requirements:** macOS 14.5+ and Xcode 16 or newer on the controller and every node (Sift uses the modern `xcresulttool get test-results` and `-enumerate-tests` APIs). All nodes — including the local machine, until a native local transport ships — are reached over SSH, so `Remote Login` must be enabled on each node. One run's executors must match the artifact's platform (all simulators, or all devices, or all macOS — mixed runs are rejected).
+**Requirements:** macOS 14.5+ and Xcode 16 or newer on the controller and every node (Sift uses the modern `xcresulttool get test-results` and `-enumerate-tests` APIs). Remote nodes are reached over SSH (`Remote Login` enabled); the local machine needs no sshd at all — give its node entry `"transport": "local"` (this also runs macOS UI tests inside your login session, where `testmanagerd` is reachable). XCTest (Swift and Objective-C) and Swift Testing (`@Test`, suites and top-level functions) are both supported. One run's executors must match the artifact's platform (all simulators, or all devices, or all macOS — mixed runs are rejected).
 
 ## Quick Start
 
@@ -75,7 +75,9 @@ Config reference:
 | `nodes[].privateKey` / `password` | Exactly ONE of key-based (recommended) or password SSH auth may be set — both is a config error; with neither, ssh-agent is used. A missing `.pub` sidecar is fine (derived from the private key). Sift never prompts interactively. |
 | `nodes[].deploymentPath` | Absolute node-side working directory. Each run uses an isolated, 0700 `deploymentPath/.sift/runs/<run-id>/<node>/` and removes only that. Duplicate host+deploymentPath node entries are rejected. |
 | `allowXcodebuildParallelTesting` | Opt back in to xcodebuild's own parallel testing inside a chunk (default: disabled — Sift passes `-parallel-testing-enabled NO`). |
-| `nodes[].UDID` | Any mix of `simulators`, `devices`, and `mac` UDIDs — all run concurrently. |
+| `nodes[].transport` | `"ssh"` (default) or `"local"` (this machine: no host/credentials, login-session context). |
+| `nodes[].UDID` | `simulators`, `devices`, or `mac` UDIDs matching the artifact's platform — all run concurrently. |
+| `nodes[].provisionSimulators` | `{"deviceType": "iPhone 17", "runtime": "iOS 26.0"?, "count": N, "deleteAfterRun": true?}` — Sift creates N owned clones for the run (the only simulators it will ever erase) and deletes them afterwards. |
 | `nodes[].hostKeyVerification` | `strict` (must be in `~/.sift/known_hosts`), `acceptNew` (default, trust-on-first-use), or `off`. |
 | `nodes[].arch` | Optional `arch -<value>` prefix for remote commands (`arm64`, `x86_64`). |
 
@@ -93,7 +95,16 @@ Sift run --config config.json --tests-path tests.txt   # newline-separated test 
 Sift run --config config.json --timeout 3600           # global watchdog (exit 124 on expiry)
 Sift list --config config.json           # print all tests in the bundles, no SSH needed
 Sift list --xctestrun path/to/T.xctestrun               # list without any config at all
+Sift doctor --config config.json         # preflight: tooling, artifact, output, every node/executor
+Sift run --config config.json --events-path run.ndjson  # machine-readable event stream (v1)
 ```
+
+On a TTY, `run` shows a live progress line (`⏳ 12/30 done · 2 failed · 3 chunk(s)
+running`). `--events-path`/`--events-stdout` emit an NDJSON stream (`runStarted`,
+`chunkStarted`, `testFinished`, `chunkFinished`, `runFinished`; schema v1) for CI
+dashboards. Runs also persist per-test durations to `outputDirectoryPath/.sift/
+timings.json` and schedule longest-first on the next run, shrinking the final
+buckets so no executor idles behind a ragged tail.
 
 `--tests-path` and `--only-testing` together are an error unless you pass
 `--combine-test-selectors` (then their union runs). The config `tests` array is
