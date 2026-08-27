@@ -105,4 +105,43 @@ final class TestSchedulerTests: XCTestCase {
         let lease = await scheduler.lease(maxCount: 5, executorID: "e1")
         XCTAssertNil(lease)
     }
+
+    func testDegradedChunkPassNeverProducesGreenRun() async {
+        // Codex regression scenario: a one-test chunk records a Pass, then
+        // xcodebuild hangs and is killed (status 143). The pass must be demoted
+        // and re-earned; if it never is, the run must NOT be green.
+        let passOutcome = [TestOutcome(test: "M/C/testA()", kind: .pass, duration: 1)]
+        let degraded = Node.degradeOutcomes(passOutcome)
+        XCTAssertEqual(degraded.count, 1)
+        XCTAssertEqual(degraded[0].kind, .notExecuted)
+        // Failures and skips survive degradation untouched.
+        let failOutcome = Node.degradeOutcomes([TestOutcome(test: "M/C/testB()", kind: .failed, message: "boom")])
+        XCTAssertEqual(failOutcome[0].kind, .failed)
+
+        // End-to-end through the scheduler: every chunk is degraded, retries
+        // exhaust, and the final state is unexecuted (exit 1), never green.
+        let scheduler = TestScheduler(tests: ["M/C/testA()"], rerunLimit: 0, infrastructureRetryLimit: 1)
+        while let lease = await scheduler.lease(maxCount: 1, executorID: "sick") {
+            let outcomes = Node.degradeOutcomes([TestOutcome(test: "M/C/testA()", kind: .pass, duration: 1)])
+            await scheduler.complete(lease, outcomes: outcomes)
+        }
+        let snapshot = await scheduler.snapshot()
+        XCTAssertEqual(snapshot.unexecuted.count, 1)
+        XCTAssertEqual(snapshot.passed.count, 0)
+        let outcome = RunOutcome(snapshot: snapshot, duration: 1, mergedResultPath: nil, reportsWritten: true)
+        XCTAssertFalse(outcome.succeeded)
+    }
+
+    func testAttemptHistoryRecordsCompletionsAndAbandons() async {
+        let scheduler = TestScheduler(tests: ["M/C/testA()", "M/C/testB()"], rerunLimit: 0, infrastructureRetryLimit: 0)
+        let lease1 = await scheduler.lease(maxCount: 1, executorID: "e1")
+        await scheduler.complete(lease1!, outcomes: [TestOutcome(test: lease1!.tests[0], kind: .pass, duration: 2)])
+        let lease2 = await scheduler.lease(maxCount: 1, executorID: "e2")
+        await scheduler.abandon(lease2!)
+        let snapshot = await scheduler.snapshot()
+        XCTAssertEqual(snapshot.attempts.count, 2)
+        let abandoned = snapshot.attempts.first { $0.executorID == "e2" }
+        XCTAssertEqual(abandoned?.kind, .notExecuted)
+        XCTAssertTrue(abandoned!.endedAt >= abandoned!.startedAt)
+    }
 }

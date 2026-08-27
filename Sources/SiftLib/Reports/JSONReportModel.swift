@@ -77,6 +77,8 @@ extension JSONReportModel {
         var outcome: String
         var duration: Double
         var message: String
+        var startedAt: Date
+        var endedAt: Date
     }
 }
 
@@ -85,6 +87,7 @@ extension JSONReportModel {
     func write(to url: URL) throws {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        encoder.dateEncodingStrategy = .iso8601
         try encoder.encode(self).write(to: url, options: .atomic)
     }
 }

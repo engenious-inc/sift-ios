@@ -217,19 +217,38 @@ struct Node: Sendable {
             guard coversLease else {
                 return .infrastructureFailure("result bundle contains no outcomes for the leased tests — " + statusDescription(chunkResult))
             }
-            reportOutcomes(outcomes, executor: executor)
             // 0 = clean pass, 65 = clean run with test failures; anything else
-            // (timeout 143, crashes) keeps the recovered verdicts but counts
-            // against executor health so a chronically sick device retires.
+            // (timeout 143, crashes) is a degraded chunk: keep failure/skip
+            // verdicts (they can only make the run redder), but a PASS from a
+            // killed chunk must be re-earned in a healthy chunk — committing it
+            // could turn a hung, partially-recorded run green.
             if chunkResult.status == 0 || chunkResult.status == 65 {
+                reportOutcomes(outcomes, executor: executor)
                 return .completed(outcomes)
             }
-            return .completedDegraded(outcomes, statusDescription(chunkResult))
+            let degraded = Node.degradeOutcomes(outcomes)
+            reportOutcomes(degraded, executor: executor)
+            return .completedDegraded(degraded, statusDescription(chunkResult))
         } catch {
             if chunkResult.status == 0 || chunkResult.status == 65 {
                 return .infrastructureFailure("tests ran (status \(chunkResult.status)) but results could not be collected: \(error)")
             }
             return .infrastructureFailure(statusDescription(chunkResult) + " — results unavailable: \(error)")
+        }
+    }
+
+    /// In a chunk that did not finish healthily, passes are demoted to
+    /// notExecuted (requeued, bounded by the infrastructure retry limit);
+    /// failures and skips are kept.
+    static func degradeOutcomes(_ outcomes: [TestOutcome]) -> [TestOutcome] {
+        outcomes.map { outcome in
+            guard outcome.kind == .pass else { return outcome }
+            return TestOutcome(
+                test: outcome.test,
+                kind: .notExecuted,
+                duration: outcome.duration,
+                message: "Passed in a degraded chunk (xcodebuild did not exit cleanly) — requeued for confirmation"
+            )
         }
     }
 
