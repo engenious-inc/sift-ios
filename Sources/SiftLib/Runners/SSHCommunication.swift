@@ -1,6 +1,6 @@
 import Foundation
 
-struct SSHCommunication: Communication {
+struct SSHCommunication {
     private let ssh: SSHExecutor
     private let config: Config.NodeConfig
     private let remoteWorkPath: String
@@ -54,10 +54,6 @@ struct SSHCommunication: Communication {
         log?.message(verboseMsg: "Uploading .xctestrun to \(nodeName): \(xctestrun.xctestrunFileName)")
         try await ssh.uploadFile(data: data, remotePath: xctestrunPath)
         return xctestrunPath
-    }
-
-    func executeOnRunner(command: String) async throws -> (status: Int32, output: String) {
-        try await ssh.run(command)
     }
 
     /// Terminates every process this run still owns on the node, then removes
