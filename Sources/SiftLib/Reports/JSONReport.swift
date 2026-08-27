@@ -2,7 +2,7 @@ import Foundation
 
 enum JSONReport {
 
-    static func generate(tests: TestCasesSnapshot, duration: Double) -> JSONReportModel {
+    static func generate(tests: TestCasesSnapshot, context: ReportContext) -> JSONReportModel {
         let testsBySuite: [String: [TestCase]] = tests.cases
             .reduce(into: [:]) { result, testCase in
                 let suiteName = testCase.name.components(separatedBy: "/").dropLast().joined(separator: "/")
@@ -16,10 +16,15 @@ enum JSONReport {
             skipped: tests.skipped.count,
             failed: tests.failed.count,
             unexecuted: tests.unexecuted.count,
-            duration: duration
+            duration: context.duration,
+            executionDuration: context.executionDuration
         )
 
         var report = JSONReportModel(summary: reportSummary)
+        report.hostname = context.hostname
+        report.mergeStatus = context.mergeStatus
+        report.healthEvents = context.healthEvents
+        report.retainedArtifacts = context.retainedArtifacts
         for suiteName in testsBySuite.keys.sorted() {
             let suite = testsBySuite[suiteName] ?? []
             let sorted = suite.sorted { $0.name < $1.name }
@@ -34,11 +39,18 @@ enum JSONReport {
                 rerunnedTests: sorted.filter { $0.launchCounter > 1 }.map(\.name),
                 skippedTests: sorted.filter { $0.state == .skipped }.map(\.name),
                 failedTests: sorted.filter { $0.state == .failed }.map { .init(test: $0.name, message: $0.message, duration: $0.duration) },
-                unexecutedTests: sorted.filter { $0.state == .unexecuted }.map(\.name)
+                unexecutedTests: sorted.filter { $0.state == .unexecuted }.map(\.name),
+                unexecutedDetails: sorted.filter { $0.state == .unexecuted }.map {
+                    .init(test: $0.name, message: $0.message, infrastructureAttempts: $0.infrastructureAttempts)
+                }
             )
             report.results.append(result)
         }
-        report.attempts = tests.attempts.map {
+        // Deterministic order: identical runs produce identical JSON.
+        let sortedAttempts = tests.attempts.sorted {
+            ($0.startedAt, $0.test, $0.executorID, $0.endedAt) < ($1.startedAt, $1.test, $1.executorID, $1.endedAt)
+        }
+        report.attempts = sortedAttempts.map {
             JSONReportModel.Attempt(
                 test: $0.test,
                 executor: $0.executorID,

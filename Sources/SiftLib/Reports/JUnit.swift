@@ -5,7 +5,8 @@ import Foundation
 /// - <failure> for failed tests, <skipped/> for skipped, <error> for unexecuted
 struct JUnit {
 
-    func generate(tests: TestCasesSnapshot) -> String {
+    func generate(tests: TestCasesSnapshot, hostname: String = ProcessInfo.processInfo.hostName, timestamp: Date = Date()) -> String {
+        let timestampString = ISO8601DateFormatter().string(from: timestamp)
         struct Suite {
             var tests = 0
             var failures = 0
@@ -48,6 +49,7 @@ struct JUnit {
             "errors": String(totals.errors),
             "skipped": String(totals.skipped),
             "time": String(format: "%.3f", totals.time),
+            "timestamp": timestampString,
         ])
 
         for suiteName in suites.keys.sorted() {
@@ -60,6 +62,8 @@ struct JUnit {
                 "errors": String(suite.errors),
                 "skipped": String(suite.skipped),
                 "time": String(format: "%.3f", suite.time),
+                "hostname": hostname,
+                "timestamp": timestampString,
             ])
             for test in suite.cases.sorted(by: { $0.name < $1.name }) {
                 let caseElement = XMLElement(name: "testcase")
@@ -71,18 +75,18 @@ struct JUnit {
                 ])
                 switch test.state {
                 case .failed:
-                    let failure = XMLElement(name: "failure", stringValue: test.message)
-                    failure.setAttributesWith(["message": firstLine(of: test.message)])
+                    let failure = XMLElement(name: "failure", stringValue: xmlSanitized(test.message))
+                    failure.setAttributesWith(["message": xmlSanitized(firstLine(of: test.message))])
                     caseElement.addChild(failure)
                 case .skipped:
                     let skipped = XMLElement(name: "skipped")
                     if !test.message.isEmpty {
-                        skipped.setAttributesWith(["message": firstLine(of: test.message)])
+                        skipped.setAttributesWith(["message": xmlSanitized(firstLine(of: test.message))])
                     }
                     caseElement.addChild(skipped)
                 case .unexecuted:
-                    let error = XMLElement(name: "error", stringValue: test.message)
-                    error.setAttributesWith(["message": firstLine(of: test.message.isEmpty ? "Was not executed" : test.message)])
+                    let error = XMLElement(name: "error", stringValue: xmlSanitized(test.message))
+                    error.setAttributesWith(["message": xmlSanitized(firstLine(of: test.message.isEmpty ? "Was not executed" : test.message))])
                     caseElement.addChild(error)
                 case .pass:
                     break
@@ -100,5 +104,18 @@ struct JUnit {
 
     private func firstLine(of message: String) -> String {
         message.components(separatedBy: .newlines).first ?? message
+    }
+
+    /// Removes scalars XML 1.0 forbids (raw control characters from app/test output
+    /// would otherwise make the whole document unparsable for CI consumers).
+    private func xmlSanitized(_ text: String) -> String {
+        String(String.UnicodeScalarView(text.unicodeScalars.filter { scalar in
+            switch scalar.value {
+            case 0x9, 0xA, 0xD, 0x20...0xD7FF, 0xE000...0xFFFD, 0x10000...0x10FFFF:
+                return true
+            default:
+                return false
+            }
+        }))
     }
 }

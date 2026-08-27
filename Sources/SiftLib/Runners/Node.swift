@@ -271,6 +271,12 @@ struct Node: Sendable {
         let cleanExit = chunkResult.endReason == .exited && (chunkResult.status == 0 || chunkResult.status == 65)
         let wasCancelled = chunkResult.endReason == .cancelled
 
+        // Unhealthy chunks keep their FULL xcodebuild log locally — the 4000-byte
+        // tail is console convenience; the log file is the post-mortem.
+        if !cleanExit {
+            await retainChunkLog(chunkResult, executor: executor)
+        }
+
         // Try to collect results even for unexpected statuses — partial results beat none.
         do {
             let localZip = try await downloadResults(executor: executor, remoteBundlePath: chunkResult.resultBundlePath)
@@ -326,6 +332,23 @@ struct Node: Sendable {
                 duration: outcome.duration,
                 message: "\(outcome.kind == .pass ? "Passed" : "Skipped") in a degraded chunk (xcodebuild did not exit cleanly) — requeued for confirmation"
             )
+        }
+    }
+
+    /// Downloads the chunk's complete xcodebuild log into
+    /// staging/logs/<node>/<udid>/<attempt>.log — published with the reports.
+    private func retainChunkLog(_ result: Xcodebuild.ChunkResult, executor: TestExecutor) async {
+        let directory = "\(workspace.stagingPath)/logs/\(RunWorkspace.nodeSlug(for: name))/\(executor.UDID)"
+        do {
+            try FileManager.default.createDirectory(atPath: directory, withIntermediateDirectories: true,
+                                                    attributes: [.posixPermissions: 0o700])
+            try await executor.ssh.downloadFile(
+                remotePath: result.remoteLogPath,
+                localPath: "\(directory)/\(result.attemptID).log",
+                abortOnCancellation: false
+            )
+        } catch {
+            log?.message(verboseMsg: "\(executor.executorID): could not retain chunk log (\(error))")
         }
     }
 
