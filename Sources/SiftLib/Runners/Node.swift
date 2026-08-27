@@ -232,8 +232,17 @@ struct Node: Sendable {
         log?.message(verboseMsg: "\(executor.executorID): running \(lease.tests.count) tests:\n\t- " + lease.tests.joined(separator: "\n\t- "))
         let outcome = await executeAndCollect(lease: lease, executor: executor, xcodebuild: xcodebuild, xctestrunPath: xctestrunPath)
         // Teardown always runs, in its own error boundary — a teardown failure can
-        // never discard the results of a chunk that already ran.
-        _ = try? await runScript(path: tearDownScriptPath, executor: executor, tests: lease.tests)
+        // never discard the results of a chunk that already ran, but it is surfaced
+        // (a broken teardown can contaminate later chunks) rather than swallowed.
+        do {
+            if let status = try await runScript(path: tearDownScriptPath, executor: executor, tests: lease.tests), status != 0 {
+                log?.warning("\(executor.executorID): teardown script exited with status \(status)")
+                await health.record(RunHealthEvent(kind: .teardownFailed, source: executor.executorID, detail: "exit status \(status)"))
+            }
+        } catch {
+            log?.warning("\(executor.executorID): teardown script failed: \(error)")
+            await health.record(RunHealthEvent(kind: .teardownFailed, source: executor.executorID, detail: "\(error)"))
+        }
         return outcome
     }
 
@@ -363,20 +372,36 @@ struct Node: Sendable {
         }
     }
 
+    /// Uploads the script as a 0700 file and executes it BY PATH — its shebang is
+    /// honored (no forced /bin/sh), argv limits don't apply, and env-var names were
+    /// validated at config time. Tests are handed over via a newline-delimited
+    /// manifest file (TEST_MANIFEST); TEST_NAMES stays for one release of
+    /// backward compatibility.
     private func runScript(path: String?, executor: TestExecutor, tests: [String]) async throws -> Int32? {
         guard let path else { return nil }
         log?.message(verboseMsg: "\(executor.executorID): executing script \(path)")
-        let script = try String(contentsOfFile: path, encoding: .utf8)
+        let script = try Data(contentsOf: URL(fileURLWithPath: path))
+        let scriptID = UUID().uuidString
+        let scriptsDirectory = "\(remoteWorkPath)/scripts"
+        let remoteScript = "\(scriptsDirectory)/\(scriptID).script"
+        let remoteManifest = "\(scriptsDirectory)/\(scriptID).tests"
+        _ = try await executor.ssh.run("umask 077; mkdir -p \(scriptsDirectory.shellQuoted)")
+        try await executor.ssh.uploadFile(data: script, remotePath: remoteScript)
+        try await executor.ssh.uploadFile(data: Data(tests.joined(separator: "\n").utf8), remotePath: remoteManifest)
+        _ = try await executor.ssh.run("chmod 700 \(remoteScript.shellQuoted)")
+
         var environment = [
             "TEST_NAME=\((tests.first ?? "").shellQuoted)",
             "TEST_NAMES=\(tests.joined(separator: " ").shellQuoted)",
+            "TEST_MANIFEST=\(remoteManifest.shellQuoted)",
             "UDID=\(executor.UDID.shellQuoted)",
         ]
         for (key, value) in config.environmentVariables ?? [:] {
             environment.append("\(key)=\(value.shellQuoted)")
         }
         let prologue = environment.map { "export \($0)" }.joined(separator: "\n")
-        let result = try await executor.ssh.run(prologue + "\n" + script)
+        let result = try await executor.ssh.run(prologue + "\n" + remoteScript.shellQuoted)
+        _ = try? await executor.ssh.run("rm -f \(remoteScript.shellQuoted) \(remoteManifest.shellQuoted)")
         log?.message(verboseMsg: "\(executor.executorID): script exited \(result.status)\n\(result.output)")
         return result.status
     }

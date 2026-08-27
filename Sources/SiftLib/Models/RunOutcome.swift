@@ -9,6 +9,7 @@ public struct RunHealthEvent: Sendable, Codable {
         case executorUnavailable
         case processUnverified
         case cleanupIncomplete
+        case teardownFailed
         case mergeFailed
     }
     public let kind: Kind
