@@ -131,10 +131,46 @@ public class SFTP {
     ///   - permissions: the file permissions to create the new file with; defaults to FilePermissions.default
     /// - Throws: SSHError if local file can't be read or upload fails
     public func upload(localURL: URL, remotePath: String, permissions: FilePermissions = .default) throws {
-        // Read into memory (not memory-mapped): a mapped file that changes or
-        // disappears mid-upload would SIGBUS the process.
-        let data = try Data(contentsOf: localURL)
-        try upload(data: data, remotePath: remotePath, permissions: permissions)
+        // Stream in bounded chunks: build archives can be multi-GB, and loading
+        // them into memory (or memory-mapping, which SIGBUSes if the file changes
+        // mid-upload) is not acceptable.
+        guard let fileHandle = try? FileHandle(forReadingFrom: localURL) else {
+            throw SSHError.genericError("couldn't open local file for upload: \(localURL.path)")
+        }
+        defer { try? fileHandle.close() }
+
+        let sftpHandle = try SFTPHandle(
+            cSession: cSession,
+            sftpSession: sftpSession,
+            remotePath: remotePath,
+            flags: LIBSSH2_FXF_WRITE | LIBSSH2_FXF_CREAT | LIBSSH2_FXF_TRUNC,
+            mode: LIBSSH2_SFTP_S_IFREG | permissions.rawValue
+        )
+
+        while true {
+            guard let chunk = try fileHandle.read(upToCount: 512 * 1024), !chunk.isEmpty else { break }
+            var offset = 0
+            var zeroProgressCount = 0
+            while offset < chunk.count {
+                let upTo = Swift.min(offset + SFTPHandle.bufferSize, chunk.count)
+                switch sftpHandle.write(chunk.subdata(in: offset ..< upTo)) {
+                case .written(let bytesSent):
+                    if bytesSent <= 0 {
+                        zeroProgressCount += 1
+                        if zeroProgressCount > 1000 {
+                            throw SSHError.genericError("SFTP upload to \(remotePath) made no progress")
+                        }
+                    } else {
+                        zeroProgressCount = 0
+                        offset += bytesSent
+                    }
+                case .eagain:
+                    continue
+                case .error(let error):
+                    throw error
+                }
+            }
+        }
     }
     
     /// Upload data to a file on the remote server

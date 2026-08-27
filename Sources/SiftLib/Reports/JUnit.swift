@@ -18,8 +18,7 @@ struct JUnit {
         var suites: [String: Suite] = [:]
         for test in tests.cases {
             var components = test.name.components(separatedBy: "/")
-            let testMethod = components.count > 1 ? components.removeLast() : test.name
-            _ = testMethod
+            if components.count > 1 { components.removeLast() }
             let suiteName = components.joined(separator: ".")
             var suite = suites[suiteName, default: Suite()]
             suite.tests += 1

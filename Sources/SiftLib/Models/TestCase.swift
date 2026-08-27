@@ -42,9 +42,24 @@ public struct TestOutcome: Sendable {
     }
 }
 
+/// One recorded execution attempt (real run or infrastructure failure) of one test.
+public struct TestAttempt: Sendable {
+    public let test: String
+    public let executorID: String
+    public let kind: TestOutcome.Kind
+    public let duration: Double
+    public let message: String
+}
+
 /// Immutable view of all test states, taken in a single actor hop — reports consume only this.
 public struct TestCasesSnapshot: Sendable {
     public let cases: [TestCase]
+    public let attempts: [TestAttempt]
+
+    public init(cases: [TestCase], attempts: [TestAttempt] = []) {
+        self.cases = cases
+        self.attempts = attempts
+    }
 
     public var count: Int { cases.count }
     public var passed: [TestCase] { cases.filter { $0.state == .pass } }

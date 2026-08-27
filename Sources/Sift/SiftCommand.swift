@@ -35,6 +35,9 @@ extension Sift {
         @Flag(name: [.customLong("allow-empty-tests")], help: "Exit successfully when no tests are discovered instead of failing.")
         var allowEmptyTests: Bool = false
 
+        @Flag(name: [.customLong("disable-tests-results-processing")], help: .hidden)
+        var isTestProcessingDisabled: Bool = false
+
         func validate() throws {
             if let timeout, timeout < 1 {
                 throw ValidationError("--timeout must be >= 1 second (got \(timeout))")
@@ -45,6 +48,12 @@ extension Sift {
             setbuf(__stdoutp, nil)
             var log = Log()
             log.verbose = verboseMode
+
+            if isTestProcessingDisabled {
+                // Kept for CLI compatibility. Result processing now uses the modern
+                // xcresulttool API and is cheap; exit codes always reflect outcomes.
+                log.warning("--disable-tests-results-processing is deprecated and has no effect")
+            }
 
             var tests: [String] = onlyTesting
             if let testsPath {
@@ -74,8 +83,16 @@ extension Sift {
 
             // SIGINT/SIGTERM cancel the run instead of killing the process outright,
             // so remote processes are terminated and partial reports still land.
-            let sigintSource = Self.installSignalHandler(SIGINT) { runTask.cancel() }
-            let sigtermSource = Self.installSignalHandler(SIGTERM) { runTask.cancel() }
+            // 124 = timeout, 130 = SIGINT, 143 = SIGTERM (standard shell semantics).
+            let cancellationCode = CancellationCode()
+            let sigintSource = Self.installSignalHandler(SIGINT) {
+                cancellationCode.set(130)
+                runTask.cancel()
+            }
+            let sigtermSource = Self.installSignalHandler(SIGTERM) {
+                cancellationCode.set(143)
+                runTask.cancel()
+            }
             defer {
                 sigintSource.cancel()
                 sigtermSource.cancel()
@@ -87,6 +104,7 @@ extension Sift {
                     try? await Task.sleep(nanoseconds: UInt64(timeout) * 1_000_000_000)
                     guard !Task.isCancelled else { return }
                     log.error("Global timeout (\(timeout)s) reached — cancelling run")
+                    cancellationCode.set(124)
                     runTask.cancel()
                 }
             }
@@ -94,8 +112,8 @@ extension Sift {
             do {
                 let outcome = try await runTask.value
                 timeoutTask?.cancel()
-                if runTask.isCancelled {
-                    throw ExitCode(124) // timed out / interrupted, reports were still written
+                if let code = cancellationCode.get() {
+                    throw ExitCode(code)
                 }
                 throw outcome.succeeded ? ExitCode.success : ExitCode.failure
             } catch let exit as ExitCode {
@@ -103,7 +121,20 @@ extension Sift {
             } catch {
                 timeoutTask?.cancel()
                 log.error("\(error)")
-                throw ExitCode(runTask.isCancelled ? 124 : 1)
+                throw ExitCode(cancellationCode.get() ?? 1)
+            }
+        }
+
+        private final class CancellationCode: @unchecked Sendable {
+            private let lock = NSLock()
+            private var code: Int32?
+            func set(_ newCode: Int32) {
+                lock.lock(); defer { lock.unlock() }
+                if code == nil { code = newCode }
+            }
+            func get() -> Int32? {
+                lock.lock(); defer { lock.unlock() }
+                return code
             }
         }
 
@@ -125,8 +156,15 @@ extension Sift {
         func run() async throws {
             var log = Log()
             log.quiet = true
+            let errorLog = Log()
+            let config: Config
             do {
-                let config = try Config(path: path)
+                config = try Config(path: path)
+            } catch {
+                errorLog.error("\(error)")
+                throw ExitCode(64) // same mapping as `run`: bad configuration
+            }
+            do {
                 var controller = Controller(config: config, log: log)
                 // Discovery only: no build zipping, no SSH connections.
                 let tests = try await controller.discoverTests()
@@ -134,7 +172,6 @@ extension Sift {
                     print(test)
                 }
             } catch {
-                let errorLog = Log()
                 errorLog.error("\(error)")
                 throw ExitCode.failure
             }

@@ -6,8 +6,18 @@ public struct RunOutcome: Sendable {
     public let duration: Double
     public let mergedResultPath: String?
     public let reportsWritten: Bool
+    /// True when a zero-test run was explicitly permitted (--allow-empty-tests).
+    public let emptyRunAllowed: Bool
+
+    init(snapshot: TestCasesSnapshot, duration: Double, mergedResultPath: String?, reportsWritten: Bool, emptyRunAllowed: Bool = false) {
+        self.snapshot = snapshot
+        self.duration = duration
+        self.mergedResultPath = mergedResultPath
+        self.reportsWritten = reportsWritten
+        self.emptyRunAllowed = emptyRunAllowed
+    }
 
     public var succeeded: Bool {
-        snapshot.failed.isEmpty && snapshot.unexecuted.isEmpty && snapshot.count > 0
+        snapshot.failed.isEmpty && snapshot.unexecuted.isEmpty && (snapshot.count > 0 || emptyRunAllowed)
     }
 }

@@ -20,6 +20,7 @@ public actor TestScheduler {
     private var pendingRetries: [String] = []
     private var inFlight: [UUID: TestLease] = [:]
     private var cases: [String: TestCase] = [:]
+    private var attempts: [TestAttempt] = []
 
     private let rerunLimit: Int
     private let infrastructureRetryLimit: Int
@@ -91,6 +92,13 @@ public actor TestScheduler {
         }
         for test in lease.tests {
             let outcome = outcomeByTest[test] ?? TestOutcome(test: test, kind: .notExecuted, message: "Was not executed")
+            attempts.append(TestAttempt(
+                test: test,
+                executorID: lease.executorID,
+                kind: outcome.kind,
+                duration: outcome.duration,
+                message: outcome.message
+            ))
             apply(outcome, to: test)
         }
         pump()
@@ -185,6 +193,6 @@ public actor TestScheduler {
     // MARK: - Reporting
 
     public func snapshot() -> TestCasesSnapshot {
-        TestCasesSnapshot(cases: cases.values.sorted { $0.name < $1.name })
+        TestCasesSnapshot(cases: cases.values.sorted { $0.name < $1.name }, attempts: attempts)
     }
 }

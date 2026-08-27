@@ -38,6 +38,24 @@ enum JSONReport {
             )
             report.results.append(result)
         }
+        report.attempts = tests.attempts.map {
+            JSONReportModel.Attempt(
+                test: $0.test,
+                executor: $0.executorID,
+                outcome: outcomeName($0.kind),
+                duration: $0.duration,
+                message: $0.message
+            )
+        }
         return report
+    }
+
+    private static func outcomeName(_ kind: TestOutcome.Kind) -> String {
+        switch kind {
+        case .pass: return "passed"
+        case .failed: return "failed"
+        case .skipped: return "skipped"
+        case .notExecuted: return "notExecuted"
+        }
     }
 }

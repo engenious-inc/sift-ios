@@ -83,7 +83,8 @@ public struct Controller {
                     snapshot: TestCasesSnapshot(cases: []),
                     duration: 0,
                     mergedResultPath: nil,
-                    reportsWritten: false
+                    reportsWritten: false,
+                    emptyRunAllowed: true
                 )
             }
             throw NSError(
@@ -167,7 +168,7 @@ public struct Controller {
     private func zipBuild() async throws -> String {
         let xctestrun = try XCTestRunFactory.create(path: xctestrunPath, log: log)
         let testRootPath = xctestrun.testRootPath
-        var filesToZip = Set(
+        let filesToZip = Set(
             xctestrun.dependentProductPaths(config: config.onlyTestConfiguration).map { path -> String in
                 var path = path
                 if path.contains("-Runner.app") {
@@ -176,7 +177,6 @@ public struct Controller {
                 return path.replacingOccurrences(of: testRootPath + "/", with: "")
             }
         )
-        filesToZip = Set(filesToZip.map { $0.hasPrefix("/") ? $0 : $0 })
         log?.message(verboseMsg: "Zipping dependent products:\n\t- " + filesToZip.sorted().joined(separator: "\n\t- "))
 
         let zipPath = "\(workspace.workPath)/build.zip"

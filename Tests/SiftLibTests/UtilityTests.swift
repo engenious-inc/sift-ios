@@ -86,29 +86,8 @@ final class UtilityTests: XCTestCase {
         guard let url = Bundle.module.url(forResource: "Fixtures/test-results-tests", withExtension: "json") else {
             throw XCTSkip("fixture missing")
         }
-        let document = try JSONDecoder().decode(XCResultTool.TestResultsDocument.self, from: Data(contentsOf: url))
-        XCTAssertFalse(document.testNodes.isEmpty)
-
-        // Reuse the traversal through a tool instance via reflection-free path:
-        // walk manually mirroring collectOutcomes contract.
-        var outcomes: [TestOutcome] = []
-        func walk(_ node: XCResultTool.TestNode, bundle: String?) {
-            var bundle = bundle
-            if node.nodeType.hasSuffix("test bundle") { bundle = node.name }
-            if node.nodeType == "Test Case", let id = node.nodeIdentifier, let bundle {
-                let kind: TestOutcome.Kind
-                switch node.result {
-                case "Passed", "Expected Failure": kind = .pass
-                case "Skipped": kind = .skipped
-                case "Failed": kind = .failed
-                default: kind = .notExecuted
-                }
-                outcomes.append(TestOutcome(test: TestName.canonical("\(bundle)/\(id)"), kind: kind, duration: node.durationInSeconds ?? 0))
-                return
-            }
-            for child in node.children ?? [] { walk(child, bundle: bundle) }
-        }
-        for node in document.testNodes { walk(node, bundle: nil) }
+        // Exercise the PRODUCTION traversal against a committed real-Xcode fixture.
+        let outcomes = try XCResultTool.outcomes(fromTestResultsJSON: Data(contentsOf: url))
 
         XCTAssertEqual(outcomes.count, 3)
         let byName = Dictionary(uniqueKeysWithValues: outcomes.map { ($0.test, $0) })
@@ -119,6 +98,26 @@ final class UtilityTests: XCTestCase {
     }
 
     // MARK: - TestDiscovery demangle parsing
+
+    func testDemangledLineParsing() {
+        let discovery = TestDiscovery()
+        // Committed shapes from real `xcrun swift-demangle -compact` output.
+        XCTAssertEqual(
+            discovery.testIdentifier(fromDemangled: "BulkTest.BulkTest.testExample_1() throws -> ()", moduleName: "BulkTest"),
+            "BulkTest/BulkTest/testExample_1()"
+        )
+        XCTAssertEqual(
+            discovery.testIdentifier(fromDemangled: "MyModule.Outer.Inner.testNested() -> ()", moduleName: "RenamedBundle"),
+            "RenamedBundle/Outer/Inner/testNested()"
+        )
+        XCTAssertEqual(
+            discovery.testIdentifier(fromDemangled: "M.C.testAsync() async throws -> ()", moduleName: "M"),
+            "M/C/testAsync()"
+        )
+        XCTAssertNil(discovery.testIdentifier(fromDemangled: "BulkTest.BulkTest.setUpWithError() throws -> ()", moduleName: "BulkTest"))
+        XCTAssertNil(discovery.testIdentifier(fromDemangled: "BulkTest.BulkTest.init(invocation: __C.NSInvocation?) -> BulkTest.BulkTest", moduleName: "BulkTest"))
+        XCTAssertNil(discovery.testIdentifier(fromDemangled: "not a symbol at all", moduleName: "M"))
+    }
 
     func testDiscoveryAgainstRealBulkBinary() async throws {
         let binary = "/Users/antonprokuda/Repos/Bulk/DerivedData/mac/Build/Products/Debug/BulkTest-Runner.app/Contents/PlugIns/BulkTest.xctest/Contents/MacOS/BulkTest"
