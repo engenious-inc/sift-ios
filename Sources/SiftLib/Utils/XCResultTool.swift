@@ -1,61 +1,102 @@
 import Foundation
 
-struct XCResultTool {
-    enum FormatType: String {
-        case raw = "raw"
-        case json = "json"
+/// Wrapper around the modern `xcresulttool get test-results` API (Xcode 16+).
+/// The legacy `--legacy` object-graph API is deprecated for removal and is not used.
+struct XCResultTool: Sendable {
+
+    // MARK: - Modern test-results models
+
+    struct TestResultsDocument: Codable {
+        let testNodes: [TestNode]
     }
-    
-    enum ExportType: String {
-        case file = "file"
-        case directory = "directory"
+
+    struct TestNode: Codable {
+        let nodeType: String
+        let name: String
+        let result: String?
+        let durationInSeconds: Double?
+        let nodeIdentifier: String?
+        let children: [TestNode]?
     }
-    
-    let xcresulttool = "xcrun xcresulttool "
-    
-    @discardableResult
-    func export(id: String, outputPath: String, xcresultPath: String, type: ExportType) async throws -> String {
-        
-        let fullCommand = xcresulttool + "export " +
-                                      "--id \(id) " +
-                                      "--output-path \(outputPath) " +
-                                      "--path \(xcresultPath) " +
-                                      "--type \(type.rawValue) "
-        return try await Run().run(fullCommand).output
-    }
-    
-    @discardableResult
-    func get(format: FormatType, id: String? = nil, xcresultPath: String) async throws -> String {
-        let unwrapedId = id != nil ? "--id \(id!) " : ""
-        let fullCommand = xcresulttool + "get " +
-                                      "--format \(format.rawValue) " +
-                                      unwrapedId +
-                                      "--path '\(xcresultPath)' " +
-                                      "--legacy"
-        return try await Run().run(fullCommand).output
-    }
-    
-    @discardableResult
-    func graph(id: String, xcresultPath: String) async throws -> String {
-        let fullCommand = xcresulttool + "graph " +
-                                      "--id \(id) " +
-                                      "--path \(xcresultPath)"
-        return try await Run().run(fullCommand).output
-    }
-    
-    @discardableResult
-    func merge(inputPaths: [String], outputPath: String) async throws -> (status: Int32, output: String) {
-        if inputPaths.isEmpty {
-            return (0, "")
+
+    /// Extracts per-test outcomes from an xcresult bundle.
+    /// Identifiers are Sift-canonical: "<bundle>/<Class>/<testMethod>()".
+    func testOutcomes(xcresultPath: String) async throws -> [TestOutcome] {
+        let result = try await Run().runChecked(
+            "/usr/bin/xcrun",
+            ["xcresulttool", "get", "test-results", "tests", "--path", xcresultPath]
+        )
+        guard let jsonData = result.stdout.data(using: .utf8) else {
+            throw NSError(domain: "xcresulttool returned undecodable output for \(xcresultPath)", code: 1)
         }
-        
-        guard inputPaths.count > 1 else {
-            return try await Run().run("mv \(inputPaths.first!) \(outputPath)")
+        let document = try JSONDecoder().decode(TestResultsDocument.self, from: jsonData)
+
+        var outcomes: [TestOutcome] = []
+        for planNode in document.testNodes {
+            collectOutcomes(node: planNode, bundleName: nil, into: &outcomes)
         }
-        
-        let fullCommand = xcresulttool + "merge " +
-                                      inputPaths.map{"\"\($0)\""}.joined(separator: " ") +
-                                      " --output-path \(outputPath)"
-        return try await Run().run(fullCommand)
+        return outcomes
+    }
+
+    private func collectOutcomes(node: TestNode, bundleName: String?, into outcomes: inout [TestOutcome]) {
+        var bundleName = bundleName
+        if node.nodeType.hasSuffix("test bundle") {
+            bundleName = node.name
+        }
+        if node.nodeType == "Test Case" {
+            guard let identifier = node.nodeIdentifier, let bundleName else { return }
+            let canonicalName = TestName.canonical("\(bundleName)/\(identifier)")
+            let message = failureMessages(of: node).joined(separator: "\n")
+            let kind: TestOutcome.Kind
+            switch node.result {
+            case "Passed", "Expected Failure":
+                kind = .pass
+            case "Skipped":
+                kind = .skipped
+            case "Failed":
+                kind = .failed
+            default:
+                // A verdict we don't recognize is not a verdict.
+                kind = .notExecuted
+            }
+            outcomes.append(TestOutcome(
+                test: canonicalName,
+                kind: kind,
+                duration: node.durationInSeconds ?? 0,
+                message: message
+            ))
+            return
+        }
+        for child in node.children ?? [] {
+            collectOutcomes(node: child, bundleName: bundleName, into: &outcomes)
+        }
+    }
+
+    private func failureMessages(of node: TestNode) -> [String] {
+        var messages: [String] = []
+        for child in node.children ?? [] {
+            if child.nodeType == "Failure Message" {
+                messages.append(child.name)
+            }
+            messages.append(contentsOf: failureMessages(of: child))
+        }
+        return messages
+    }
+
+    // MARK: - Merge
+
+    @discardableResult
+    func merge(inputPaths: [String], outputPath: String) async throws -> Bool {
+        guard !inputPaths.isEmpty else { return false }
+        if inputPaths.count == 1 {
+            // Copy, not move — never destroy the source bundle.
+            try await Run().runChecked("/bin/cp", ["-R", inputPaths[0], outputPath])
+            return true
+        }
+        try await Run().runChecked(
+            "/usr/bin/xcrun",
+            ["xcresulttool", "merge"] + inputPaths + ["--output-path", outputPath]
+        )
+        return true
     }
 }

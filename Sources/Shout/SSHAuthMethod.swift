@@ -80,36 +80,21 @@ public struct SSHKey: SSHAuthMethod {
     }
     
     public func authenticate(ssh: SSH, username: String) throws {
-        // If programatically given a passphrase, use it
-        if let passphrase = passphrase {
-            try ssh.session.authenticate(username: username,
-                                             privateKey: privateKey,
-                                             publicKey: publicKey,
-                                             passphrase: passphrase)
-            return
-        }
-        
-        // Otherwise, try logging in without any passphrase
+        // Never prompt interactively: Sift runs headless in CI, where a getpass()
+        // prompt hangs the run forever. A passphrase-protected key without a
+        // passphrase is a configuration error, not a prompt opportunity.
         do {
             try ssh.session.authenticate(username: username,
-                                             privateKey: privateKey,
-                                             publicKey: publicKey,
-                                             passphrase: nil)
-            return
-        } catch {}
-        
-        // If that doesn't work, try using the Agent in case the passphrase has been saved there
-        do {
-            try SSHAgent().authenticate(ssh: ssh, username: username)
-            return
-        } catch {}
-        
-        // Finally, as a fallback, ask for the passphrase
-        let enteredPassphrase = String(cString: getpass("Enter passphrase for \(privateKey) (empty for no passphrase):"))
-        try ssh.session.authenticate(username: username,
                                          privateKey: privateKey,
                                          publicKey: publicKey,
-                                         passphrase: enteredPassphrase)
+                                         passphrase: passphrase)
+        } catch {
+            throw SSHError.genericError(
+                "key authentication failed for \(username) with key \(privateKey)" +
+                (passphrase == nil ? " (no passphrase given — if the key is encrypted, provide 'passphrase' in the node config or use ssh-agent)" : "") +
+                ": \(error)"
+            )
+        }
     }
     
 }

@@ -1,69 +1,83 @@
 import Foundation
 
 public struct TestCase: Hashable, Sendable {
-    public enum State: Sendable {
+    public enum State: String, Sendable {
         case pass
         case failed
         case skipped
         case unexecuted
     }
-    
+
     public var name: String
     public var state: State
+    /// Number of times the test was actually launched (test-failure reruns included).
     public var launchCounter: Int
+    /// Number of times the test was handed out but produced no result (infrastructure failures).
+    public var infrastructureAttempts: Int
     public var duration: Double
     public var message: String
-    
-    public func hash(into hasher: inout Hasher) {
-        hasher.combine(name)
+}
+
+/// One test's result from one executed chunk.
+public struct TestOutcome: Sendable {
+    public enum Kind: Sendable {
+        case pass
+        case failed
+        case skipped
+        /// The test was in the chunk but the result bundle carries no verdict for it
+        /// (crash before start, transfer failure, unparsable results).
+        case notExecuted
+    }
+
+    public let test: String
+    public let kind: Kind
+    public let duration: Double
+    public let message: String
+
+    public init(test: String, kind: Kind, duration: Double = 0, message: String = "") {
+        self.test = test
+        self.kind = kind
+        self.duration = duration
+        self.message = message
     }
 }
 
-public actor TestCases {
-    private var iterator: IndexingIterator<[(key: String, case: TestCase)]>
-    private var failedTestsCache: [String] = []
-    private let rerunLimit: Int
-    public var cases: [String: TestCase]
-    
+/// Immutable view of all test states, taken in a single actor hop — reports consume only this.
+public struct TestCasesSnapshot: Sendable {
+    public let cases: [TestCase]
+
     public var count: Int { cases.count }
-    public var passed: [TestCase] { cases.values.filter { $0.state == .pass } }
-    public var rerun: [TestCase] { cases.values.filter { $0.launchCounter > 1 } }
-    public var skipped: [TestCase] { cases.values.filter { $0.state == .skipped } }
-    public var failed: [TestCase] { cases.values.filter { $0.state == .failed } }
-    public var unexecuted: [TestCase] { cases.values.filter { $0.state == .unexecuted } }
-    
-    public init(tests: [String], rerunLimit: Int) {
-        let cases = tests.map {
-            (key: $0, case: TestCase(name: $0, state: .unexecuted, launchCounter: 0, duration: 0.0, message: ""))
-        }
-        self.cases = Dictionary<String, TestCase>(uniqueKeysWithValues: cases)
-        self.iterator = cases.makeIterator()
-        self.rerunLimit = rerunLimit
-    }
-    
-    public func next(amount: Int) -> [String] {
-        return (1...amount).compactMap { _ in self.iterator.next()?.key }
-    }
-    
-    public func nextForRerun() -> String? {
-        guard let test = failedTestsCache.popLast() else { return nil }
-        return test
-    }
-    
-    public func update(test: String, state: TestCase.State, duration: Double, message: String = "") {
-        guard cases[test] != nil else { return }
-        cases[test]!.state = state
-        cases[test]!.launchCounter += 1
-        cases[test]!.duration = duration
-        cases[test]!.message = message
-        if state != .pass && state != .skipped && cases[test]!.launchCounter <= self.rerunLimit {
-            failedTestsCache.append(test)
-        }
-    }
+    public var passed: [TestCase] { cases.filter { $0.state == .pass } }
+    public var rerun: [TestCase] { cases.filter { $0.launchCounter > 1 } }
+    public var skipped: [TestCase] { cases.filter { $0.state == .skipped } }
+    public var failed: [TestCase] { cases.filter { $0.state == .failed } }
+    public var unexecuted: [TestCase] { cases.filter { $0.state == .unexecuted } }
+    public var sortedNames: [String] { cases.map(\.name).sorted() }
 }
 
-//extension TestCases: CustomStringConvertible {
-//    public var description: String {
-//        return cases.keys.sorted().joined(separator: "\n")
-//    }
-//}
+/// Canonical test identifier handling. The dumped-bundle form ("Module/Class/testName()")
+/// is canonical; user input with or without trailing parens, CRLF, or stray whitespace
+/// normalizes to it. One representation is used for scheduling, xcodebuild arguments,
+/// result matching, and reports.
+public enum TestName {
+    public static func canonical(_ raw: String) -> String {
+        var name = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty else { return name }
+        if !name.hasSuffix(")") {
+            name += "()"
+        }
+        return name
+    }
+
+    public static func canonicalList<S: Sequence>(_ raw: S) -> [String] where S.Element == String {
+        var seen = Set<String>()
+        var result: [String] = []
+        for entry in raw {
+            let name = canonical(entry)
+            guard !name.isEmpty, !seen.contains(name) else { continue }
+            seen.insert(name)
+            result.append(name)
+        }
+        return result
+    }
+}

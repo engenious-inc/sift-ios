@@ -1,77 +1,103 @@
-# Sift-iOS: Boosting XCTest Efficiency
+# Sift-iOS: Parallel XCTest Execution
 
 ## [What Is Sift?](https://sift.engenious.io/)
 
-Before we dive into the nitty-gritty of setting up Sift, let’s understand what makes it a must-have tool for iOS and macOS developers. Sift is a revolutionary, open-source tool designed to maximize the efficiency of XCTest runs on Apple platforms. It offers a seamless way to parallelize your XCTest suites, significantly reducing the time it takes to complete your tests.
+Sift is an open-source tool that parallelizes XCTest runs across multiple simulators and physical devices, on one machine or a whole farm of remote nodes, dramatically reducing total test time. It distributes prebuilt test bundles over SSH, runs chunks of tests via `xcodebuild test-without-building`, retries failures, merges all results into a single `.xcresult`, and emits JUnit XML and JSON reports.
 
-## Benefits of Using Sift
+**Requirements:** macOS 12+, Xcode 16 or newer on every node (Sift uses the modern `xcresulttool get test-results` API).
 
-- **Lightning-Fast Parallelization:** Sift dramatically accelerates your XCTest suite by intelligently distributing test cases across multiple simulators and devices, enabling parallel execution.
+## Quick Start
 
-- **Improved Productivity:** With Sift, you’ll never have to waste time waiting for lengthy test runs. Get back to coding and building your app with confidence.
+### 1. Build Sift
 
-- **Detailed Reporting:** Sift provides detailed test execution reports, making it easy to identify and resolve issues quickly.
+```bash
+git clone https://github.com/engenious-inc/sift-ios
+cd sift-ios
+swift build -c release
+# binary at .build/release/Sift
+```
 
-- **Easy Integration:** Setting up Sift is a breeze, and we’ll walk you through the process step by step.
+### 2. Build your tests
 
-- **Open Source and Free:** Sift is a gift to the development community, available at no cost. Contribute, improve, and benefit from a thriving community of users.
+Build for testing once (locally or on CI):
 
-## Setting Up Sift: A Step-By-Step Guide
+```bash
+xcodebuild build-for-testing \
+  -project YourApp.xcodeproj \
+  -scheme YourUITests \
+  -destination 'generic/platform=iOS Simulator' \
+  -derivedDataPath DerivedData
+```
 
-Now that you’re excited about what Sift can do for your XCTest suite, let’s get down to business and set it up. Follow these steps to supercharge your testing process:
+This produces a `.xctestrun` file in `DerivedData/Build/Products/`.
 
-1. **Clone the Repository**
+### 3. Write a config
 
-   Before we dive into Sift, let’s grab its code from GitHub. Open your terminal and use this command:
+```jsonc
+{
+    "xctestrunPath": "/absolute/path/to/YourUITests.xctestrun",
+    "outputDirectoryPath": "/absolute/path/to/results",
+    "rerunFailedTest": 1,
+    "testsBucket": 4,
+    "testsExecutionTimeout": 600,
+    "nodes": [
+        {
+            "name": "node-1",
+            "host": "192.168.1.10",
+            "port": 22,
+            "username": "ci",
+            "privateKey": "/Users/ci/.ssh/id_ed25519",
+            "deploymentPath": "/Users/ci/sift-workdir",
+            "xcodePath": "/Applications/Xcode.app",
+            "UDID": {
+                "simulators": ["SIMULATOR-UDID-1", "SIMULATOR-UDID-2"],
+                "devices": [],
+                "mac": []
+            },
+            "environmentVariables": { "MY_ENV": "value" },
+            "hostKeyVerification": "acceptNew"
+        }
+    ]
+}
+```
 
-   `git clone https://github.com/engenious-inc/sift-ios` 
+Config reference:
 
-   This will fetch the Sift repository, and you’ll be ready for the next step.
+| Field | Description |
+|---|---|
+| `xctestrunPath` | Absolute path to the `.xctestrun` produced by `build-for-testing`. FormatVersion 1 and 2 are supported. |
+| `outputDirectoryPath` | Absolute path where `final/` (merged `.xcresult`, `final_result.xml` JUnit, `final_result.json`, `final_result.txt`) is written. |
+| `rerunFailedTest` | How many times a failed test is retried. |
+| `testsBucket` | Number of tests handed to an executor per `xcodebuild` invocation. |
+| `testsExecutionTimeout` | Wall-clock seconds allowed for one bucket; the remote `xcodebuild` is terminated (TERM→KILL) on expiry. Also injected as the per-test time allowance. |
+| `setUpScriptPath` / `tearDownScriptPath` | Optional shell scripts run on the node before/after each bucket (env: `TEST_NAME`, `TEST_NAMES`, `UDID`). A nonzero setup exit returns the bucket to the queue. |
+| `onlyTestConfiguration` / `skipTestConfiguration` | Test-plan configuration selection (FormatVersion 2 only). |
+| `nodes[].privateKey` / `password` | Key-based (recommended) or password SSH auth. With neither, ssh-agent is used. Sift never prompts interactively. |
+| `nodes[].deploymentPath` | Absolute node-side working directory. Each run uses an isolated `deploymentPath/.sift/runs/<run-id>/` and removes only that. |
+| `nodes[].UDID` | Any mix of `simulators`, `devices`, and `mac` UDIDs — all run concurrently. |
+| `nodes[].hostKeyVerification` | `strict` (must be in `~/.sift/known_hosts`), `acceptNew` (default, trust-on-first-use), or `off`. |
+| `nodes[].arch` | Optional `arch -<value>` prefix for remote commands (`arm64`, `x86_64`). |
 
-2.  **Building Sift**
-    
-    Now that you’ve cloned the repository, navigate to the directory where Sift is located:
-    
-    `cd sift-ios` 
-    
-    With Sift’s directory as your current location, build the code using this command:
-    
-    `swift build -c release` 
-    
-    This will compile Sift and generate a release build at the specified path.
-    
-    `cd .build/arm64-apple-macosx/release` 
-    
-3.  **Setting Up Sift**
-    
-    With Sift built, it’s time to configure it. Run the following command to kick off the setup process:
-    
-    `./sift setup` 
-    
-    Sift’s setup command will guide you through essential configurations. Here’s what you’ll need to provide:
-    
-    -   `.xctestrun File Path`: This file is generated by Xcode when you build for testing. Trigger a test build in your project by pressing Command+Shift+U. The .xctestrun file can typically be found in the DerivedData directory, like this:
-    -   `Test Results Directory`: Specify where you want test results to be aggregated and stored.
-    -   `Retry Mechanism`: Configure how Sift handles test failures by specifying the number of retries.
-    -   `Tests Bucket`: Define how many tests should be bundled together for execution.
-    -   `Test Execution Timeout`: Set the maximum duration allowed for a batch of tests to run.
-    -   `Execution Node Configuration`: Specify details about the machines on which tests will be executed.
-    -   `Device/Simulator UDID Configuration`: Specify which devices or simulators on the execution node should run the tests.
-    -   `Config Storage`: Sift will generate a configuration file; specify where you want to store it or just hit Enter to save it in the same directory with Sift.
-    
-    If you provide incorrect data or want to change some options, you can open the `config.json` and manually make any necessary changes.
-    
-4.  **Running Tests with Sift**
-    
-    With the configuration done, Sift setup will provide you with the exact command to run it. It will look something like this:
-    
-    `/Users/USERNAME/sift/Sift run — config “/Users/USERNAME/sift/config.json”` 
-    
-    You can use this command to execute your tests with Sift.
-    
+Values support `${ENV_VAR}` substitution; unresolved variables are an error.
 
-## In Conclusion
+### 4. Run
 
-By following this guide and harnessing the power of Sift, you'll drastically improve your XCTest execution efficiency on Apple platforms. No more waiting around for hours. It's time to embrace rapid and scalable testing. Happy coding!
+```bash
+Sift run --config config.json            # exit 0 = all passed; 1 = failures; 124 = timeout/cancelled
+Sift run --config config.json --only-testing 'Module/Class/testName()'
+Sift run --config config.json --tests-path tests.txt   # newline-separated test list
+Sift run --config config.json --timeout 3600           # global watchdog (exit 124 on expiry)
+Sift list --config config.json           # print all tests in the bundles, no SSH needed
+```
 
+Exit codes: `0` success · `1` test failures / unexecuted tests / infrastructure failure · `64` invalid config · `124` global timeout or SIGINT/SIGTERM cancellation (partial reports are still written).
 
+Ctrl-C cancels the run gracefully: remote `xcodebuild` processes are terminated and partial reports are generated.
+
+## Development
+
+```bash
+swift build --build-tests && swift test
+```
+
+The package has a unit-test target (`Tests/SiftLibTests`) with fixtures recorded from real Xcode output; CI runs on every PR.

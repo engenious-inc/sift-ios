@@ -1,0 +1,83 @@
+{
+  "devices" : [
+    {
+      "architecture" : "arm64",
+      "deviceId" : "8135788C-F305-463D-8997-CA6125B57D33",
+      "deviceName" : "iPhone 17",
+      "modelName" : "iPhone 17",
+      "osBuildNumber" : "23F77",
+      "osVersion" : "26.5",
+      "platform" : "iOS Simulator"
+    }
+  ],
+  "testNodes" : [
+    {
+      "children" : [
+        {
+          "children" : [
+            {
+              "children" : [
+                {
+                  "duration" : "2s",
+                  "durationInSeconds" : 2.127822995185852,
+                  "name" : "testExample_1()",
+                  "nodeIdentifier" : "BulkTest/testExample_1()",
+                  "nodeIdentifierURL" : "test://com.apple.xcode/Bulk/BulkTest/BulkTest/testExample_1",
+                  "nodeType" : "Test Case",
+                  "result" : "Passed"
+                },
+                {
+                  "children" : [
+                    {
+                      "name" : "BulkTest.swift:67: failed - This test failed intentionally",
+                      "nodeType" : "Failure Message"
+                    }
+                  ],
+                  "duration" : "2s",
+                  "durationInSeconds" : 2.249122977256775,
+                  "name" : "testExample_10()",
+                  "nodeIdentifier" : "BulkTest/testExample_10()",
+                  "nodeIdentifierURL" : "test://com.apple.xcode/Bulk/BulkTest/BulkTest/testExample_10",
+                  "nodeType" : "Test Case",
+                  "result" : "Failed"
+                },
+                {
+                  "children" : [
+                    {
+                      "name" : "Test skipped - This test is skipped intentionally",
+                      "nodeType" : "Failure Message"
+                    }
+                  ],
+                  "duration" : "2s",
+                  "durationInSeconds" : 2.0403130054473877,
+                  "name" : "testExample_13()",
+                  "nodeIdentifier" : "BulkTest/testExample_13()",
+                  "nodeIdentifierURL" : "test://com.apple.xcode/Bulk/BulkTest/BulkTest/testExample_13",
+                  "nodeType" : "Test Case",
+                  "result" : "Skipped"
+                }
+              ],
+              "name" : "BulkTest",
+              "nodeIdentifierURL" : "test://com.apple.xcode/Bulk/BulkTest/BulkTest",
+              "nodeType" : "Test Suite",
+              "result" : "Failed"
+            }
+          ],
+          "name" : "BulkTest",
+          "nodeIdentifierURL" : "test://com.apple.xcode/Bulk/BulkTest",
+          "nodeType" : "UI test bundle",
+          "result" : "Failed"
+        }
+      ],
+      "name" : "BulkTest",
+      "nodeType" : "Test Plan",
+      "result" : "Failed"
+    }
+  ],
+  "testPlanConfigurations" : [
+    {
+      "configurationId" : "1",
+      "configurationName" : "Test Scheme Action"
+    }
+  ]
+}
