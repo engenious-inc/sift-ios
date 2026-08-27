@@ -1,7 +1,7 @@
 import Foundation
 
 struct SSHCommunication {
-    private let ssh: SSHExecutor
+    let ssh: SSHExecutor
     private let config: Config.NodeConfig
     private let remoteWorkPath: String
     private let health: HealthSink
@@ -21,7 +21,7 @@ struct SSHCommunication {
     func connect() async throws {
         log?.message(verboseMsg: "Connecting to \(nodeName) (\(config.host):\(config.port))...")
         try await ssh.connect(
-            username: config.username,
+            username: config.usernameValue,
             password: config.password,
             privateKey: config.privateKey,
             publicKey: config.publicKey,

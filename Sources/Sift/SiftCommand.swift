@@ -9,9 +9,37 @@ struct Sift: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "sift",
         abstract: "A utility for parallel XCTest execution.",
-        subcommands: [RunCommand.self, ListCommand.self],
+        subcommands: [RunCommand.self, ListCommand.self, DoctorCommand.self],
         defaultSubcommand: RunCommand.self
     )
+}
+
+extension Sift {
+    struct DoctorCommand: AsyncParsableCommand {
+        static let configuration = CommandConfiguration(
+            commandName: "doctor",
+            abstract: "Preflight a config: tooling, artifact, output directory, every node and executor."
+        )
+
+        @Option(name: [.customShort("c"), .customLong("config")], help: "Path to the JSON config file.")
+        var path: String
+
+        func run() async throws {
+            let log = Log()
+            let config: Config
+            do {
+                config = try Config(path: path)
+            } catch {
+                log.error("\(error)")
+                throw ExitCode(64)
+            }
+            var doctor = Doctor(config: config)
+            let healthy = await doctor.run()
+            if !healthy {
+                throw ExitCode.failure
+            }
+        }
+    }
 }
 
 extension Sift {
@@ -42,6 +70,12 @@ extension Sift {
 
         @Flag(name: [.customLong("combine-test-selectors")], help: "Allow --tests-path and --only-testing together (their union runs).")
         var combineTestSelectors: Bool = false
+
+        @Option(name: [.customLong("events-path")], help: "Write a machine-readable NDJSON run-event stream (schema v1) to this file.")
+        var eventsPath: String?
+
+        @Flag(name: [.customLong("events-stdout")], help: "Echo the NDJSON run-event stream to stdout (use with --quiet-friendly consumers).")
+        var eventsStdout: Bool = false
 
         @Flag(name: [.customLong("disable-tests-results-processing")], help: .hidden)
         var isTestProcessingDisabled: Bool = false
@@ -105,6 +139,17 @@ extension Sift {
                 tests = configTests
             }
 
+            // Live progress on a TTY (suppressed in verbose mode — the line would
+            // fight the scrolling log) + optional machine-readable event stream.
+            let progress = ProgressReporter(
+                enabled: isatty(fileno(stdout)) != 0 && !verboseMode && !eventsStdout
+            )
+            let events = EventBus(
+                ndjsonPath: eventsPath,
+                echoToStdout: eventsStdout,
+                consumers: [progress.consumer]
+            )
+
             let discoveryBackend = discovery
             let runTask = Task {
                 var controller = Controller(
@@ -112,6 +157,7 @@ extension Sift {
                     tests: tests,
                     allowEmptyTests: allowEmptyTests,
                     discoveryBackend: discoveryBackend,
+                    events: events,
                     log: log
                 )
                 return try await controller.run()

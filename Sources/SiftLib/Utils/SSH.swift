@@ -243,36 +243,9 @@ final class SSH: SSHExecutor, @unchecked Sendable {
 
     func startBackgroundProcess(command: String, workDirectory: String, attemptID: String) async throws -> BackgroundProcessHandle {
         let handle = BackgroundProcessHandle(attemptID: attemptID, directory: "\(workDirectory)/proc/\(attemptID)")
-        // A wrapper sh records its own pid, runs the command in its foreground, and
-        // writes the exit status atomically. The unique marker lives inside the
-        // wrapper's argv, so `ps -o command=` on the recorded pid shows it —
-        // that is what makes the later kill provably target our process.
-        // Newlines (not ';') separate statements so nothing can be swallowed by
-        // a trailing comment inside `command`.
-        // `trap '' HUP` (not nohup: macOS nohup needs a controlling console and dies
-        // with "can't detach" under a TTY-less sshd exec session) shields the wrapper
-        // and every later child from the HUP that sshd sends when the channel closes.
-        let inner = """
-        # sift-attempt:\(attemptID)
-        trap '' HUP
-        umask 077
-        echo $$ > \(handle.pidPath.shellQuoted)
-        ( \(command)
-        ) > \(handle.logPath.shellQuoted) 2>&1
-        echo $? > \(handle.statusPath.shellQuoted).tmp && mv \(handle.statusPath.shellQuoted).tmp \(handle.statusPath.shellQuoted)
-        """
-        // Fire-and-forget launcher: no remote wait loop. macOS's bash-3.2 /bin/sh
-        // can lose a SIGCHLD race in tight fork loops under sshd and end up
-        // blocked in wait4 on the background job — holding the exec channel open
-        // for the wrapper's whole lifetime. All waiting happens Swift-side below,
-        // each poll on its own short-lived exec channel.
-        // `&` must background a SIMPLE command: in `a && b > /dev/null &` the `&`
-        // binds to the whole and-list, backgrounding a subshell whose stdout and
-        // stderr are still the channel pipes — sshd then holds the exec channel
-        // open until the entire background tree dies.
-        let launcher = "mkdir -p \(handle.directory.shellQuoted) || exit 1\n" +
-            "/bin/sh -c \(inner.shellQuoted) > /dev/null 2>&1 < /dev/null &\n" +
-            "exit 0"
+        // Shared owned-process contract — see ProcessScripts for the full rationale
+        // (marker-in-argv identity, HUP shield, atomic status write, channel-safe &).
+        let launcher = ProcessScripts.launcher(handle: handle, command: command)
         let result = try await runFast(launcher)
         guard result.status == 0 else {
             throw SSHError.genericError("failed to start background process (status \(result.status)): \(result.output)")
@@ -322,48 +295,18 @@ final class SSH: SSHExecutor, @unchecked Sendable {
         // Each tree member is identified by pid AND process start time; both the
         // aliveness probe and the KILL escalation revalidate that identity so a
         // pid recycled during the grace window can never be signalled.
-        let termScript = """
-        collect_tree() {
-            echo "$1"
-            for child in $(pgrep -P "$1" 2>/dev/null); do collect_tree "$child"; done
-        }
-        PID=$(cat \(handle.pidPath.shellQuoted) 2>/dev/null)
-        [ -n "$PID" ] || { echo "sift-no-pid"; exit 0; }
-        ps -p "$PID" -o command= 2>/dev/null | grep -qF \(marker.shellQuoted) || { echo "sift-no-match"; exit 0; }
-        for p in $(collect_tree "$PID"); do
-            START=$(ps -p "$p" -o lstart= 2>/dev/null)
-            [ -n "$START" ] || continue
-            kill -TERM "$p" 2>/dev/null
-            echo "$p|$START"
-        done
-        exit 0
-        """
+        let termScript = ProcessScripts.terminate(handle: handle, marker: marker)
         guard let termResult = try? await runFast(termScript) else {
             return .unverified("terminate command could not run (SSH session unavailable)")
         }
         if termResult.output.contains("sift-no-pid") || termResult.output.contains("sift-no-match") {
             return .notFound
         }
-        let identities: [(pid: String, start: String)] = termResult.output
-            .split(whereSeparator: \.isNewline)
-            .compactMap { line in
-                let parts = line.split(separator: "|", maxSplits: 1)
-                guard parts.count == 2 else { return nil }
-                let pid = parts[0].trimmingCharacters(in: .whitespaces)
-                guard !pid.isEmpty, pid.allSatisfy(\.isNumber) else { return nil }
-                return (pid, parts[1].trimmingCharacters(in: .whitespaces))
-            }
+        let identities = ProcessScripts.parseIdentities(fromTermOutput: termResult.output)
         guard !identities.isEmpty else { return .notFound } // already gone
 
-        // signalMatching(signal): signals only pids whose start time still matches.
         func signalScript(_ signalName: String) -> String {
-            var lines = ["ALIVE=0"]
-            for identity in identities {
-                lines.append("START=$(ps -p \(identity.pid) -o lstart= 2>/dev/null)")
-                lines.append("if [ \"$START\" = \(identity.start.shellQuoted) ]; then ALIVE=1; kill -\(signalName) \(identity.pid) 2>/dev/null; fi")
-            }
-            lines.append("echo \"alive=$ALIVE\"")
-            return lines.joined(separator: "\n")
+            ProcessScripts.signal(signalName, identities: identities)
         }
         for _ in 0..<10 {
             await CommandLineExecutor.uncancellableSleep(seconds: 1)

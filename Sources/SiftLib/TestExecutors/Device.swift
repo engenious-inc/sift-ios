@@ -23,7 +23,7 @@ struct Device: TestExecutor {
     func connect() async throws {
         log?.message(verboseMsg: "\(executorID): opening connection")
         try await ssh.connect(
-            username: config.username,
+            username: config.usernameValue,
             password: config.password,
             privateKey: config.privateKey,
             publicKey: config.publicKey,

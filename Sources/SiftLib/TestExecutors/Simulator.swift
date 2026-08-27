@@ -12,21 +12,26 @@ actor Simulator: TestExecutor {
     nonisolated let log: Logging?
 
     private let config: Config.NodeConfig
+    /// True for Sift-created clones (auto-provisioning): the ONLY simulators Sift
+    /// may erase during recovery; deleted by the node when the run ends.
+    nonisolated let siftOwned: Bool
     /// True when Sift booted this simulator (it was shut down when the run began).
     private var bootedBySift = false
 
-    init(UDID: String, config: Config.NodeConfig, sshFactory: (Config.NodeConfig) -> SSHExecutor, log: Logging?) {
+    init(UDID: String, config: Config.NodeConfig, sshFactory: (Config.NodeConfig) -> SSHExecutor,
+         siftOwned: Bool = false, log: Logging?) {
         self.UDID = UDID
         self.config = config
         self.nodeName = config.name
         self.ssh = sshFactory(config)
+        self.siftOwned = siftOwned
         self.log = log
     }
 
     func connect() async throws {
         log?.message(verboseMsg: "\(executorID): opening connection")
         try await ssh.connect(
-            username: config.username,
+            username: config.usernameValue,
             password: config.password,
             privateKey: config.privateKey,
             publicKey: config.publicKey,
@@ -98,12 +103,15 @@ actor Simulator: TestExecutor {
         return true
     }
 
-    /// Recovery after an unhealthy chunk: shutdown + boot. NEVER erase — this is a
-    /// user-provided simulator whose contents Sift does not own.
+    /// Recovery after an unhealthy chunk: shutdown + boot. A USER simulator is
+    /// never erased; a Sift-owned clone is erased for a maximally clean retry.
     @discardableResult
     func reset() async -> Bool {
         log?.message(verboseMsg: "\(executorID): restarting simulator")
         _ = try? await ssh.run(developerDirExport + "xcrun simctl shutdown \(UDID.shellQuoted)")
+        if siftOwned {
+            _ = try? await ssh.run(developerDirExport + "xcrun simctl erase \(UDID.shellQuoted)")
+        }
         return await boot()
     }
 

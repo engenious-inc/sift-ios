@@ -53,7 +53,9 @@ public actor TestScheduler {
         }
         self.estimates = estimates
         let known = canonical.compactMap { estimates[$0] }.sorted()
-        self.medianEstimate = known.isEmpty ? 0 : known[known.count / 2]
+        // Lower-middle median: for an even count, prefer the smaller middle value so
+        // unknown tests never tie with (and randomly outrank) a genuinely slow one.
+        self.medianEstimate = known.isEmpty ? 0 : known[(known.count - 1) / 2]
         // Longest-estimated first (unknowns assume the median) so the slowest tests
         // can never land as the final tail; shuffle first for random tie-breaks.
         let shuffled = canonical.shuffled()
