@@ -105,6 +105,77 @@ final class ConfigValidationTests: XCTestCase {
         }
     }
 
+    func testWhitespacePathRejectedNotSilentlyTrimmed() {
+        XCTAssertThrowsError(try Config(data: makeConfigJSON(output: " /tmp/sift-out "))) { error in
+            XCTAssertTrue("\(error)".contains("whitespace"), "\(error)")
+        }
+    }
+
+    func testPasswordPlusPrivateKeyRejected() {
+        let json = """
+        {
+            "xctestrunPath": "/tmp/some.xctestrun", "outputDirectoryPath": "/tmp/sift-out",
+            "rerunFailedTest": 0, "testsBucket": 1,
+            "nodes": [{"name": "n1", "host": "127.0.0.1", "port": 22, "username": "u",
+                       "password": "p", "privateKey": "/tmp/id", "deploymentPath": "/tmp/d",
+                       "UDID": {"simulators": ["A"]}, "xcodePath": "/Applications/Xcode.app"}]
+        }
+        """.data(using: .utf8)!
+        XCTAssertThrowsError(try Config(data: json)) { error in
+            XCTAssertTrue("\(error)".contains("exactly one"), "\(error)")
+        }
+    }
+
+    func testInvalidEnvironmentVariableNameRejected() {
+        let json = """
+        {
+            "xctestrunPath": "/tmp/some.xctestrun", "outputDirectoryPath": "/tmp/sift-out",
+            "rerunFailedTest": 0, "testsBucket": 1,
+            "nodes": [{"name": "n1", "host": "127.0.0.1", "port": 22, "username": "u",
+                       "deploymentPath": "/tmp/d", "UDID": {"simulators": ["A"]},
+                       "environmentVariables": {"BAD KEY; rm -rf ~": "v"},
+                       "xcodePath": "/Applications/Xcode.app"}]
+        }
+        """.data(using: .utf8)!
+        XCTAssertThrowsError(try Config(data: json)) { error in
+            XCTAssertTrue("\(error)".contains("invalid environment variable name"), "\(error)")
+        }
+    }
+
+    func testOnlyEqualsSkipConfigurationRejected() {
+        let json = """
+        {
+            "xctestrunPath": "/tmp/some.xctestrun", "outputDirectoryPath": "/tmp/sift-out",
+            "rerunFailedTest": 0, "testsBucket": 1,
+            "onlyTestConfiguration": "C1", "skipTestConfiguration": "C1",
+            "nodes": [{"name": "n1", "host": "127.0.0.1", "port": 22, "username": "u",
+                       "deploymentPath": "/tmp/d", "UDID": {"simulators": ["A"]},
+                       "xcodePath": "/Applications/Xcode.app"}]
+        }
+        """.data(using: .utf8)!
+        XCTAssertThrowsError(try Config(data: json))
+    }
+
+    func testListRoleSkipsNodeValidation() throws {
+        let json = #"{"xctestrunPath": "/tmp/some.xctestrun", "outputDirectoryPath": "/x", "rerunFailedTest": 0, "testsBucket": 1, "nodes": []}"#.data(using: .utf8)!
+        XCTAssertNoThrow(try Config(data: json, role: .list))
+        XCTAssertThrowsError(try Config(data: json, role: .run))
+    }
+
+    func testDollarEscapeProducesLiteralPlaceholder() throws {
+        let json = #"{"key": "$${NAME} and $${OTHER}"}"#.data(using: .utf8)!
+        let result = try Config.substituteEnvironmentVariables(inJSON: json)
+        let object = try JSONSerialization.jsonObject(with: result) as! [String: Any]
+        XCTAssertEqual(object["key"] as? String, "${NAME} and ${OTHER}")
+    }
+
+    func testUnterminatedPlaceholderIsError() {
+        let json = #"{"key": "broken ${NAME"}"#.data(using: .utf8)!
+        XCTAssertThrowsError(try Config.substituteEnvironmentVariables(inJSON: json)) { error in
+            XCTAssertTrue("\(error)".contains("unterminated"), "\(error)")
+        }
+    }
+
     func testEnvValueWithQuotesCannotCorruptJSON() throws {
         setenv("SIFT_TEST_EVIL", #"va"lue with 'quotes' and \backslash"#, 1)
         defer { unsetenv("SIFT_TEST_EVIL") }

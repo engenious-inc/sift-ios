@@ -24,19 +24,26 @@ public struct Config: Codable, Sendable {
     public var nodes: [NodeConfig]
     public var tests: [String]?
 
-    public init(data: Data) throws {
+    /// What the config is being used for: `list` needs only discovery inputs and
+    /// skips node validation entirely.
+    public enum Role: Sendable {
+        case run
+        case list
+    }
+
+    public init(data: Data, role: Role = .run) throws {
         // Same pipeline as init(path:): substitution and validation must not
         // depend on which initializer loaded the bytes.
         let substituted = try Config.substituteEnvironmentVariables(inJSON: data)
         self = try JSONDecoder().decode(Config.self, from: substituted)
-        try validate()
+        try validate(role: role)
     }
 
-    public init(path: String) throws {
+    public init(path: String, role: Role = .run) throws {
         guard let raw = FileManager.default.contents(atPath: path) else {
             throw ConfigError(violations: ["config file not found or unreadable: \(path)"])
         }
-        try self.init(data: raw)
+        try self.init(data: raw, role: role)
     }
 
     public func write(url: URL) throws {
@@ -62,7 +69,9 @@ public struct Config: Codable, Sendable {
 
     /// Substitutes ${VAR} placeholders inside JSON *string values* (never keys or structure),
     /// so a value containing quotes or newlines can never corrupt the document.
-    /// Unresolved placeholders are an error rather than a silent literal.
+    /// Contract: `$${NAME}` produces the literal text `${NAME}`; every other unmatched
+    /// or unterminated `${` — and every unresolved variable — is an error, never a
+    /// silent literal.
     static func substituteEnvironmentVariables(inJSON data: Data) throws -> Data {
         let object: Any
         do {
@@ -70,45 +79,47 @@ public struct Config: Codable, Sendable {
         } catch {
             throw ConfigError(violations: ["config is not valid JSON: \(error.localizedDescription)"])
         }
-        var unresolved: [String] = []
-        let substituted = substitute(object, environment: ProcessInfo.processInfo.environment, unresolved: &unresolved)
-        guard unresolved.isEmpty else {
-            throw ConfigError(violations: unresolved.map {
-                "unresolved environment variable ${\($0)} in config — export it or remove the placeholder"
-            })
+        var problems: [String] = []
+        let substituted = substitute(object, environment: ProcessInfo.processInfo.environment, problems: &problems)
+        guard problems.isEmpty else {
+            throw ConfigError(violations: problems)
         }
         return try JSONSerialization.data(withJSONObject: substituted)
     }
 
-    private static func substitute(_ value: Any, environment: [String: String], unresolved: inout [String]) -> Any {
+    private static func substitute(_ value: Any, environment: [String: String], problems: inout [String]) -> Any {
         switch value {
         case let string as String:
-            return substitute(string, environment: environment, unresolved: &unresolved)
+            return substitute(string, environment: environment, problems: &problems)
         case let array as [Any]:
-            return array.map { substitute($0, environment: environment, unresolved: &unresolved) }
+            return array.map { substitute($0, environment: environment, problems: &problems) }
         case let dictionary as [String: Any]:
-            return dictionary.mapValues { substitute($0, environment: environment, unresolved: &unresolved) }
+            return dictionary.mapValues { substitute($0, environment: environment, problems: &problems) }
         default:
             return value
         }
     }
 
-    private static func substitute(_ string: String, environment: [String: String], unresolved: inout [String]) -> String {
+    private static func substitute(_ string: String, environment: [String: String], problems: inout [String]) -> String {
         guard string.contains("${") else { return string }
         var result = ""
         var remainder = Substring(string)
         while let start = remainder.range(of: "${") {
-            result += remainder[..<start.lowerBound]
+            let escaped = remainder[..<start.lowerBound].hasSuffix("$") // "$${" → literal "${"
+            let prefixEnd = escaped ? remainder.index(before: start.lowerBound) : start.lowerBound
+            result += remainder[..<prefixEnd]
             let afterStart = remainder[start.upperBound...]
             guard let end = afterStart.firstIndex(of: "}") else {
-                result += remainder[start.lowerBound...]
-                return result
+                problems.append("unterminated '${' in config value '\(string)' — close it with '}' or escape it as '$${'")
+                return result + remainder[start.lowerBound...]
             }
             let name = String(afterStart[..<end])
-            if let value = environment[name] {
+            if escaped {
+                result += "${\(name)}"
+            } else if let value = environment[name] {
                 result += value
             } else {
-                unresolved.append(name)
+                problems.append("unresolved environment variable ${\(name)} in config — export it, remove the placeholder, or escape it as '$${\(name)}'")
             }
             remainder = afterStart[afterStart.index(after: end)...]
         }
@@ -119,9 +130,24 @@ public struct Config: Codable, Sendable {
     // MARK: - Validation
 
     public func validate() throws {
+        try validate(role: .run)
+    }
+
+    public func validate(role: Role) throws {
         var violations: [String] = []
 
         validate(path: xctestrunPath, name: "xctestrunPath", into: &violations)
+        if let only = onlyTestConfiguration, let skip = skipTestConfiguration, only == skip {
+            violations.append("onlyTestConfiguration and skipTestConfiguration are both '\(only)' — that selects nothing")
+        }
+
+        if role == .list {
+            // Listing needs only the discovery inputs — nodes, credentials, and
+            // output paths are irrelevant and must not be demanded.
+            guard violations.isEmpty else { throw ConfigError(violations: violations) }
+            return
+        }
+
         validate(path: outputDirectoryPath, name: "outputDirectoryPath", into: &violations)
         if testsBucket < 1 {
             violations.append("testsBucket must be >= 1 (got \(testsBucket))")
@@ -144,6 +170,24 @@ public struct Config: Codable, Sendable {
             validate(path: node.xcodePathRaw, name: "\(label) xcodePath", into: &violations)
             if node.host.trimmingCharacters(in: .whitespaces).isEmpty {
                 violations.append("\(label): host must not be empty")
+            } else if node.host != node.host.trimmingCharacters(in: .whitespaces) || node.host.contains(" ") {
+                violations.append("\(label): host contains whitespace ('\(node.host)')")
+            }
+            if node.username.trimmingCharacters(in: .whitespaces).isEmpty {
+                violations.append("\(label): username must not be empty")
+            }
+            if node.name.trimmingCharacters(in: .whitespaces).isEmpty {
+                violations.append("node with host \(node.host): name must not be empty")
+            }
+            // Exactly one authentication method may be set: password OR privateKey.
+            // Both is ambiguous (which wins?); neither means ssh-agent.
+            if node.password != nil && node.privateKey != nil {
+                violations.append("\(label): both password and privateKey are set — choose exactly one (ssh-agent is used when neither is set)")
+            }
+            // Env-var NAMES are interpolated into a remote shell prologue — a name
+            // like 'FOO; rm -rf ~' would inject. Values are always shell-quoted.
+            for key in (node.environmentVariables ?? [:]).keys where !Config.isValidEnvironmentName(key) {
+                violations.append("\(label): invalid environment variable name '\(key)' (allowed: [A-Za-z_][A-Za-z0-9_]*)")
             }
             if node.port < 1 || node.port > 65535 {
                 violations.append("\(label): port must be in 1...65535 (got \(node.port))")
@@ -174,22 +218,69 @@ public struct Config: Codable, Sendable {
         }
     }
 
+    static func isValidEnvironmentName(_ name: String) -> Bool {
+        guard let first = name.unicodeScalars.first else { return false }
+        let head = CharacterSet.letters.union(CharacterSet(charactersIn: "_"))
+        let body = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "_"))
+        guard head.contains(first), name.allSatisfy({ $0.isASCII }) else { return false }
+        return name.unicodeScalars.dropFirst().allSatisfy { body.contains($0) }
+    }
+
     private func validate(path: String, name: String, into violations: inout [String]) {
         let trimmed = path.trimmingCharacters(in: .whitespacesAndNewlines)
         if trimmed.isEmpty {
             violations.append("\(name) must not be empty")
             return
         }
-        if !trimmed.hasPrefix("/") {
+        // The VALIDATED string must be the EXECUTED string: a path that only passes
+        // after trimming would run as a different (relative!) path later.
+        if trimmed != path {
+            violations.append("\(name) has leading/trailing whitespace ('\(path)')")
+            return
+        }
+        if !path.hasPrefix("/") {
             violations.append("\(name) must be an absolute path (got '\(path)')")
             return
         }
-        let standardized = (trimmed as NSString).standardizingPath
-        if standardized == "/" {
-            violations.append("\(name) must not be the filesystem root")
+        // Resolve symlinks so a link to / or $HOME cannot smuggle a destructive target
+        // past the checks.
+        let standardized = (path as NSString).standardizingPath
+        let resolved = (standardized as NSString).resolvingSymlinksInPath
+        for candidate in [standardized, resolved] {
+            if candidate == "/" {
+                violations.append("\(name) must not be the filesystem root")
+                return
+            }
+            if candidate == NSHomeDirectory() {
+                violations.append("\(name) must not be the home directory itself (got '\(path)')")
+                return
+            }
         }
-        if standardized == NSHomeDirectory() {
-            violations.append("\(name) must not be the home directory itself (got '\(path)')")
+    }
+
+    /// Existence/readability preflight for controller-side files. Separate from the
+    /// shape validation so the CLI can map these to the configuration exit code (64)
+    /// instead of failing mid-run.
+    public func validateRuntimeFiles(role: Role = .run) throws {
+        var violations: [String] = []
+        let fm = FileManager.default
+        if !fm.isReadableFile(atPath: xctestrunPath) {
+            violations.append("xctestrunPath does not exist or is unreadable: \(xctestrunPath)")
+        }
+        if role == .run {
+            for (label, path) in [("setUpScriptPath", setUpScriptPath), ("tearDownScriptPath", tearDownScriptPath)] {
+                if let path, !fm.isReadableFile(atPath: path) {
+                    violations.append("\(label) does not exist or is unreadable: \(path)")
+                }
+            }
+            for node in nodes {
+                if let key = node.privateKey, !fm.isReadableFile(atPath: (key as NSString).expandingTildeInPath) {
+                    violations.append("node '\(node.name)': privateKey does not exist or is unreadable: \(key)")
+                }
+            }
+        }
+        if !violations.isEmpty {
+            throw ConfigError(violations: violations)
         }
     }
 }

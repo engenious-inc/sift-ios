@@ -16,11 +16,16 @@ public struct Controller {
 
     private let allowEmptyTests: Bool
 
+    /// Repeatable list-command selectors: `enabled ∩ (onlys ?? all) ∖ skips`,
+    /// overriding the config's singular selectors when present.
+    private let listSelectors: (only: [String], skip: [String])?
+
     public init(
         config: Config,
         tests: [String]? = nil,
         allowEmptyTests: Bool = false,
         discoveryBackend: DiscoveryBackend = .enumeration,
+        listSelectors: (only: [String], skip: [String])? = nil,
         log: Logging?
     ) {
         self.config = config
@@ -28,6 +33,7 @@ public struct Controller {
         self.workspace = RunWorkspace(outputDirectoryPath: config.outputDirectoryPath)
         self.discovery = TestDiscovery(log: log)
         self.discoveryBackend = discoveryBackend
+        self.listSelectors = listSelectors
         self.requestedTests = tests ?? []
         self.allowEmptyTests = allowEmptyTests
         self.log = log
@@ -39,10 +45,27 @@ public struct Controller {
         let xctestrun = try XCTestRunFactory.create(path: xctestrunPath, log: log)
         // selected = enabled ∩ (only == nil ? all : {only}) ∖ {skip}; unknown names
         // and an empty selection are errors.
-        let selected = try xctestrun.selectedConfigurationNames(
-            only: config.onlyTestConfiguration,
-            skip: config.skipTestConfiguration
-        )
+        let selected: [String?]
+        if let listSelectors {
+            // Repeatable CLI flags: validate every named configuration, then apply
+            // the same algebra over the sets.
+            for name in listSelectors.only { _ = try xctestrun.selectedConfigurationNames(only: name, skip: nil) }
+            for name in listSelectors.skip { _ = try xctestrun.selectedConfigurationNames(only: nil, skip: name) }
+            let allEnabled = try xctestrun.selectedConfigurationNames(only: nil, skip: nil)
+            let afterOnly = listSelectors.only.isEmpty
+                ? allEnabled
+                : allEnabled.filter { name in name.map { listSelectors.only.contains($0) } ?? false }
+            let result = afterOnly.filter { name in name.map { !listSelectors.skip.contains($0) } ?? true }
+            guard !result.isEmpty else {
+                throw XCTestRunError("configuration selection left nothing to list (only: \(listSelectors.only), skip: \(listSelectors.skip))")
+            }
+            selected = result
+        } else {
+            selected = try xctestrun.selectedConfigurationNames(
+                only: config.onlyTestConfiguration,
+                skip: config.skipTestConfiguration
+            )
+        }
         self.selectedConfigurations = selected
         self.artifactPlatform = try xctestrun.platform()
         if selected.count > 1 {
