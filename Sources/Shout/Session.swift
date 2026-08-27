@@ -49,7 +49,8 @@ class Session {
         try SSHError.check(code: code, session: cSession)
     }
 
-    func authenticate(username: String, privateKey: String, publicKey: String, passphrase: String?) throws {
+    func authenticate(username: String, privateKey: String, publicKey: String?, passphrase: String?) throws {
+        // publicKey nil: libssh2 derives it from the private key.
         let code = libssh2_userauth_publickey_fromfile_ex(cSession,
                                                           username,
                                                           UInt32(username.utf8.count),
@@ -121,8 +122,15 @@ class Session {
         }
         defer { libssh2_knownhost_free(knownHosts) }
 
-        // A missing file is fine — it means no host is known yet.
-        _ = libssh2_knownhost_readfile(knownHosts, knownHostsPath, LIBSSH2_KNOWNHOST_FILE_OPENSSH)
+        // A MISSING file means no host is known yet; an unreadable/corrupt file must
+        // NOT silently degrade to "empty" (that would re-TOFU every host).
+        let readCount = libssh2_knownhost_readfile(knownHosts, knownHostsPath, LIBSSH2_KNOWNHOST_FILE_OPENSSH)
+        if readCount < 0, FileManager.default.fileExists(atPath: knownHostsPath) {
+            throw SSHError.genericError(
+                "known_hosts file \(knownHostsPath) exists but could not be parsed (libssh2 code \(readCount)) — " +
+                "fix or remove it before connecting"
+            )
+        }
 
         let typeMask = Int32(LIBSSH2_KNOWNHOST_TYPE_PLAIN) | Int32(LIBSSH2_KNOWNHOST_KEYENC_RAW) | keyTypeMask
         let checkResult = libssh2_knownhost_checkp(knownHosts, host, Int32(port), keyPointer, keyLength, typeMask, nil)
@@ -143,10 +151,29 @@ class Session {
                     "Connect once with hostKeyVerification=acceptNew or add the key to \(knownHostsPath)."
                 )
             }
-            let addCode = libssh2_knownhost_addc(knownHosts, host, nil, keyPointer, keyLength, nil, 0, typeMask, nil)
+            // OpenSSH port encoding: a non-default port is trusted only for that
+            // port ("[host]:port"), never leaked to other ports on the same host.
+            let storedHost = port == 22 ? host : "[\(host)]:\(port)"
+            let addCode = libssh2_knownhost_addc(knownHosts, storedHost, nil, keyPointer, keyLength, nil, 0, typeMask, nil)
             try SSHError.check(code: addCode, session: cSession)
-            let writeCode = libssh2_knownhost_writefile(knownHosts, knownHostsPath, LIBSSH2_KNOWNHOST_FILE_OPENSSH)
+            // Owner-only atomic replace: write to a temp path, then rename over —
+            // a concurrent writer can never leave a truncated file behind.
+            let temporaryPath = knownHostsPath + ".tmp-\(UUID().uuidString)"
+            let writeCode = libssh2_knownhost_writefile(knownHosts, temporaryPath, LIBSSH2_KNOWNHOST_FILE_OPENSSH)
             try SSHError.check(code: writeCode, session: cSession)
+            do {
+                try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: temporaryPath)
+                _ = try FileManager.default.replaceItemAt(
+                    URL(fileURLWithPath: knownHostsPath),
+                    withItemAt: URL(fileURLWithPath: temporaryPath)
+                )
+                // replaceItemAt can retain the ORIGINAL file's mode — enforce owner-only
+                // on the final path too.
+                try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: knownHostsPath)
+            } catch {
+                try? FileManager.default.removeItem(atPath: temporaryPath)
+                throw SSHError.genericError("cannot update \(knownHostsPath): \(error)")
+            }
             return
         default:
             throw SSHError.genericError("host key verification failed for \(host):\(port)")

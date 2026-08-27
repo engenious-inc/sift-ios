@@ -58,23 +58,27 @@ public struct SSHAgent: SSHAuthMethod {
 
 /// Key-based authentication method
 public struct SSHKey: SSHAuthMethod {
-    
+
     public let privateKey: String
-    public let publicKey: String
+    /// nil = let libssh2 derive the public key from the private key (a missing
+    /// `.pub` sidecar must not fail authentication).
+    public let publicKey: String?
     public let passphrase: String?
-    
+
     /// Creates a new key-based authentication
     ///
     /// - Parameters:
     ///   - privateKey: the path to the private key
     ///   - publicKey: the path to the public key; defaults to private key path + ".pub"
+    ///     when that file exists, else nil (derived from the private key)
     ///   - passphrase: the passphrase encrypting the key; defaults to nil
     public init(privateKey: String, publicKey: String? = nil, passphrase: String? = nil) {
         self.privateKey = NSString(string: privateKey).expandingTildeInPath
         if let publicKey = publicKey {
             self.publicKey = NSString(string: publicKey).expandingTildeInPath
         } else {
-            self.publicKey = self.privateKey + ".pub"
+            let sidecar = self.privateKey + ".pub"
+            self.publicKey = FileManager.default.fileExists(atPath: sidecar) ? sidecar : nil
         }
         self.passphrase = passphrase
     }

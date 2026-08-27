@@ -126,6 +126,9 @@ public struct Controller {
         }
 
         log?.message("Total tests for execution: \(unitsForRun.count)")
+        // Serialize runs sharing this output directory; the lock dies with the process.
+        let lock = try workspace.acquireLock()
+        defer { lock.release() }
         try workspace.prepareLocal()
         defer { workspace.cleanupLocal() }
 
@@ -138,6 +141,7 @@ public struct Controller {
             log: log
         )
         let collector = ResultCollector(workspace: workspace, log: log)
+        let health = HealthSink()
 
         let xctestrunPath = self.xctestrunPath
         let workspace = self.workspace
@@ -161,6 +165,7 @@ public struct Controller {
                         hostKeyVerification: config.hostKeyVerification ?? .acceptNew
                     )
                 },
+                health: health,
                 log: log
             )
         }
@@ -185,13 +190,25 @@ public struct Controller {
         }
 
         try writeReports(snapshot: snapshot, duration: duration)
+        // Everything was staged under the run directory; one atomic rename makes it
+        // `final/` — the previous final survives any failure before this point.
+        let publishedPath = try workspace.publish()
         printSummary(snapshot: snapshot, duration: duration)
+
+        let healthEvents = await health.all()
+        if !healthEvents.isEmpty {
+            log?.warning("Infrastructure health (\(healthEvents.count) event(s)):")
+            for event in healthEvents {
+                log?.warning(before: "\t", "[\(event.kind.rawValue)] \(event.source): \(event.detail)")
+            }
+        }
 
         return RunOutcome(
             snapshot: snapshot,
             duration: duration,
-            mergedResultPath: mergedPath,
-            reportsWritten: true
+            mergedResultPath: mergedPath.map { _ in "\(publishedPath)/final_result.xcresult" },
+            reportsWritten: true,
+            healthEvents: healthEvents
         )
     }
 
@@ -253,8 +270,8 @@ public struct Controller {
     // MARK: - Reports
 
     private func writeReports(snapshot: TestCasesSnapshot, duration: Double) throws {
-        let junitURL = URL(fileURLWithPath: "\(workspace.finalPath)/final_result.xml")
-        let jsonURL = URL(fileURLWithPath: "\(workspace.finalPath)/final_result.json")
+        let junitURL = URL(fileURLWithPath: "\(workspace.stagingPath)/final_result.xml")
+        let jsonURL = URL(fileURLWithPath: "\(workspace.stagingPath)/final_result.json")
         try JSONReport.generate(tests: snapshot, duration: duration).write(to: jsonURL)
         try JUnit().generate(tests: snapshot).write(to: junitURL, atomically: true, encoding: .utf8)
 
@@ -267,7 +284,7 @@ public struct Controller {
         Rerun: \(snapshot.rerun.count) tests
         """
         try summaryText.write(
-            toFile: "\(workspace.finalPath)/final_result.txt",
+            toFile: "\(workspace.stagingPath)/final_result.txt",
             atomically: true,
             encoding: .utf8
         )

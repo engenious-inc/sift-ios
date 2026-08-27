@@ -66,18 +66,72 @@ final class UtilityTests: XCTestCase {
         let base = NSTemporaryDirectory() + "sift-ws-test-\(UUID().uuidString)"
         try FileManager.default.createDirectory(atPath: base, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(atPath: base) }
-        // A pre-existing user file next to the output directory must survive.
+        // A pre-existing user file next to the output directory must survive,
+        // and so must a previous final/ — preparation never touches it.
         let bystander = "\(base)/precious-user-file.txt"
         FileManager.default.createFile(atPath: bystander, contents: Data("do not delete".utf8))
+        try FileManager.default.createDirectory(atPath: "\(base)/final", withIntermediateDirectories: true)
+        FileManager.default.createFile(atPath: "\(base)/final/old-report.xml", contents: Data("previous run".utf8))
 
         let workspace = RunWorkspace(outputDirectoryPath: base)
         try workspace.prepareLocal()
         XCTAssertTrue(FileManager.default.fileExists(atPath: workspace.workPath))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: workspace.stagingPath))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: "\(base)/final/old-report.xml"),
+                      "prepare must never delete the previous final")
         FileManager.default.createFile(atPath: "\(workspace.workPath)/scratch.txt", contents: Data())
         workspace.cleanupLocal()
         XCTAssertFalse(FileManager.default.fileExists(atPath: workspace.workPath))
         XCTAssertTrue(FileManager.default.fileExists(atPath: bystander))
-        XCTAssertTrue(FileManager.default.fileExists(atPath: workspace.finalPath))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: "\(base)/final/old-report.xml"),
+                      "an unpublished (failed) run leaves the previous final untouched")
+    }
+
+    func testWorkspacePublishIsAtomicAndPreservesPriorFinalUntilSuccess() throws {
+        let base = NSTemporaryDirectory() + "sift-ws-pub-\(UUID().uuidString)"
+        try FileManager.default.createDirectory(atPath: base, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: base) }
+        try FileManager.default.createDirectory(atPath: "\(base)/final", withIntermediateDirectories: true)
+        FileManager.default.createFile(atPath: "\(base)/final/old-report.xml", contents: Data("old".utf8))
+
+        let workspace = RunWorkspace(outputDirectoryPath: base)
+        try workspace.prepareLocal()
+        FileManager.default.createFile(atPath: "\(workspace.stagingPath)/final_result.xml", contents: Data("new".utf8))
+        try workspace.publish()
+        XCTAssertTrue(FileManager.default.fileExists(atPath: "\(base)/final/final_result.xml"))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: "\(base)/final/old-report.xml"),
+                       "publication replaces the whole final directory")
+    }
+
+    func testWorkspaceRejectsUnsafeRunIDs() {
+        XCTAssertThrowsError(try RunWorkspace(outputDirectoryPath: "/tmp/x", runID: "../escape"))
+        XCTAssertThrowsError(try RunWorkspace(outputDirectoryPath: "/tmp/x", runID: "a/b"))
+        XCTAssertThrowsError(try RunWorkspace(outputDirectoryPath: "/tmp/x", runID: ""))
+        XCTAssertNoThrow(try RunWorkspace(outputDirectoryPath: "/tmp/x", runID: "run-1"))
+    }
+
+    func testOutputDirectoryLockIsExclusiveWithOwnerInError() throws {
+        let base = NSTemporaryDirectory() + "sift-lock-\(UUID().uuidString)"
+        try FileManager.default.createDirectory(atPath: base, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: base) }
+        let first = RunWorkspace(outputDirectoryPath: base)
+        let second = RunWorkspace(outputDirectoryPath: base)
+        let lock = try first.acquireLock()
+        XCTAssertThrowsError(try second.acquireLock()) { error in
+            XCTAssertTrue("\(error)".contains("owns the output directory"), "\(error)")
+            XCTAssertTrue("\(error)".contains(first.runID), "error names the owner: \(error)")
+        }
+        lock.release()
+        XCTAssertNoThrow(try second.acquireLock().release())
+    }
+
+    func testNodeSlugSanitizesAndRemoteWorkPathsDiffer() throws {
+        XCTAssertEqual(RunWorkspace.nodeSlug(for: "mac-mini-1"), "mac-mini-1")
+        XCTAssertEqual(RunWorkspace.nodeSlug(for: "weird name/../x"), "weird_name_.._x")
+        let workspace = RunWorkspace(outputDirectoryPath: "/tmp/out")
+        let a = workspace.remoteWorkPath(deploymentPath: "/deploy", nodeSlug: "node-a")
+        let b = workspace.remoteWorkPath(deploymentPath: "/deploy", nodeSlug: "node-b")
+        XCTAssertNotEqual(a, b, "same host+deploymentPath, different node entries → disjoint workspaces")
     }
 
     // MARK: - XCResult parsing (modern API, fixture recorded from a real Bulk run)

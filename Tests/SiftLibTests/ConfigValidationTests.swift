@@ -64,6 +64,29 @@ final class ConfigValidationTests: XCTestCase {
         XCTAssertThrowsError(try Config(data: makeConfigJSON(udids: #""simulators": []"#)))
     }
 
+    func testDuplicateNodeIdentitiesRejected() {
+        let json = """
+        {
+            "xctestrunPath": "/tmp/some.xctestrun",
+            "outputDirectoryPath": "/tmp/sift-out",
+            "rerunFailedTest": 0,
+            "testsBucket": 1,
+            "nodes": [
+                {"name": "n1", "host": "10.0.0.1", "port": 22, "username": "u",
+                 "deploymentPath": "/tmp/d", "UDID": {"simulators": ["AAA"]}, "xcodePath": "/Applications/Xcode.app"},
+                {"name": "n1", "host": "10.0.0.1", "port": 22, "username": "u",
+                 "deploymentPath": "/tmp/d", "UDID": {"simulators": ["AAA"]}, "xcodePath": "/Applications/Xcode.app"}
+            ]
+        }
+        """.data(using: .utf8)!
+        XCTAssertThrowsError(try Config(data: json)) { error in
+            let message = "\(error)"
+            XCTAssertTrue(message.contains("duplicate node name"), message)
+            XCTAssertTrue(message.contains("duplicate endpoint"), message)
+            XCTAssertTrue(message.contains("duplicate UDID"), message)
+        }
+    }
+
     func testEnvSubstitutionInsideStringValues() throws {
         setenv("SIFT_TEST_SUB", "substituted-value", 1)
         defer { unsetenv("SIFT_TEST_SUB") }

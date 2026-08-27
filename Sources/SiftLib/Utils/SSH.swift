@@ -69,6 +69,11 @@ final class SSH: SSHExecutor, @unchecked Sendable {
 
     // MARK: - Connection
 
+    /// Serializes known_hosts read-modify-write across every concurrently
+    /// connecting node in this process — parallel TOFU writers must never lose
+    /// each other's trusted entries.
+    private static let knownHostsLock = NSLock()
+
     func connect(
         username: String,
         password: String?,
@@ -84,8 +89,12 @@ final class SSH: SSHExecutor, @unchecked Sendable {
             case .off:
                 break
             case .strict:
+                SSH.knownHostsLock.lock()
+                defer { SSH.knownHostsLock.unlock() }
                 try session.verifyHostKey(host: host, port: port, addUnknown: false, knownHostsPath: SSH.knownHostsPath())
             case .acceptNew:
+                SSH.knownHostsLock.lock()
+                defer { SSH.knownHostsLock.unlock() }
                 try session.verifyHostKey(host: host, port: port, addUnknown: true, knownHostsPath: SSH.knownHostsPath())
             }
             if let password {
@@ -159,10 +168,13 @@ final class SSH: SSHExecutor, @unchecked Sendable {
     }
 
     func uploadFile(localPath: String, remotePath: String) async throws {
+        // Owner-only: uploaded builds are proprietary binaries on a possibly-shared Mac.
+        let ownerOnly = FilePermissions(owner: [.read, .write], group: [], others: [])
         try await withTransferAbort { [self] shouldAbort in
             try requireSession().openSftp().upload(
                 localURL: URL(fileURLWithPath: localPath),
                 remotePath: remotePath,
+                permissions: ownerOnly,
                 shouldAbort: shouldAbort
             )
         }
@@ -218,6 +230,7 @@ final class SSH: SSHExecutor, @unchecked Sendable {
         let inner = """
         # sift-attempt:\(attemptID)
         trap '' HUP
+        umask 077
         echo $$ > \(handle.pidPath.shellQuoted)
         ( \(command)
         ) > \(handle.logPath.shellQuoted) 2>&1

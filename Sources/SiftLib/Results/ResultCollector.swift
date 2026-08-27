@@ -44,7 +44,7 @@ actor ResultCollector {
             // xcodebuild) must never reach the final merge set.
             let unzippedPath = "\(unzipDirectory)/\(name)"
             let bundleOutcomes = try await tool.testOutcomes(xcresultPath: unzippedPath)
-            let finalPath = "\(workspace.finalPath)/\(unzipID)-\(name)"
+            let finalPath = "\(workspace.stagingPath)/\(unzipID)-\(name)"
             try FileManager.default.moveItem(atPath: unzippedPath, toPath: finalPath)
             collectedResultPaths.append(finalPath)
             outcomes.append(contentsOf: bundleOutcomes)
@@ -59,7 +59,7 @@ actor ResultCollector {
             log?.warning("No test results were collected — nothing to merge")
             return nil
         }
-        let mergedPath = "\(workspace.finalPath)/final_result.xcresult"
+        let mergedPath = "\(workspace.stagingPath)/final_result.xcresult"
         try await tool.merge(inputPaths: collectedResultPaths, outputPath: mergedPath)
         // The per-chunk bundles are folded into the merged bundle; drop them.
         for path in collectedResultPaths {
