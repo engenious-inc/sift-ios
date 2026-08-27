@@ -83,6 +83,12 @@ public protocol XCTestRun: Sendable {
     /// Throws when a requested test configuration name does not exist in the file.
     func validate(configurationName: String?) throws
 
+    /// The configurations a run will execute, resolved with the exact algebra
+    /// `selected = enabled ∩ (only == nil ? all : {only}) ∖ {skip}`:
+    /// an unknown `only`/`skip` name is an error, and an empty result is an error.
+    /// FormatVersion 1 returns `[nil]` and rejects both selectors.
+    func selectedConfigurationNames(only: String?, skip: String?) throws -> [String?]
+
     mutating func addEnvironmentVariables(_ values: [String: String]?)
     mutating func add(timeout: Int)
 

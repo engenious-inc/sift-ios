@@ -22,7 +22,10 @@ struct Xcodebuild {
 
     /// Runs one chunk. The xcodebuild process is owned: its pid is recorded on the
     /// node and it is TERM/KILL-ed if the timeout expires — never left orphaned.
+    /// `configuration` is the lease's configuration: when present it overrides the
+    /// global selectors (selection was already resolved at scheduling time).
     func execute(tests: [String],
+                 configuration: String? = nil,
                  executorType: TestExecutorType,
                  UDID: String,
                  xctestrunPath: String,
@@ -42,11 +45,15 @@ struct Xcodebuild {
         if !allowXcodebuildParallelTesting {
             arguments += ["-parallel-testing-enabled", "NO"]
         }
-        if let onlyTestConfiguration {
-            arguments += ["-only-test-configuration", onlyTestConfiguration]
-        }
-        if let skipTestConfiguration {
-            arguments += ["-skip-test-configuration", skipTestConfiguration]
+        if let configuration {
+            arguments += ["-only-test-configuration", configuration]
+        } else {
+            if let onlyTestConfiguration {
+                arguments += ["-only-test-configuration", onlyTestConfiguration]
+            }
+            if let skipTestConfiguration {
+                arguments += ["-skip-test-configuration", skipTestConfiguration]
+            }
         }
         arguments += tests.map { "-only-testing:\($0)" }
         arguments.append("test-without-building")

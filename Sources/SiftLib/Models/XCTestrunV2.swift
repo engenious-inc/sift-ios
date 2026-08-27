@@ -91,16 +91,6 @@ public struct XCTestRunV2: XCTestRun {
 
     public func validate(configurationName: String?) throws {
         guard let configurationName else {
-            // With several enabled configurations, xcodebuild would run all of them while
-            // Sift schedules only the first — later configurations' failures would
-            // silently overwrite scheduled verdicts. Refuse the ambiguity.
-            if enabledConfigurations.count > 1 {
-                let known = enabledConfigurations.compactMap(\.name).joined(separator: "', '")
-                throw XCTestRunError(
-                    "\(xctestrunFileName) contains \(enabledConfigurations.count) enabled test configurations ('\(known)') — " +
-                    "select one with onlyTestConfiguration in the config"
-                )
-            }
             guard !enabledConfigurations.isEmpty else {
                 throw XCTestRunError("\(xctestrunFileName) has no enabled test configurations")
             }
@@ -115,6 +105,30 @@ public struct XCTestRunV2: XCTestRun {
         guard configuration.isEnabled else {
             throw XCTestRunError("test configuration '\(configurationName)' is disabled in \(xctestrunFileName)")
         }
+    }
+
+    /// `selected = enabled ∩ (only == nil ? all : {only}) ∖ {skip}`.
+    /// Unknown names and an empty result are errors — a selector must never
+    /// silently select nothing.
+    public func selectedConfigurationNames(only: String?, skip: String?) throws -> [String?] {
+        try validate(configurationName: only)
+        if let skip {
+            guard configurations.contains(where: { $0.name == skip }) else {
+                let known = configurations.compactMap(\.name).joined(separator: "', '")
+                throw XCTestRunError(
+                    "skipTestConfiguration '\(skip)' not found in \(xctestrunFileName); available: '\(known)'"
+                )
+            }
+        }
+        let afterOnly = enabledConfigurations.filter { only == nil || $0.name == only }
+        let selected = afterOnly.filter { $0.name != skip || skip == nil }
+        guard !selected.isEmpty else {
+            throw XCTestRunError(
+                "configuration selection left nothing to run in \(xctestrunFileName) "
+                + "(only: \(only ?? "-"), skip: \(skip ?? "-"))"
+            )
+        }
+        return selected.map(\.name)
     }
 
     private func selectedConfiguration(_ name: String?) -> Configuration? {

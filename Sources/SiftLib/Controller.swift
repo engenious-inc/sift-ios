@@ -10,6 +10,7 @@ public struct Controller {
 
     public private(set) var bundleTests: [String] = []
     private var discoveredTests: [ScheduledTest] = []
+    private var selectedConfigurations: [String?] = [nil]
     private var artifactPlatform: TestPlatform?
     private var requestedTests: [String]
 
@@ -36,34 +37,48 @@ public struct Controller {
 
     public mutating func discoverTests() async throws -> [String] {
         let xctestrun = try XCTestRunFactory.create(path: xctestrunPath, log: log)
-        try xctestrun.validate(configurationName: config.onlyTestConfiguration)
-        self.artifactPlatform = try xctestrun.platform()
-
-        var tests = try await discovery.tests(
-            xctestrun: xctestrun,
-            configuration: config.onlyTestConfiguration,
-            backend: discoveryBackend
+        // selected = enabled ∩ (only == nil ? all : {only}) ∖ {skip}; unknown names
+        // and an empty selection are errors.
+        let selected = try xctestrun.selectedConfigurationNames(
+            only: config.onlyTestConfiguration,
+            skip: config.skipTestConfiguration
         )
-
-        let only = xctestrun.onlyTestIdentifiers(config: config.onlyTestConfiguration)
-        if !only.isEmpty {
-            log?.message(verboseMsg: "OnlyTestIdentifiers:\n\(only)")
-            tests = tests.filter { test in
-                guard let identifiers = only[test.bundleName], !identifiers.isEmpty else { return true }
-                return identifiers.contains { identifierMatches($0, test: test.id) }
-            }
-        }
-        let skip = xctestrun.skipTestIdentifiers(config: config.onlyTestConfiguration)
-        if !skip.isEmpty {
-            log?.message(verboseMsg: "SkipTestIdentifiers:\n\(skip)")
-            tests = tests.filter { test in
-                guard let identifiers = skip[test.bundleName] else { return true }
-                return !identifiers.contains { identifierMatches($0, test: test.id) }
-            }
+        self.selectedConfigurations = selected
+        self.artifactPlatform = try xctestrun.platform()
+        if selected.count > 1 {
+            log?.message("Running \(selected.count) test configurations: " + selected.compactMap { $0 }.joined(separator: ", "))
         }
 
-        self.discoveredTests = tests
-        self.bundleTests = tests.map(\.id)
+        var all: [ScheduledTest] = []
+        for configuration in selected {
+            var tests = try await discovery.tests(
+                xctestrun: xctestrun,
+                configuration: configuration,
+                backend: discoveryBackend
+            )
+            let only = xctestrun.onlyTestIdentifiers(config: configuration)
+            if !only.isEmpty {
+                log?.message(verboseMsg: "OnlyTestIdentifiers:\n\(only)")
+                tests = tests.filter { test in
+                    guard let identifiers = only[test.bundleName], !identifiers.isEmpty else { return true }
+                    return identifiers.contains { identifierMatches($0, test: test.id) }
+                }
+            }
+            let skip = xctestrun.skipTestIdentifiers(config: configuration)
+            if !skip.isEmpty {
+                log?.message(verboseMsg: "SkipTestIdentifiers:\n\(skip)")
+                tests = tests.filter { test in
+                    guard let identifiers = skip[test.bundleName] else { return true }
+                    return !identifiers.contains { identifierMatches($0, test: test.id) }
+                }
+            }
+            all.append(contentsOf: tests)
+        }
+
+        self.discoveredTests = all
+        // `list` output and the public API stay one line per unique identifier.
+        var seen = Set<String>()
+        self.bundleTests = all.compactMap { seen.insert($0.id).inserted ? $0.id : nil }
         return bundleTests
     }
 
@@ -84,17 +99,19 @@ public struct Controller {
 
         // Requested selectors are expanded against the discovered set: class/module
         // granularity works, and a typo is a selection error here — never a phantom
-        // test burning infrastructure retries downstream.
-        let testsForRun: [String]
+        // test burning infrastructure retries downstream. In a multi-configuration
+        // run the same identifier is scheduled once per selected configuration.
+        let selectedTests: [ScheduledTest]
         if requestedTests.isEmpty {
-            testsForRun = bundleTests
+            selectedTests = discoveredTests
         } else {
-            testsForRun = try TestSelector.expand(rawSelectors: requestedTests, against: discoveredTests).map(\.id)
+            selectedTests = try TestSelector.expand(rawSelectors: requestedTests, against: discoveredTests)
         }
+        let unitsForRun = selectedTests.map { TestUnit(configuration: $0.configurationName, test: $0.id) }
 
         try validateExecutorPlatforms()
 
-        guard !testsForRun.isEmpty else {
+        guard !unitsForRun.isEmpty else {
             if allowEmptyTests {
                 log?.warning("No tests to execute (--allow-empty-tests set) — exiting cleanly")
                 return RunOutcome(
@@ -108,14 +125,14 @@ public struct Controller {
             throw XCTestRunError("No tests were discovered for execution. If an empty test list is expected, pass --allow-empty-tests.")
         }
 
-        log?.message("Total tests for execution: \(testsForRun.count)")
+        log?.message("Total tests for execution: \(unitsForRun.count)")
         try workspace.prepareLocal()
         defer { workspace.cleanupLocal() }
 
         let buildZipPath = try await zipBuild()
 
         let scheduler = TestScheduler(
-            tests: testsForRun,
+            units: unitsForRun,
             rerunLimit: config.rerunFailedTest,
             infrastructureRetryLimit: 1,
             log: log
@@ -210,8 +227,10 @@ public struct Controller {
     private func zipBuild() async throws -> String {
         let xctestrun = try XCTestRunFactory.create(path: xctestrunPath, log: log)
         let testRootPath = xctestrun.testRootPath
+        // Union of dependent products across every selected configuration.
+        let dependentPaths = selectedConfigurations.flatMap { xctestrun.dependentProductPaths(config: $0) }
         let filesToZip = Set(
-            xctestrun.dependentProductPaths(config: config.onlyTestConfiguration).map { path -> String in
+            dependentPaths.map { path -> String in
                 var path = path
                 if path.contains("-Runner.app") {
                     path = path.components(separatedBy: "-Runner.app").dropLast().joined() + "-Runner.app"

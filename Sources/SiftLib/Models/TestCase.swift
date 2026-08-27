@@ -106,6 +106,28 @@ public struct ScheduledTest: Sendable, Hashable {
     public var id: String { "\(bundleName)/\(classPath)/\(method)" }
 }
 
+/// One schedulable unit: a test identifier bound to the test-plan configuration it
+/// runs under. In a multi-configuration run the same identifier appears once per
+/// selected configuration; a lease never mixes configurations.
+public struct TestUnit: Hashable, Sendable {
+    public let configuration: String?
+    /// Canonical "Bundle/Class/test()" identifier.
+    public let test: String
+
+    public init(configuration: String?, test: String) {
+        self.configuration = configuration
+        self.test = test
+    }
+
+    /// Report name: the plain identifier for single-configuration runs; qualified
+    /// with the configuration when a run spans several (those runs were previously
+    /// impossible, so the qualified form breaks no existing consumer).
+    public func reportName(multiConfiguration: Bool) -> String {
+        guard multiConfiguration, let configuration else { return test }
+        return "\(test) [\(configuration)]"
+    }
+}
+
 /// A user-supplied test selector: a full method, a class, or a whole bundle.
 /// Class- and bundle-level selectors are prefixes — they never receive "()".
 public enum TestSelector: Sendable, Hashable {
@@ -169,7 +191,9 @@ public enum TestSelector: Sendable, Hashable {
         rawSelectors: [String],
         against discovered: [ScheduledTest]
     ) throws -> [ScheduledTest] {
-        var seen = Set<String>()
+        // Dedupe by the FULL record: in a multi-configuration run the same identifier
+        // legitimately appears once per configuration and every instance is scheduled.
+        var seen = Set<ScheduledTest>()
         var result: [ScheduledTest] = []
         var unknown: [String] = []
         for raw in rawSelectors {
@@ -179,7 +203,7 @@ public enum TestSelector: Sendable, Hashable {
                 unknown.append(closeMatchMessage(for: raw, selector: selector, discovered: discovered))
                 continue
             }
-            for test in matched where seen.insert(test.id).inserted {
+            for test in matched where seen.insert(test).inserted {
                 result.append(test)
             }
         }

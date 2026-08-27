@@ -1,10 +1,14 @@
 import Foundation
 
 /// A batch of tests handed to one executor. Every lease must be returned exactly once,
-/// via `complete(_:outcomes:)` or `abandon(_:)`.
+/// via `complete(_:outcomes:)` or `abandon(_:)`. A lease is configuration-pure: all its
+/// tests run under the same test-plan configuration.
 public struct TestLease: Sendable {
     public let id: UUID
     public let executorID: String
+    /// Test-plan configuration these tests run under (nil: none recorded / FormatVersion 1).
+    public let configuration: String?
+    /// Canonical test identifiers.
     public let tests: [String]
     public let grantedAt: Date
 }
@@ -17,30 +21,51 @@ public struct TestLease: Sendable {
 /// other leases are in flight waits — results of those leases may produce retries that
 /// this worker should pick up.
 public actor TestScheduler {
-    private var pending: [String]
-    private var pendingRetries: [String] = []
+    private var pending: [TestUnit]
+    private var pendingRetries: [TestUnit] = []
     private var inFlight: [UUID: TestLease] = [:]
-    private var cases: [String: TestCase] = [:]
+    private var cases: [TestUnit: TestCase] = [:]
     private var attempts: [TestAttempt] = []
 
     private let rerunLimit: Int
     private let infrastructureRetryLimit: Int
+    /// True when the scheduled set spans more than one configuration — report names
+    /// are then configuration-qualified.
+    private let multiConfiguration: Bool
     private let log: Logging?
 
     private var waiters: [(executorID: String, maxCount: Int, continuation: CheckedContinuation<TestLease?, Never>)] = []
 
-    public init(tests: [String], rerunLimit: Int, infrastructureRetryLimit: Int = 1, log: Logging? = nil) {
-        let canonical = TestName.canonicalList(tests)
+    public init(units: [TestUnit], rerunLimit: Int, infrastructureRetryLimit: Int = 1, log: Logging? = nil) {
+        var seen = Set<TestUnit>()
+        var canonical: [TestUnit] = []
+        for unit in units {
+            let unit = TestUnit(configuration: unit.configuration, test: TestName.canonical(unit.test))
+            guard !unit.test.isEmpty, seen.insert(unit).inserted else { continue }
+            canonical.append(unit)
+        }
         self.pending = canonical.shuffled()
         self.rerunLimit = rerunLimit
         self.infrastructureRetryLimit = infrastructureRetryLimit
+        self.multiConfiguration = Set(canonical.map(\.configuration)).count > 1
         self.log = log
-        for name in canonical {
-            cases[name] = TestCase(
-                name: name, state: .unexecuted, launchCounter: 0,
+        for unit in canonical {
+            cases[unit] = TestCase(
+                name: unit.reportName(multiConfiguration: multiConfiguration),
+                state: .unexecuted, launchCounter: 0,
                 infrastructureAttempts: 0, duration: 0, message: ""
             )
         }
+    }
+
+    /// Single-configuration convenience (also keeps FormatVersion 1 call sites simple).
+    public init(tests: [String], rerunLimit: Int, infrastructureRetryLimit: Int = 1, log: Logging? = nil) {
+        self.init(
+            units: tests.map { TestUnit(configuration: nil, test: $0) },
+            rerunLimit: rerunLimit,
+            infrastructureRetryLimit: infrastructureRetryLimit,
+            log: log
+        )
     }
 
     public var count: Int { cases.count }
@@ -60,24 +85,47 @@ public actor TestScheduler {
         }
     }
 
-    private func makeLease(maxCount: Int, executorID: String) -> TestLease? {
-        var tests: [String] = []
-        while tests.count < maxCount, !pending.isEmpty {
-            tests.append(pending.removeFirst())
-        }
-        if tests.isEmpty {
-            // Batch retries too — a rerun chunk pays one xcodebuild launch, not one per test.
-            while tests.count < maxCount, !pendingRetries.isEmpty {
-                tests.append(pendingRetries.removeFirst())
+    /// Pulls up to `maxCount` units of ONE configuration (the first candidate's),
+    /// preserving queue order for every other configuration.
+    private func takeUnits(from queue: inout [TestUnit], upTo maxCount: Int) -> [TestUnit] {
+        guard let first = queue.first else { return [] }
+        let configuration = first.configuration
+        var taken: [TestUnit] = []
+        var remaining: [TestUnit] = []
+        for unit in queue {
+            if taken.count < maxCount, unit.configuration == configuration {
+                taken.append(unit)
+            } else {
+                remaining.append(unit)
             }
         }
-        guard !tests.isEmpty else { return nil }
-        let lease = TestLease(id: UUID(), executorID: executorID, tests: tests, grantedAt: Date())
+        queue = remaining
+        return taken
+    }
+
+    private func makeLease(maxCount: Int, executorID: String) -> TestLease? {
+        var units = takeUnits(from: &pending, upTo: maxCount)
+        if units.isEmpty {
+            // Batch retries too — a rerun chunk pays one xcodebuild launch, not one per test.
+            units = takeUnits(from: &pendingRetries, upTo: maxCount)
+        }
+        guard !units.isEmpty else { return nil }
+        let lease = TestLease(
+            id: UUID(),
+            executorID: executorID,
+            configuration: units[0].configuration,
+            tests: units.map(\.test),
+            grantedAt: Date()
+        )
         inFlight[lease.id] = lease
         return lease
     }
 
     // MARK: - Completion
+
+    private func unit(of lease: TestLease, test: String) -> TestUnit {
+        TestUnit(configuration: lease.configuration, test: test)
+    }
 
     /// Reports the outcomes of a lease. Tests in the lease without an outcome are treated
     /// as `.notExecuted`. Failed tests under the rerun limit and not-executed tests under
@@ -91,11 +139,16 @@ public actor TestScheduler {
         for outcome in outcomes {
             outcomeByTest[TestName.canonical(outcome.test)] = outcome
         }
+        let leased = Set(lease.tests)
+        for name in outcomeByTest.keys where !leased.contains(name) {
+            log?.warning("Scheduler: outcome for non-leased test '\(name)' — dropped")
+        }
         let now = Date()
         for test in lease.tests {
+            let unit = unit(of: lease, test: test)
             let outcome = outcomeByTest[test] ?? TestOutcome(test: test, kind: .notExecuted, message: "Was not executed")
             attempts.append(TestAttempt(
-                test: test,
+                test: unit.reportName(multiConfiguration: multiConfiguration),
                 executorID: lease.executorID,
                 kind: outcome.kind,
                 duration: outcome.duration,
@@ -103,7 +156,7 @@ public actor TestScheduler {
                 startedAt: lease.grantedAt,
                 endedAt: now
             ))
-            apply(outcome, to: test)
+            apply(outcome, to: unit)
         }
         pump()
     }
@@ -114,8 +167,9 @@ public actor TestScheduler {
         guard inFlight.removeValue(forKey: lease.id) != nil else { return }
         let now = Date()
         for test in lease.tests {
+            let unit = unit(of: lease, test: test)
             attempts.append(TestAttempt(
-                test: test,
+                test: unit.reportName(multiConfiguration: multiConfiguration),
                 executorID: lease.executorID,
                 kind: .notExecuted,
                 duration: 0,
@@ -123,14 +177,14 @@ public actor TestScheduler {
                 startedAt: lease.grantedAt,
                 endedAt: now
             ))
-            apply(TestOutcome(test: test, kind: .notExecuted, message: "Executor failed before execution"), to: test)
+            apply(TestOutcome(test: test, kind: .notExecuted, message: "Executor failed before execution"), to: unit)
         }
         pump()
     }
 
-    private func apply(_ outcome: TestOutcome, to test: String) {
-        guard var testCase = cases[test] else {
-            log?.warning("Scheduler: outcome for unknown test '\(test)' — dropped")
+    private func apply(_ outcome: TestOutcome, to unit: TestUnit) {
+        guard var testCase = cases[unit] else {
+            log?.warning("Scheduler: outcome for unknown test '\(unit.test)' — dropped")
             return
         }
         switch outcome.kind {
@@ -150,7 +204,7 @@ public actor TestScheduler {
             testCase.duration = outcome.duration
             testCase.message = outcome.message
             if testCase.launchCounter <= rerunLimit {
-                pendingRetries.append(test)
+                pendingRetries.append(unit)
             }
         case .notExecuted:
             testCase.infrastructureAttempts += 1
@@ -161,10 +215,10 @@ public actor TestScheduler {
             }
             // else: keep the last real verdict (e.g. .failed from an earlier attempt).
             if testCase.infrastructureAttempts <= infrastructureRetryLimit {
-                pendingRetries.append(test)
+                pendingRetries.append(unit)
             }
         }
-        cases[test] = testCase
+        cases[unit] = testCase
     }
 
     /// Wakes waiting workers: hands out new leases while work exists; when the scheduler
