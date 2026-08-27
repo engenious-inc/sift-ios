@@ -205,13 +205,23 @@ public struct Controller {
                 let lock = try workspace.acquireLock()
                 defer { lock.release() }
                 try workspace.prepareLocal()
-                defer { workspace.cleanupLocal() }
+                // Error paths clean up here; the success path cleans up explicitly
+                // BEFORE the terminal event — same contract as a nonempty run.
+                defer {
+                    if FileManager.default.fileExists(atPath: workspace.workPath),
+                       let error = workspace.cleanupLocal() {
+                        log?.warning("run-scratch cleanup incomplete at \(workspace.workPath): \(error)")
+                    }
+                }
                 let snapshot = TestCasesSnapshot(cases: [])
                 try writeReports(snapshot: snapshot, context: ReportContext(
                     duration: 0, executionDuration: 0,
                     mergeStatus: "nothingToMerge", healthEvents: [], retainedArtifacts: []
                 ))
                 try workspace.publish()
+                if let cleanupError = workspace.cleanupLocal() {
+                    log?.warning("run-scratch cleanup incomplete at \(workspace.workPath): \(cleanupError)")
+                }
                 await events?.emit("runFinished", ["status": "passed", "passed": "0", "failed": "0",
                                                   "skipped": "0", "unexecuted": "0", "duration": "0.000"])
                 await events?.finish()

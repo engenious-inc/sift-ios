@@ -159,6 +159,9 @@ public actor TestScheduler {
             grantedAt: Date()
         )
         inFlight[lease.id] = lease
+        // Execution resumed — a premature end stamp (transient all-retired
+        // window) must not survive.
+        exhaustedAt = nil
         return lease
     }
 
@@ -170,8 +173,15 @@ public actor TestScheduler {
 
     /// Removes an executor from the active set (worker exited/retired) so tail
     /// shrinking divides remaining work by executors that can still take it.
+    /// The LAST executor leaving ends execution even with work still queued
+    /// (cancellation, every executor dead) — node teardown that follows must not
+    /// count toward the execution span. A later lease grant clears the stamp, so
+    /// a transient all-retired moment during startup cannot truncate the metric.
     public func retire(executorID: String) {
         activeExecutors.remove(executorID)
+        if activeExecutors.isEmpty, exhaustedAt == nil {
+            exhaustedAt = monotonicNow()
+        }
     }
 
     /// Reports the outcomes of a lease. Tests in the lease without an outcome are treated
