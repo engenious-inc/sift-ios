@@ -5,13 +5,13 @@ import Foundation
 actor ResultCollector {
 
     private let workspace: RunWorkspace
-    private let tool: XCResultTool
+    private let tool: XCResultParsing
     private let log: Logging?
     private var collectedResultPaths: [String] = []
     private var retainedDiagnostics: [String] = []
     private var mergeSucceeded: Bool?
 
-    init(workspace: RunWorkspace, tool: XCResultTool = XCResultTool(), log: Logging?) {
+    init(workspace: RunWorkspace, tool: XCResultParsing = XCResultTool(), log: Logging?) {
         self.workspace = workspace
         self.tool = tool
         self.log = log

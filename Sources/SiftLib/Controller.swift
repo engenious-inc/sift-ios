@@ -1,5 +1,33 @@
 import Foundation
 
+/// Exactly four injected runtime dependencies (no service locator): a monotonic
+/// now(), the local process runner, the node transport factory, and the result
+/// tool (handed to the collector). Defaults are the production implementations.
+public struct ControllerDependencies: Sendable {
+    public var now: @Sendable () -> Double
+    public var localShell: Run
+    public var sshFactory: @Sendable (Config.NodeConfig) -> SSHExecutor
+    var resultTool: XCResultParsing
+    /// Test seam: replaces discovery entirely (hermetic Controller tests can't run
+    /// xcodebuild/nm). Production leaves it nil.
+    var testsProvider: (@Sendable (_ configuration: String?) async throws -> [ScheduledTest])?
+
+    public init() {
+        self.now = { Date.timeIntervalSinceReferenceDate }
+        self.localShell = Run()
+        self.sshFactory = { config in
+            SSH(
+                host: config.host,
+                port: config.port,
+                arch: config.arch,
+                hostKeyVerification: config.hostKeyVerification ?? .acceptNew
+            )
+        }
+        self.resultTool = XCResultTool()
+        self.testsProvider = nil
+    }
+}
+
 public struct Controller {
     private let config: Config
     private let xctestrunPath: String
@@ -20,12 +48,15 @@ public struct Controller {
     /// overriding the config's singular selectors when present.
     private let listSelectors: (only: [String], skip: [String])?
 
+    private let dependencies: ControllerDependencies
+
     public init(
         config: Config,
         tests: [String]? = nil,
         allowEmptyTests: Bool = false,
         discoveryBackend: DiscoveryBackend = .enumeration,
         listSelectors: (only: [String], skip: [String])? = nil,
+        dependencies: ControllerDependencies = ControllerDependencies(),
         log: Logging?
     ) {
         self.config = config
@@ -34,6 +65,7 @@ public struct Controller {
         self.discovery = TestDiscovery(log: log)
         self.discoveryBackend = discoveryBackend
         self.listSelectors = listSelectors
+        self.dependencies = dependencies
         self.requestedTests = tests ?? []
         self.allowEmptyTests = allowEmptyTests
         self.log = log
@@ -74,11 +106,16 @@ public struct Controller {
 
         var all: [ScheduledTest] = []
         for configuration in selected {
-            var tests = try await discovery.tests(
-                xctestrun: xctestrun,
-                configuration: configuration,
-                backend: discoveryBackend
-            )
+            var tests: [ScheduledTest]
+            if let testsProvider = dependencies.testsProvider {
+                tests = try await testsProvider(configuration)
+            } else {
+                tests = try await discovery.tests(
+                    xctestrun: xctestrun,
+                    configuration: configuration,
+                    backend: discoveryBackend
+                )
+            }
             let only = xctestrun.onlyTestIdentifiers(config: configuration)
             if !only.isEmpty {
                 log?.message(verboseMsg: "OnlyTestIdentifiers:\n\(only)")
@@ -116,7 +153,7 @@ public struct Controller {
     // MARK: - Run
 
     public mutating func run() async throws -> RunOutcome {
-        let startTime = Date.timeIntervalSinceReferenceDate
+        let startTime = dependencies.now()
 
         _ = try await discoverTests()
 
@@ -184,7 +221,7 @@ public struct Controller {
             estimates: estimates,
             log: log
         )
-        let collector = ResultCollector(workspace: workspace, log: log)
+        let collector = ResultCollector(workspace: workspace, tool: dependencies.resultTool, log: log)
         let health = HealthSink()
 
         let xctestrunPath = self.xctestrunPath
@@ -201,14 +238,7 @@ public struct Controller {
                 collector: collector,
                 buildZipPath: buildZipPath,
                 xctestrunProvider: { try XCTestRunFactory.create(path: xctestrunPath, log: nil) },
-                sshFactory: { config in
-                    SSH(
-                        host: config.host,
-                        port: config.port,
-                        arch: config.arch,
-                        hostKeyVerification: config.hostKeyVerification ?? .acceptNew
-                    )
-                },
+                sshFactory: dependencies.sshFactory,
                 health: health,
                 log: log
             )
@@ -223,7 +253,7 @@ public struct Controller {
         await scheduler.drain()
 
         let snapshot = await scheduler.snapshot()
-        let executionDuration = Date.timeIntervalSinceReferenceDate - startTime
+        let executionDuration = dependencies.now() - startTime
 
         // Feed real verdict durations back into the timings store for the next run.
         if let platform = artifactPlatform {
@@ -251,7 +281,7 @@ public struct Controller {
         let retainedArtifacts = await collector.retainedArtifacts().map {
             $0.replacingOccurrences(of: workspace.stagingPath, with: "final")
         }
-        let duration = Date.timeIntervalSinceReferenceDate - startTime
+        let duration = dependencies.now() - startTime
         try writeReports(snapshot: snapshot, context: ReportContext(
             duration: duration,
             executionDuration: executionDuration,
@@ -342,15 +372,15 @@ public struct Controller {
 
         let compressionLevel = config.transferCompressionLevel ?? 0
         let zipPath = "\(workspace.workPath)/build.zip"
-        let zipStart = Date.timeIntervalSinceReferenceDate
+        let zipStart = dependencies.now()
         // "--" terminates options: a product name starting with "-" can never be
         // parsed as a zip flag.
-        try await Run().runChecked(
+        try await dependencies.localShell.runChecked(
             "/usr/bin/zip",
             ["-r", "-X", "-q", "-\(compressionLevel)", zipPath, "--"] + filesToZip.sorted(),
             currentDirectory: testRootPath
         )
-        let zipSeconds = Date.timeIntervalSinceReferenceDate - zipStart
+        let zipSeconds = dependencies.now() - zipStart
         let sizeBytes = (try? FileManager.default.attributesOfItem(atPath: zipPath)[.size] as? Int64) ?? nil
         let sizeMB = sizeBytes.map { Double($0) / 1_048_576 } ?? 0
         log?.message(verboseMsg: String(format: "Build zip: %@ (%.1f MB, level %d, %.1fs)", zipPath, sizeMB, compressionLevel, zipSeconds))

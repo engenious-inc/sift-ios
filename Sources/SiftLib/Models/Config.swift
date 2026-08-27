@@ -8,7 +8,6 @@ public struct ConfigError: Error, CustomStringConvertible, Sendable {
 }
 
 public struct Config: Codable, Sendable {
-    public var id: Int?
     public var xctestrunPath: String
     public var outputDirectoryPath: String
     public var rerunFailedTest: Int
@@ -293,7 +292,6 @@ public struct Config: Codable, Sendable {
 
 extension Config {
     public struct NodeConfig: Codable, Sendable {
-        public var id: Int?
         public var name: String
         public var host: String
         public var port: Int32
@@ -312,13 +310,10 @@ extension Config {
         public var hostKeyVerification: HostKeyVerification?
 
         var xcodePathRaw: String { xcodePath }
-        /// Shell-safe quoted Xcode.app path for remote command interpolation.
-        public var xcodePathSafe: String { xcodePath.shellQuoted }
         /// Unquoted DEVELOPER_DIR path.
         public var developerDirPath: String { xcodePath + "/Contents/Developer" }
 
         public enum Arch: String, Codable, Sendable {
-            case i386
             case x86_64
             case arm64
         }

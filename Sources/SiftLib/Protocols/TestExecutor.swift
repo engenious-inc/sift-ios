@@ -30,15 +30,6 @@ extension TestExecutor {
     func finish() async {}
 }
 
-/// Result of running one chunk on an executor.
-enum ChunkExecutionResult {
-    /// xcodebuild ran (status 0 = all passed, 65 = some test failures) and the
-    /// result bundle was zipped on the node at `remoteZipPath`.
-    case finished(status: Int, remoteZipPath: String)
-    /// The chunk could not produce a result bundle.
-    case infrastructureFailure(description: String)
-}
-
 extension TestExecutor {
     var executorID: String { "\(nodeName)/\(UDID)" }
 }

@@ -15,6 +15,8 @@ final class FakeSSHExecutor: SSHExecutor, @unchecked Sendable {
         var connectFailuresRemaining = 0
         var commandFailuresForPrefix: [String: Int32] = [:]
         var downloads: [(remote: String, local: String, abortable: Bool)] = []
+        /// Bytes written for any downloadFile call (e.g. a valid results zip).
+        var downloadPayload: Data?
         var terminated = false
     }
 
@@ -71,9 +73,11 @@ final class FakeSSHExecutor: SSHExecutor, @unchecked Sendable {
     func uploadFile(data: Data, remotePath: String) async throws {}
 
     func downloadFile(remotePath: String, localPath: String, abortOnCancellation: Bool) async throws {
-        withState { $0.downloads.append((remotePath, localPath, abortOnCancellation)) }
-        // Produce an empty file so callers see "a download happened".
-        FileManager.default.createFile(atPath: localPath, contents: Data())
+        let payload = withState { state -> Data in
+            state.downloads.append((remotePath, localPath, abortOnCancellation))
+            return state.downloadPayload ?? Data()
+        }
+        FileManager.default.createFile(atPath: localPath, contents: payload)
     }
 
     func startBackgroundProcess(command: String, workDirectory: String, attemptID: String) async throws -> BackgroundProcessHandle {

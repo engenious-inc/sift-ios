@@ -12,8 +12,17 @@ jobs:
       - uses: actions/checkout@v4
       - name: Select Xcode
         run: sudo xcode-select -s /Applications/Xcode_16.4.app || sudo xcode-select -s /Applications/Xcode.app
-      - name: Build and test (Scripts/ci.sh)
-        run: ./Scripts/ci.sh
+      - name: Build and test (Scripts/ci.sh --full)
+        run: ./Scripts/ci.sh --full
+      - name: Upload reports and diagnostics on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sift-ci-diagnostics
+          path: |
+            /tmp/**/final/final_result.*
+            /tmp/**/final/diagnostics/**
+          if-no-files-found: ignore
 # NOTE: parked as .pending because the push credential lacks the `workflow`
 # scope required to create workflow files. To activate CI:
 #   git mv .github/ci.yml.pending .github/workflows/ci.yml

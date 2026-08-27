@@ -1,8 +1,16 @@
 import Foundation
 
+/// Result-bundle parsing/merging seam — injected through the node factory so
+/// behavioral tests can fake it.
+protocol XCResultParsing: Sendable {
+    func testOutcomes(xcresultPath: String) async throws -> [TestOutcome]
+    @discardableResult
+    func merge(inputPaths: [String], outputPath: String) async throws -> Bool
+}
+
 /// Wrapper around the modern `xcresulttool get test-results` API (Xcode 16+).
 /// The legacy `--legacy` object-graph API is deprecated for removal and is not used.
-struct XCResultTool: Sendable {
+struct XCResultTool: XCResultParsing, Sendable {
 
     // MARK: - Modern test-results models
 
