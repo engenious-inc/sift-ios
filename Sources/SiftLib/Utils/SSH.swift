@@ -107,6 +107,10 @@ final class SSH: SSHExecutor, @unchecked Sendable {
             } else {
                 try session.authenticateByAgent(username: username)
             }
+            // Replacing the session orphans any cached SFTP channel — it belongs to
+            // the OLD transport and would fail (or hang) the first post-reconnect
+            // transfer, losing an otherwise salvageable result.
+            self.cachedSftp = nil
             self.ssh = session
         }
     }
@@ -163,7 +167,9 @@ final class SSH: SSHExecutor, @unchecked Sendable {
 
     /// Runs one transfer on the serial queue with the transfer timeout, reusing the
     /// cached SFTP channel and discarding it on any error (a broken channel must
-    /// never poison later transfers).
+    /// never poison later transfers). A failure on a CACHED channel gets ONE retry
+    /// on a freshly opened channel — a channel gone stale between transfers must
+    /// not fail an otherwise salvageable download.
     private func transfer<T: Sendable>(
         _ body: @escaping @Sendable (SFTP) throws -> T
     ) async throws -> T {
@@ -171,11 +177,18 @@ final class SSH: SSHExecutor, @unchecked Sendable {
             let session = try requireSession()
             session.setOperationTimeout(msec: SSH.transferTimeoutMsec)
             defer { session.setOperationTimeout(msec: SSH.commandTimeoutMsec) }
+            let usedCachedChannel = cachedSftp != nil
             do {
                 return try body(try sftpSession())
             } catch {
                 cachedSftp = nil
-                throw error
+                guard usedCachedChannel else { throw error }
+                do {
+                    return try body(try sftpSession())
+                } catch {
+                    cachedSftp = nil
+                    throw error
+                }
             }
         }
     }

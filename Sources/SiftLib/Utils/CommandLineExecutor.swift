@@ -25,8 +25,8 @@ public struct CommandError: Error, CustomStringConvertible, Sendable {
 
 /// What task cancellation does to a running local subprocess.
 public enum CancellationBehavior: Sendable {
-    /// TERM the child, escalate to KILL after a short grace. The default: a hung
-    /// local tool must never block the global watchdog.
+    /// TERM the child's process group, escalate to KILL after a short grace. The
+    /// default: a hung local tool must never block the global watchdog.
     case terminateProcess
     /// Let the child finish despite cancellation. For post-cancellation salvage work
     /// (unzip, xcresulttool) whose results ARE the partial reports. Pair with
@@ -54,32 +54,38 @@ enum CommandLineExecutor {
         }
     }
 
-    /// Idempotent TERM→grace→KILL state machine for one child process. The
-    /// cancellation handler is synchronous, so it only *starts* this machine;
+    /// Idempotent TERM→grace→KILL state machine for one child PROCESS GROUP. The
+    /// child is spawned as its own group leader (pgid == pid), so signalling the
+    /// group reaches every descendant — a `/bin/sh -c` wrapper can never leave its
+    /// children (xcodebuild, xcrun, script subprocesses) running past cancellation.
+    /// The cancellation handler is synchronous, so it only *starts* this machine;
     /// all waiting happens on a private timer queue, never on the caller's task.
     private final class TerminationLatch: @unchecked Sendable {
         private let lock = NSLock()
         private var fired = false
-        private let process: Process
+        private let processGroup: pid_t
+        private let waiter: TerminationWaiter
         private static let timerQueue = DispatchQueue(label: "sift.process.termination")
 
-        init(process: Process) {
-            self.process = process
+        init(processGroup: pid_t, waiter: TerminationWaiter) {
+            self.processGroup = processGroup
+            self.waiter = waiter
         }
 
-        /// TERM now, KILL after `grace` if still running. Safe to call multiple
-        /// times and safe to call after exit (signals to an exited pid are no-ops
-        /// for Process, which tracks its own state).
+        /// TERM the group now, KILL it after `grace` if the direct child has not
+        /// exited. Safe to call multiple times; signals to a fully-reaped group are
+        /// ESRCH no-ops, and pgid recycling is not a concern while our zombie child
+        /// keeps the pid reserved (the reaper's waitpid runs after exit).
         func begin(grace: TimeInterval) {
             lock.lock()
             let alreadyFired = fired
             fired = true
             lock.unlock()
             guard !alreadyFired else { return }
-            if process.isRunning { process.terminate() }
-            Self.timerQueue.asyncAfter(deadline: .now() + grace) { [process] in
-                if process.isRunning {
-                    kill(process.processIdentifier, SIGKILL)
+            if !waiter.isFinished { kill(-processGroup, SIGTERM) }
+            Self.timerQueue.asyncAfter(deadline: .now() + grace) { [processGroup, waiter] in
+                if !waiter.isFinished {
+                    kill(-processGroup, SIGKILL)
                 }
             }
         }
@@ -119,41 +125,62 @@ enum CommandLineExecutor {
     ) async throws -> CommandResult {
         let stdoutPipe = Pipe()
         let stderrPipe = Pipe()
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: executable)
-        process.arguments = arguments
-        process.standardOutput = stdoutPipe
-        process.standardError = stderrPipe
-        process.standardInput = FileHandle.nullDevice
-        if let currentDirectory {
-            process.currentDirectoryURL = URL(fileURLWithPath: currentDirectory)
-        }
-
         let stdoutCollector = PipeCollector()
         let stderrCollector = PipeCollector()
 
-        // Termination is observed via a continuation resumed in terminationHandler:
-        // it waits regardless of cancellation, so terminationStatus is never read
-        // from a still-running process. One-shot latch: the handler can fire before
-        // the wait starts.
-        let terminationWaiter = TerminationWaiter()
-        process.terminationHandler = { _ in terminationWaiter.finish() }
+        // posix_spawn (not Foundation.Process) so the child starts as the LEADER OF
+        // ITS OWN PROCESS GROUP: termination signals the group and therefore the
+        // whole tree, not just the direct child. dup2 file actions are exempt from
+        // CLOEXEC_DEFAULT, so exactly stdin/stdout/stderr reach the child.
+        var fileActions: posix_spawn_file_actions_t?
+        posix_spawn_file_actions_init(&fileActions)
+        defer { posix_spawn_file_actions_destroy(&fileActions) }
+        posix_spawn_file_actions_addopen(&fileActions, 0, "/dev/null", O_RDONLY, 0)
+        posix_spawn_file_actions_adddup2(&fileActions, stdoutPipe.fileHandleForWriting.fileDescriptor, 1)
+        posix_spawn_file_actions_adddup2(&fileActions, stderrPipe.fileHandleForWriting.fileDescriptor, 2)
+        if let currentDirectory {
+            posix_spawn_file_actions_addchdir_np(&fileActions, currentDirectory)
+        }
+        var attributes: posix_spawnattr_t?
+        posix_spawnattr_init(&attributes)
+        defer { posix_spawnattr_destroy(&attributes) }
+        posix_spawnattr_setflags(&attributes, Int16(POSIX_SPAWN_SETPGROUP | POSIX_SPAWN_CLOEXEC_DEFAULT))
+        posix_spawnattr_setpgroup(&attributes, 0)
 
-        do {
-            try process.run()
-        } catch {
+        var pid: pid_t = 0
+        let argv: [UnsafeMutablePointer<CChar>?] = ([executable] + arguments).map { strdup($0) } + [nil]
+        defer { argv.forEach { free($0) } }
+        let spawnStatus = posix_spawn(&pid, executable, &fileActions, &attributes, argv, environ)
+
+        // Parent-side write ends must close (whatever the spawn outcome) or the
+        // drains never see EOF.
+        try? stdoutPipe.fileHandleForWriting.close()
+        try? stderrPipe.fileHandleForWriting.close()
+
+        guard spawnStatus == 0 else {
+            try? stdoutPipe.fileHandleForReading.close()
+            try? stderrPipe.fileHandleForReading.close()
             throw CommandError(
                 command: ([executable] + arguments).joined(separator: " "),
                 status: -1,
-                stderr: "\(error)",
+                stderr: String(cString: strerror(spawnStatus)),
                 stdout: ""
             )
         }
 
-        // Only installed AFTER run() succeeded: entering a cancellation handler on an
-        // already-cancelled task invokes it immediately, and terminate() on a
-        // never-launched Process raises.
-        let latch = TerminationLatch(process: process)
+        // Blocking reaper: waitpid is the one exit signal that cannot miss an
+        // already-exited child (kqueue NOTE_EXIT can). One short-lived GCD thread
+        // per command, matching the pipe handlers' footprint.
+        let exitStatus = ExitStatusBox()
+        let terminationWaiter = TerminationWaiter()
+        DispatchQueue.global().async {
+            var status: Int32 = 0
+            while waitpid(pid, &status, 0) == -1 && errno == EINTR {}
+            exitStatus.record(status)
+            terminationWaiter.finish()
+        }
+
+        let latch = TerminationLatch(processGroup: pid, waiter: terminationWaiter)
 
         // Independent watchdog. Detached: the caller's cancellation never propagates
         // into it, so a cancelled task cannot collapse the timeout. We cancel it
@@ -195,20 +222,42 @@ enum CommandLineExecutor {
         _ = await (stdoutDone, stderrDone)
         drainGuard.cancel()
 
+        // Decode waitpid status the way Foundation.Process reported it: exit code
+        // for a normal exit, signal number + .uncaughtSignal for a signalled death.
+        let raw = exitStatus.value
+        let signalNumber = raw & 0x7f
         return CommandResult(
-            status: process.terminationStatus,
+            status: signalNumber != 0 ? signalNumber : (raw >> 8) & 0xff,
             stdout: String(data: stdoutCollector.take(), encoding: .utf8) ?? "",
             stderr: String(data: stderrCollector.take(), encoding: .utf8) ?? "",
-            terminationReason: process.terminationReason
+            terminationReason: signalNumber != 0 ? .uncaughtSignal : .exit
         )
     }
 
-    /// One-shot latch bridging terminationHandler to async waiters, tolerant of
+    private final class ExitStatusBox: @unchecked Sendable {
+        private let lock = NSLock()
+        private var status: Int32 = -1
+        func record(_ newStatus: Int32) {
+            lock.lock(); defer { lock.unlock() }
+            status = newStatus
+        }
+        var value: Int32 {
+            lock.lock(); defer { lock.unlock() }
+            return status
+        }
+    }
+
+    /// One-shot latch bridging the reaper thread to async waiters, tolerant of
     /// finish-before-wait.
     private final class TerminationWaiter: @unchecked Sendable {
         private let lock = NSLock()
         private var finished = false
         private var continuation: CheckedContinuation<Void, Never>?
+
+        var isFinished: Bool {
+            lock.lock(); defer { lock.unlock() }
+            return finished
+        }
 
         func finish() {
             lock.lock()

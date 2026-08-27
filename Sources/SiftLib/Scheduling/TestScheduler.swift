@@ -73,7 +73,8 @@ public actor TestScheduler {
             cases[unit] = TestCase(
                 name: unit.reportName(multiConfiguration: multiConfiguration),
                 state: .unexecuted, launchCounter: 0,
-                infrastructureAttempts: 0, duration: 0, message: ""
+                infrastructureAttempts: 0, duration: 0, message: "",
+                configuration: unit.configuration
             )
         }
     }
@@ -160,10 +161,18 @@ public actor TestScheduler {
         TestUnit(configuration: lease.configuration, test: test)
     }
 
+    /// Removes an executor from the active set (worker exited/retired) so tail
+    /// shrinking divides remaining work by executors that can still take it.
+    public func retire(executorID: String) {
+        activeExecutors.remove(executorID)
+    }
+
     /// Reports the outcomes of a lease. Tests in the lease without an outcome are treated
     /// as `.notExecuted`. Failed tests under the rerun limit and not-executed tests under
     /// the infrastructure retry limit re-enter the retry queue.
-    public func complete(_ lease: TestLease, outcomes: [TestOutcome]) {
+    /// `healthy: false` (timed-out/degraded/cancelled chunk) keeps the verdicts but
+    /// excludes their durations from the timings store.
+    public func complete(_ lease: TestLease, outcomes: [TestOutcome], healthy: Bool = true) {
         guard inFlight.removeValue(forKey: lease.id) != nil else {
             log?.warning("Scheduler: lease \(lease.id) completed twice — ignoring second completion")
             return
@@ -189,7 +198,7 @@ public actor TestScheduler {
                 startedAt: lease.grantedAt,
                 endedAt: now
             ))
-            apply(outcome, to: unit)
+            apply(outcome, to: unit, healthy: healthy)
         }
         pump()
     }
@@ -210,12 +219,12 @@ public actor TestScheduler {
                 startedAt: lease.grantedAt,
                 endedAt: now
             ))
-            apply(TestOutcome(test: test, kind: .notExecuted, message: "Executor failed before execution"), to: unit)
+            apply(TestOutcome(test: test, kind: .notExecuted, message: "Executor failed before execution"), to: unit, healthy: false)
         }
         pump()
     }
 
-    private func apply(_ outcome: TestOutcome, to unit: TestUnit) {
+    private func apply(_ outcome: TestOutcome, to unit: TestUnit, healthy: Bool = true) {
         guard var testCase = cases[unit] else {
             log?.warning("Scheduler: outcome for unknown test '\(unit.test)' — dropped")
             return
@@ -226,16 +235,19 @@ public actor TestScheduler {
             testCase.state = .pass
             testCase.duration = outcome.duration
             testCase.message = outcome.message
+            testCase.timingEligible = healthy
         case .skipped:
             testCase.launchCounter += 1
             testCase.state = .skipped
             testCase.duration = outcome.duration
             testCase.message = outcome.message
+            testCase.timingEligible = healthy
         case .failed:
             testCase.launchCounter += 1
             testCase.state = .failed
             testCase.duration = outcome.duration
             testCase.message = outcome.message
+            testCase.timingEligible = healthy
             if testCase.launchCounter <= rerunLimit {
                 pendingRetries.append(unit)
             }
@@ -297,10 +309,12 @@ public actor TestScheduler {
         TestCasesSnapshot(cases: cases.values.sorted { $0.name < $1.name }, attempts: attempts)
     }
 
-    /// Per-unit durations from REAL verdicts (pass/fail) — feeds the timings store.
+    /// Per-unit durations from REAL verdicts (pass/fail) recorded in HEALTHY chunks —
+    /// feeds the timings store. Degraded-chunk numbers never pollute the history.
     public func timingObservations() -> [(unit: TestUnit, duration: Double)] {
         cases.compactMap { unit, testCase in
-            guard testCase.launchCounter > 0, testCase.state == .pass || testCase.state == .failed else { return nil }
+            guard testCase.launchCounter > 0, testCase.timingEligible,
+                  testCase.state == .pass || testCase.state == .failed else { return nil }
             return (unit, testCase.duration)
         }
     }

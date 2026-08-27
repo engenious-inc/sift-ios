@@ -16,6 +16,12 @@ public struct TestCase: Hashable, Sendable {
     public var infrastructureAttempts: Int
     public var duration: Double
     public var message: String
+    /// Test-plan configuration the test ran under (nil: none recorded / FormatVersion 1).
+    public var configuration: String? = nil
+    /// True when the last real verdict came from a HEALTHY chunk — only those
+    /// durations feed the timings store (a timed-out/degraded chunk's numbers would
+    /// pollute scheduling history).
+    public var timingEligible: Bool = false
 }
 
 /// One test's result from one executed chunk.
@@ -132,59 +138,63 @@ public struct TestUnit: Hashable, Sendable {
 }
 
 /// A user-supplied test selector: a full method, a class, or a whole bundle.
-/// Class- and bundle-level selectors are prefixes — they never receive "()".
+/// A trailing "()" is the ONE unambiguous method marker. A multi-component
+/// selector WITHOUT it is matched against the discovered set under BOTH readings
+/// (class-path prefix, and exact paren-less method) — never decided by a name
+/// heuristic: "B/modernAdditionWorks" reaches a suite-less Swift Testing function,
+/// and "B/testHelpers" reaches a class that happens to start with "test".
 public enum TestSelector: Sendable, Hashable {
     case bundle(String)
-    case testClass(bundle: String, classPath: String)
     case method(bundle: String, classPath: String, method: String)
+    /// Class-or-method: resolved against discovered identities at match time.
+    case classOrMethod(bundle: String, components: [String])
 
     /// Parses "Bundle", "Bundle/Class", "Bundle/Outer/Inner", or "Bundle/Class/test[()]".
-    /// A trailing "()" (or a last component starting with "test") selects a method;
-    /// otherwise the selector stays a class/bundle prefix.
     public static func parse(_ raw: String) -> TestSelector? {
         let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return nil }
         var components = trimmed.components(separatedBy: "/").filter { !$0.isEmpty }
         guard let last = components.last else { return nil }
-        switch components.count {
-        case 1:
+        if components.count == 1 {
             return .bundle(last)
-        case 2 where !isMethodComponent(last):
-            return .testClass(bundle: components[0], classPath: components[1])
-        default:
-            if isMethodComponent(last) {
-                components.removeLast()
-                let bundle = components.removeFirst()
-                return .method(bundle: bundle,
-                               classPath: components.joined(separator: "/"),
-                               method: TestName.canonical(last))
-            }
-            let bundle = components.removeFirst()
-            return .testClass(bundle: bundle, classPath: components.joined(separator: "/"))
         }
-    }
-
-    private static func isMethodComponent(_ component: String) -> Bool {
-        component.hasSuffix("()") || component.hasPrefix("test")
+        if last.hasSuffix("()") {
+            components.removeLast()
+            let bundle = components.removeFirst()
+            return .method(bundle: bundle,
+                           classPath: components.joined(separator: "/"),
+                           method: TestName.canonical(last))
+        }
+        let bundle = components.removeFirst()
+        return .classOrMethod(bundle: bundle, components: components)
     }
 
     public func matches(_ test: ScheduledTest) -> Bool {
         switch self {
         case .bundle(let bundle):
             return bundle == test.bundleName
-        case .testClass(let bundle, let classPath):
-            return bundle == test.bundleName
-                && (test.classPath == classPath || test.classPath.hasPrefix(classPath + "/"))
         case .method(let bundle, let classPath, let method):
             return bundle == test.bundleName && test.classPath == classPath && test.method == method
+        case .classOrMethod(let bundle, let components):
+            guard bundle == test.bundleName, let last = components.last else { return false }
+            // Class reading: the components are a class path (nested classes included).
+            let classPath = components.joined(separator: "/")
+            if test.classPath == classPath || test.classPath.hasPrefix(classPath + "/") {
+                return true
+            }
+            // Method reading: the last component is a paren-less method name.
+            return test.classPath == components.dropLast().joined(separator: "/")
+                && test.method == TestName.canonical(last)
         }
     }
 
     public var description: String {
         switch self {
         case .bundle(let bundle): return bundle
-        case .testClass(let bundle, let classPath): return "\(bundle)/\(classPath)"
-        case .method(let bundle, let classPath, let method): return "\(bundle)/\(classPath)/\(method)"
+        case .method(let bundle, let classPath, let method):
+            return classPath.isEmpty ? "\(bundle)/\(method)" : "\(bundle)/\(classPath)/\(method)"
+        case .classOrMethod(let bundle, let components):
+            return "\(bundle)/\(components.joined(separator: "/"))"
         }
     }
 
@@ -222,8 +232,8 @@ public enum TestSelector: Sendable, Hashable {
         let needle: String
         switch selector {
         case .bundle(let bundle): needle = bundle
-        case .testClass(_, let classPath): needle = classPath.components(separatedBy: "/").last ?? classPath
         case .method(_, _, let method): needle = method.replacingOccurrences(of: "()", with: "")
+        case .classOrMethod(_, let components): needle = components.last ?? ""
         }
         let lowered = needle.lowercased()
         let suggestions = discovered

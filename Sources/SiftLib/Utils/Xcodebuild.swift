@@ -89,23 +89,22 @@ struct Xcodebuild {
         var status: Int32?
         var endReason: ChunkResult.EndReason = .exited
         do {
+            // Poll FIRST, sleep after: a fast chunk (single-test tail leases) must
+            // not pay a full poll interval of latency before its status is seen.
             while true {
+                status = try await shell.pollBackgroundProcess(handle)
+                if status != nil { break }
                 let remaining = clock.now.duration(to: deadline)
                 if remaining <= .zero {
-                    // Poll once more before killing: a completed status is a completed
-                    // chunk even at the deadline edge (its verdicts are real).
-                    status = try await shell.pollBackgroundProcess(handle)
-                    if status == nil {
-                        log?.error("xcodebuild chunk timed out after \(testsExecutionTimeout)s on \(UDID) — terminating")
-                        await shell.terminateBackgroundProcess(handle, marker: "sift-attempt:\(attemptID)")
-                        status = 143
-                        endReason = .timedOut
-                    }
+                    // The poll above was the deadline-edge check: a completed status
+                    // is a completed chunk even at the edge (its verdicts are real).
+                    log?.error("xcodebuild chunk timed out after \(testsExecutionTimeout)s on \(UDID) — terminating")
+                    await shell.terminateBackgroundProcess(handle, marker: "sift-attempt:\(attemptID)")
+                    status = 143
+                    endReason = .timedOut
                     break
                 }
                 try await Task.sleep(for: min(pollInterval, remaining))
-                status = try await shell.pollBackgroundProcess(handle)
-                if status != nil { break }
             }
         } catch is CancellationError {
             // Run cancelled mid-chunk: terminate with the FULL (shielded) TERM grace,

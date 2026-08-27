@@ -39,7 +39,15 @@ struct SSHCommunication {
         guard mkdir.status == 0 else {
             throw NSError(domain: "\(nodeName): cannot create remote work directory \(remoteWorkPath): \(mkdir.output)", code: 1)
         }
+        // Transfer observability: bytes + duration per node feed the compression-
+        // level decision (config `transferCompressionLevel`, README guidance).
+        let sizeBytes = (try? FileManager.default.attributesOfItem(atPath: buildPath)[.size] as? Int64) ?? nil
+        let uploadStart = DispatchTime.now()
         try await ssh.uploadFile(localPath: buildPath, remotePath: remoteZipPath)
+        let uploadSeconds = Double(DispatchTime.now().uptimeNanoseconds - uploadStart.uptimeNanoseconds) / 1_000_000_000
+        let sizeMB = sizeBytes.map { Double($0) / 1_048_576 } ?? 0
+        log?.message(verboseMsg: String(format: "%@: build upload %.1f MB in %.1fs (%.1f MB/s)",
+                                        nodeName, sizeMB, uploadSeconds, uploadSeconds > 0 ? sizeMB / uploadSeconds : 0))
         let unzip = try await ssh.run("umask 077; unzip -o -q \(remoteZipPath.shellQuoted) -d \(remoteWorkPath.shellQuoted)")
         guard unzip.status == 0 else {
             throw NSError(domain: "\(nodeName): unzip of uploaded build failed: \(unzip.output)", code: 1)

@@ -1,6 +1,16 @@
 import XCTest
 @testable import SiftLib
 
+private extension Data {
+    func replacingFirst(of needle: String, with replacement: String) -> Data {
+        var text = String(decoding: self, as: UTF8.self)
+        if let range = text.range(of: needle) {
+            text.replaceSubrange(range, with: replacement)
+        }
+        return Data(text.utf8)
+    }
+}
+
 final class ConfigValidationTests: XCTestCase {
 
     private func makeConfigJSON(
@@ -32,6 +42,57 @@ final class ConfigValidationTests: XCTestCase {
 
     func testValidConfigPasses() throws {
         XCTAssertNoThrow(try Config(data: makeConfigJSON()))
+    }
+
+    /// `sift list` works from a MINIMAL discovery config: only the xctestrun path.
+    /// The same document must still be rejected for `run` — with validation
+    /// messages, not a JSON missing-key error.
+    func testMinimalDiscoveryConfigListsButCannotRun() throws {
+        let minimal = Data(#"{"xctestrunPath": "/tmp/some.xctestrun"}"#.utf8)
+        XCTAssertNoThrow(try Config(data: minimal, role: .list))
+        XCTAssertThrowsError(try Config(data: minimal, role: .run)) { error in
+            let text = "\(error)"
+            XCTAssertTrue(text.contains("outputDirectoryPath"), text)
+            XCTAssertTrue(text.contains("testsBucket"), text)
+            XCTAssertTrue(text.contains("node"), text)
+        }
+    }
+
+    func testOrphanedPublicKeyOrPassphraseRejected() {
+        let publicKeyOnly = makeConfigJSON().replacingFirst(
+            of: #""username": "u","#,
+            with: #""username": "u", "publicKey": "/tmp/k.pub","#
+        )
+        XCTAssertThrowsError(try Config(data: publicKeyOnly)) { error in
+            XCTAssertTrue("\(error)".contains("publicKey"), "\(error)")
+        }
+        let passphraseOnly = makeConfigJSON().replacingFirst(
+            of: #""username": "u","#,
+            with: #""username": "u", "passphrase": "secret","#
+        )
+        XCTAssertThrowsError(try Config(data: passphraseOnly)) { error in
+            XCTAssertTrue("\(error)".contains("passphrase"), "\(error)")
+        }
+    }
+
+    /// An xctestrun living under the output directory would be consumed and then
+    /// DELETED by publication — rejected at preflight.
+    func testXctestrunInsideOutputDirectoryRejected() throws {
+        let root = NSTemporaryDirectory() + "sift-overlap-\(UUID().uuidString)"
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        try FileManager.default.createDirectory(atPath: "\(root)/final", withIntermediateDirectories: true)
+        let artifact = "\(root)/final/t.xctestrun"
+        FileManager.default.createFile(atPath: artifact, contents: Data("plist".utf8))
+        let json = """
+        {"xctestrunPath": "\(artifact)", "outputDirectoryPath": "\(root)",
+         "rerunFailedTest": 0, "testsBucket": 1,
+         "nodes": [{"name": "here", "transport": "local", "deploymentPath": "/tmp/d",
+                    "UDID": {"simulators": ["A"]}, "xcodePath": "/Applications/Xcode.app"}]}
+        """.data(using: .utf8)!
+        let config = try Config(data: json)
+        XCTAssertThrowsError(try config.validateRuntimeFiles()) { error in
+            XCTAssertTrue("\(error)".contains("inside outputDirectoryPath"), "\(error)")
+        }
     }
 
     func testEmptyOutputPathRejected() {

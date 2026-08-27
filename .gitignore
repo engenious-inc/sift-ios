@@ -1,5 +1,7 @@
 xcuserdata/
 *.xcodeproj
+# Committed test fixtures are the one exception: CI builds this project.
+!Tests/Fixtures/**/*.xcodeproj
 .swiftpm
 *.hmap
 *.ipa

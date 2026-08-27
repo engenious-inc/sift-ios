@@ -7,6 +7,9 @@ public struct RunHealthEvent: Sendable, Codable {
         case nodeFailed
         case executorRetired
         case executorUnavailable
+        /// An executor degraded (unhealthy chunk / lost transport) but reset or
+        /// reconnected successfully and kept working.
+        case executorRecovered
         case processUnverified
         case cleanupIncomplete
         case teardownFailed

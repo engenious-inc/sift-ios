@@ -93,14 +93,31 @@ final class DiscoveryAndSelectorTests: XCTestCase {
 
     func testSelectorParsing() {
         XCTAssertEqual(TestSelector.parse("BulkTest"), .bundle("BulkTest"))
-        XCTAssertEqual(TestSelector.parse("BulkTest/BulkTest"), .testClass(bundle: "BulkTest", classPath: "BulkTest"))
-        XCTAssertEqual(TestSelector.parse("M/C/testA"), .method(bundle: "M", classPath: "C", method: "testA()"))
+        XCTAssertEqual(TestSelector.parse("BulkTest/BulkTest"), .classOrMethod(bundle: "BulkTest", components: ["BulkTest"]))
+        // Paren-less multi-component selectors stay AMBIGUOUS (class or method) —
+        // resolved against discovered identities at match time, never by heuristic.
+        XCTAssertEqual(TestSelector.parse("M/C/testA"), .classOrMethod(bundle: "M", components: ["C", "testA"]))
         XCTAssertEqual(TestSelector.parse("M/C/testA()"), .method(bundle: "M", classPath: "C", method: "testA()"))
-        XCTAssertEqual(TestSelector.parse("M/Outer/Inner/testX"), .method(bundle: "M", classPath: "Outer/Inner", method: "testX()"))
-        XCTAssertEqual(TestSelector.parse("M/Outer/Inner"), .testClass(bundle: "M", classPath: "Outer/Inner"))
+        XCTAssertEqual(TestSelector.parse("M/Outer/Inner/testX"), .classOrMethod(bundle: "M", components: ["Outer", "Inner", "testX"]))
+        XCTAssertEqual(TestSelector.parse("M/Outer/Inner"), .classOrMethod(bundle: "M", components: ["Outer", "Inner"]))
         XCTAssertEqual(TestSelector.parse("My UITests/LoginTests/testLogin()"),
                        .method(bundle: "My UITests", classPath: "LoginTests", method: "testLogin()"))
         XCTAssertNil(TestSelector.parse("   "))
+    }
+
+    /// The dual reading in action: a paren-less name reaches a suite-less Swift
+    /// Testing FUNCTION, and a class whose name starts with "test" stays reachable.
+    func testAmbiguousSelectorMatchesBothClassAndMethodReadings() throws {
+        let suiteLess = ScheduledTest(configurationName: nil, targetKey: "S", productModuleName: "S",
+                                      bundleName: "S", classPath: "", method: "modernAdditionWorks()")
+        let oddClass = ScheduledTest(configurationName: nil, targetKey: "S", productModuleName: "S",
+                                     bundleName: "S", classPath: "testHelpers", method: "testInside()")
+        // Method reading: no parens, no "test" prefix — still reaches the free function.
+        XCTAssertEqual(try TestSelector.expand(rawSelectors: ["S/modernAdditionWorks"], against: [suiteLess, oddClass]),
+                       [suiteLess])
+        // Class reading: a "test"-prefixed CLASS selects its methods, not a phantom method.
+        XCTAssertEqual(try TestSelector.expand(rawSelectors: ["S/testHelpers"], against: [suiteLess, oddClass]),
+                       [oddClass])
     }
 
     // MARK: - Selector expansion

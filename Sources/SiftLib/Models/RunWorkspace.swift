@@ -62,33 +62,50 @@ public struct RunWorkspace: Sendable {
         try fm.createDirectory(atPath: stagingPath, withIntermediateDirectories: true, attributes: ownerOnly)
     }
 
-    /// Atomically publishes the staged artifacts as `final/`. The previous `final/`
-    /// survives until the replacement is in place, then is removed.
+    /// Atomically publishes the staged artifacts as `final/`. There is NO instant at
+    /// which `final/` is absent: an existing `final/` is exchanged with staging in a
+    /// single `renameatx_np(RENAME_SWAP)` syscall (SIGKILL at any point leaves either
+    /// the old or the new directory in place); a first publish is one plain rename.
     /// Returns the published path.
     @discardableResult
     public func publish() throws -> String {
         let fm = FileManager.default
-        let previousPath = "\(workPath)/final-previous"
-        let hadPrevious = fm.fileExists(atPath: finalPath)
-        if hadPrevious {
-            try? fm.removeItem(atPath: previousPath)
-            try fm.moveItem(atPath: finalPath, toPath: previousPath)
+        guard fm.fileExists(atPath: finalPath) else {
+            try fm.moveItem(atPath: stagingPath, toPath: finalPath)
+            return finalPath
         }
+        if renameatx_np(AT_FDCWD, stagingPath, AT_FDCWD, finalPath, UInt32(RENAME_SWAP)) == 0 {
+            // The previous final now sits at the staging path — run-private scratch,
+            // removed here (or with the run directory by cleanupLocal).
+            try? fm.removeItem(atPath: stagingPath)
+            return finalPath
+        }
+        // Filesystem without swap support (e.g. NFS/SMB): fall back to two moves.
+        // This reintroduces a sub-millisecond no-final window — strictly a fallback.
+        let previousPath = "\(workPath)/final-previous"
+        try? fm.removeItem(atPath: previousPath)
+        try fm.moveItem(atPath: finalPath, toPath: previousPath)
         do {
             try fm.moveItem(atPath: stagingPath, toPath: finalPath)
         } catch {
             // Restore the previous final — a failed publish must not lose it.
-            if hadPrevious {
-                try? fm.moveItem(atPath: previousPath, toPath: finalPath)
-            }
+            try? fm.moveItem(atPath: previousPath, toPath: finalPath)
             throw error
         }
         try? fm.removeItem(atPath: previousPath)
         return finalPath
     }
 
-    public func cleanupLocal() {
-        try? FileManager.default.removeItem(atPath: workPath)
+    /// Removes the run-private scratch directory. A failure is reported (the
+    /// caller decides whether it becomes a health event) — never swallowed.
+    @discardableResult
+    public func cleanupLocal() -> Error? {
+        do {
+            try FileManager.default.removeItem(atPath: workPath)
+            return nil
+        } catch {
+            return error
+        }
     }
 
     // MARK: - Output-directory lock

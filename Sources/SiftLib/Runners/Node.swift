@@ -173,7 +173,9 @@ struct Node: Sendable {
     private func runWorker(executor: TestExecutor, xctestrunPath: String) async {
         await runWorkerLoop(executor: executor, xctestrunPath: xctestrunPath)
         // Always runs — normal exhaustion, retirement, or cancellation — so the
-        // executor can restore any state it changed (e.g. shut a booted simulator down).
+        // executor can restore any state it changed (e.g. shut a booted simulator
+        // down) and tail-shrink accounting stops counting this executor.
+        await scheduler.retire(executorID: executor.executorID)
         await executor.finish()
     }
 
@@ -215,7 +217,7 @@ struct Node: Sendable {
             case .completedDegraded(let outcomes, let description):
                 consecutiveFailures += 1
                 log?.warning("\(executor.executorID): \(description)")
-                await scheduler.complete(lease, outcomes: outcomes)
+                await scheduler.complete(lease, outcomes: outcomes, healthy: false)
                 let recovered = await recover(executor: executor)
                 if !recovered || consecutiveFailures >= Node.executorFailureLimit {
                     log?.error("\(executor.executorID): retiring executor after \(consecutiveFailures) consecutive unhealthy chunks")
@@ -236,7 +238,7 @@ struct Node: Sendable {
                 // Cancellation is worker control, not executor health: commit the
                 // salvage, skip reset, stop leasing.
                 log?.warning("\(executor.executorID): \(description)")
-                await scheduler.complete(lease, outcomes: outcomes)
+                await scheduler.complete(lease, outcomes: outcomes, healthy: false)
                 return
             }
         }
@@ -272,7 +274,9 @@ struct Node: Sendable {
 
     /// Failure recovery: a dead transport is repaired by reconnecting (the failure
     /// may have been the SSH session, not the device), then the executor recovers
-    /// its own state (reboot for simulators — never an erase).
+    /// its own state (reboot for simulators — never an erase). A SUCCESSFUL
+    /// recovery is still recorded as a health event: a run that degraded and
+    /// self-healed must not look identical to one that never degraded.
     private func recover(executor: TestExecutor) async -> Bool {
         var probeFailed = false
         do { _ = try await executor.ssh.run("true") } catch { probeFailed = true }
@@ -283,7 +287,15 @@ struct Node: Sendable {
                 return false
             }
         }
-        return await executor.reset()
+        let recovered = await executor.reset()
+        if recovered {
+            await health.record(RunHealthEvent(
+                kind: .executorRecovered, source: executor.executorID,
+                detail: probeFailed ? "transport reconnected and executor reset after an unhealthy chunk"
+                                    : "executor reset after an unhealthy chunk"
+            ))
+        }
+        return recovered
     }
 
     private enum ChunkOutcome {
@@ -304,6 +316,11 @@ struct Node: Sendable {
                 return .infrastructureFailure("setup script exited with status \(status) — chunk returned to the queue")
             }
         } catch {
+            // Ctrl-C mid-setup (e.g. the script upload aborted): worker control,
+            // never an executor's fault — no blame, no reset, stop leasing.
+            if error is CancellationError || Task.isCancelled {
+                return .cancelled([], "run cancelled during chunk setup")
+            }
             return .infrastructureFailure("setup script failed: \(error)")
         }
 
@@ -319,7 +336,10 @@ struct Node: Sendable {
             }
         } catch {
             log?.warning("\(executor.executorID): teardown script failed: \(error)")
-            await health.record(RunHealthEvent(kind: .teardownFailed, source: executor.executorID, detail: "\(error)"))
+            // A teardown aborted BY the cancellation is not a teardown failure.
+            if !(error is CancellationError) && !Task.isCancelled {
+                await health.record(RunHealthEvent(kind: .teardownFailed, source: executor.executorID, detail: "\(error)"))
+            }
         }
         return outcome
     }

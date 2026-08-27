@@ -13,7 +13,9 @@ public struct ControllerDependencies: Sendable {
     var testsProvider: (@Sendable (_ configuration: String?) async throws -> [ScheduledTest])?
 
     public init() {
-        self.now = { Date.timeIntervalSinceReferenceDate }
+        // CLOCK_MONOTONIC: never affected by NTP steps or wall-clock changes, so
+        // reported durations are truthful even across a clock adjustment mid-run.
+        self.now = { Double(clock_gettime_nsec_np(CLOCK_MONOTONIC)) / 1_000_000_000 }
         self.localShell = Run()
         self.sshFactory = { config in
             // The transport seam: "local" runs on this machine (no sshd, login-session
@@ -198,6 +200,9 @@ public struct Controller {
                     mergeStatus: "nothingToMerge", healthEvents: [], retainedArtifacts: []
                 ))
                 try workspace.publish()
+                await events?.emit("runFinished", ["status": "passed", "passed": "0", "failed": "0",
+                                                  "skipped": "0", "unexecuted": "0", "duration": "0.000"])
+                await events?.finish()
                 return RunOutcome(
                     snapshot: snapshot,
                     duration: 0,
@@ -215,12 +220,27 @@ public struct Controller {
             "configurations": "\(selectedConfigurations.count)",
             "nodes": "\(config.nodes.count)",
         ])
+        // From here on the event stream is guaranteed a TERMINAL event: any error
+        // path emits runFinished(status: error) before rethrowing.
+        do {
+            return try await executeRun(startTime: startTime, unitsForRun: unitsForRun)
+        } catch {
+            await events?.emit("runFinished", ["status": "error", "error": "\(error)"])
+            await events?.finish()
+            throw error
+        }
+    }
+
+    private mutating func executeRun(startTime: Double, unitsForRun: [TestUnit]) async throws -> RunOutcome {
         // Serialize runs sharing this output directory; the lock dies with the process.
         let lock = try workspace.acquireLock()
         defer { lock.release() }
         try workspace.prepareLocal()
-        defer { workspace.cleanupLocal() }
-
+        defer {
+            if let error = workspace.cleanupLocal() {
+                log?.warning("run-scratch cleanup incomplete at \(workspace.workPath): \(error)")
+            }
+        }
         let buildZipPath = try await zipBuild()
 
         // Historical durations drive longest-first scheduling; a missing/corrupt
@@ -261,6 +281,9 @@ public struct Controller {
             )
         }
 
+        // Execution bracket: nodes starting → scheduler drained. Discovery and
+        // packaging are set-up cost, reported only inside the end-to-end duration.
+        let executionStart = dependencies.now()
         await withTaskGroup(of: Void.self) { group in
             for node in nodes {
                 group.addTask { await node.start() }
@@ -270,7 +293,7 @@ public struct Controller {
         await scheduler.drain()
 
         let snapshot = await scheduler.snapshot()
-        let executionDuration = dependencies.now() - startTime
+        let executionDuration = dependencies.now() - executionStart
 
         // Feed real verdict durations back into the timings store for the next run.
         if let platform = artifactPlatform {
@@ -294,14 +317,6 @@ public struct Controller {
             await health.record(RunHealthEvent(kind: .mergeFailed, source: "controller", detail: "\(error)"))
         }
 
-        await events?.emit("runFinished", [
-            "passed": "\(snapshot.passed.count)",
-            "failed": "\(snapshot.failed.count)",
-            "skipped": "\(snapshot.skipped.count)",
-            "unexecuted": "\(snapshot.unexecuted.count)",
-            "duration": String(format: "%.3f", executionDuration),
-        ])
-        await events?.finish()
         let healthEvents = await health.all()
         let retainedArtifacts = await collector.retainedArtifacts().map {
             $0.replacingOccurrences(of: workspace.stagingPath, with: "final")
@@ -317,6 +332,17 @@ public struct Controller {
         // Everything was staged under the run directory; one atomic rename makes it
         // `final/` — the previous final survives any failure before this point.
         let publishedPath = try workspace.publish()
+        // Terminal event AFTER publication: a consumer that sees runFinished can
+        // trust that `final/` exists (a failed publish emits status "error" instead).
+        await events?.emit("runFinished", [
+            "status": snapshot.failed.isEmpty && snapshot.unexecuted.isEmpty && mergeStatus != "failed" ? "passed" : "failed",
+            "passed": "\(snapshot.passed.count)",
+            "failed": "\(snapshot.failed.count)",
+            "skipped": "\(snapshot.skipped.count)",
+            "unexecuted": "\(snapshot.unexecuted.count)",
+            "duration": String(format: "%.3f", executionDuration),
+        ])
+        await events?.finish()
         printSummary(snapshot: snapshot, duration: duration)
 
         if !healthEvents.isEmpty {
@@ -355,6 +381,15 @@ public struct Controller {
             check(node.UDID.simulators, type: .simulator, label: "simulator")
             check(node.UDID.devices, type: .device, label: "device")
             check(node.UDID.mac, type: .macOS, label: "mac")
+            // Auto-provisioned clones ARE simulator capacity: a device/macOS artifact
+            // with a provisioning-only node must fail here, not after creating clones.
+            if let provision = node.provisionSimulators, provision.count > 0,
+               !platform.allowedExecutorTypes.contains(.simulator) {
+                violations.append(
+                    "node '\(node.name)': provisionSimulators requests \(provision.count) simulator clone(s), "
+                    + "but the xctestrun was built for \(platform.displayName)"
+                )
+            }
         }
         guard violations.isEmpty else {
             throw XCTestRunError(
@@ -371,15 +406,22 @@ public struct Controller {
         // Union of dependent products across every selected configuration.
         let dependentPaths = selectedConfigurations.flatMap { xctestrun.dependentProductPaths(config: $0) }
         var unrepresentable: [String] = []
+        // Containment is decided on CANONICAL paths (symlinks resolved, ".." collapsed):
+        // a dependent entry like "__TESTROOT__/../secret" must be rejected, never
+        // silently packaged from outside the build root.
+        let canonicalRoot = URL(fileURLWithPath: testRootPath).resolvingSymlinksInPath().standardizedFileURL.path
         let filesToZip = Set(
-            dependentPaths.map { path -> String in
+            dependentPaths.compactMap { path -> String? in
                 var path = path
                 if path.contains("-Runner.app") {
                     path = path.components(separatedBy: "-Runner.app").dropLast().joined() + "-Runner.app"
                 }
-                let relative = path.replacingOccurrences(of: testRootPath + "/", with: "")
-                if relative.hasPrefix("/") { unrepresentable.append(path) }
-                return relative
+                let canonical = URL(fileURLWithPath: path).resolvingSymlinksInPath().standardizedFileURL.path
+                guard canonical.hasPrefix(canonicalRoot + "/") else {
+                    unrepresentable.append(path)
+                    return nil
+                }
+                return String(canonical.dropFirst(canonicalRoot.count + 1))
             }
         )
         // A product outside __TESTROOT__ cannot be packaged relative to it — failing
@@ -436,6 +478,8 @@ public struct Controller {
     }
 
     private func printSummary(snapshot: TestCasesSnapshot, duration: Double) {
+        // Quiet mode (e.g. --events-stdout) owns stdout — not even blank separators.
+        guard log?.quiet != true else { return }
         print()
         log?.message("####################################\n")
         log?.message("Total Tests: \(snapshot.count)")

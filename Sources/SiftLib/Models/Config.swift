@@ -33,6 +33,27 @@ public struct Config: Codable, Sendable {
         case list
     }
 
+    /// Decoding is deliberately LENIENT about everything but `xctestrunPath`: a
+    /// minimal discovery config (`{"xctestrunPath": …}`) must satisfy `sift list`.
+    /// `validate(role: .run)` is where the run-only fields become required — with
+    /// role-aware messages instead of a JSON missing-key error.
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.xctestrunPath = try container.decode(String.self, forKey: .xctestrunPath)
+        self.outputDirectoryPath = try container.decodeIfPresent(String.self, forKey: .outputDirectoryPath) ?? ""
+        self.rerunFailedTest = try container.decodeIfPresent(Int.self, forKey: .rerunFailedTest) ?? 0
+        self.testsBucket = try container.decodeIfPresent(Int.self, forKey: .testsBucket) ?? 0
+        self.testsExecutionTimeout = try container.decodeIfPresent(Int.self, forKey: .testsExecutionTimeout)
+        self.setUpScriptPath = try container.decodeIfPresent(String.self, forKey: .setUpScriptPath)
+        self.tearDownScriptPath = try container.decodeIfPresent(String.self, forKey: .tearDownScriptPath)
+        self.onlyTestConfiguration = try container.decodeIfPresent(String.self, forKey: .onlyTestConfiguration)
+        self.skipTestConfiguration = try container.decodeIfPresent(String.self, forKey: .skipTestConfiguration)
+        self.allowXcodebuildParallelTesting = try container.decodeIfPresent(Bool.self, forKey: .allowXcodebuildParallelTesting)
+        self.transferCompressionLevel = try container.decodeIfPresent(Int.self, forKey: .transferCompressionLevel)
+        self.nodes = try container.decodeIfPresent([NodeConfig].self, forKey: .nodes) ?? []
+        self.tests = try container.decodeIfPresent([String].self, forKey: .tests)
+    }
+
     public init(data: Data, role: Role = .run) throws {
         // Same pipeline as init(path:): substitution and validation must not
         // depend on which initializer loaded the bytes.
@@ -152,7 +173,7 @@ public struct Config: Codable, Sendable {
 
         validate(path: outputDirectoryPath, name: "outputDirectoryPath", into: &violations)
         if testsBucket < 1 {
-            violations.append("testsBucket must be >= 1 (got \(testsBucket))")
+            violations.append("testsBucket must be >= 1 (got \(testsBucket); the field is required to run)")
         }
         if rerunFailedTest < 0 {
             violations.append("rerunFailedTest must be >= 0 (got \(rerunFailedTest))")
@@ -174,7 +195,7 @@ public struct Config: Codable, Sendable {
             validate(path: node.deploymentPath, name: "\(label) deploymentPath", into: &violations)
             validate(path: node.xcodePathRaw, name: "\(label) xcodePath", into: &violations)
             if node.transport == .local {
-                if node.password != nil || node.privateKey != nil {
+                if node.password != nil || node.privateKey != nil || node.publicKey != nil || node.passphrase != nil {
                     violations.append("\(label): local transport takes no credentials")
                 }
             } else {
@@ -195,6 +216,14 @@ public struct Config: Codable, Sendable {
             // Both is ambiguous (which wins?); neither means ssh-agent.
             if node.password != nil && node.privateKey != nil {
                 violations.append("\(label): both password and privateKey are set — choose exactly one (ssh-agent is used when neither is set)")
+            }
+            // publicKey/passphrase only make sense alongside privateKey — orphaned,
+            // they signal a config error (e.g. a privateKey line lost in an edit).
+            if node.publicKey != nil && node.privateKey == nil {
+                violations.append("\(label): publicKey is set without privateKey — it modifies key auth and does nothing alone")
+            }
+            if node.passphrase != nil && node.privateKey == nil {
+                violations.append("\(label): passphrase is set without privateKey — it unlocks a key and does nothing alone")
             }
             // Env-var NAMES are interpolated into a remote shell prologue — a name
             // like 'FOO; rm -rf ~' would inject. Values are always shell-quoted.
@@ -290,6 +319,19 @@ public struct Config: Codable, Sendable {
             violations.append("xctestrunPath does not exist or is unreadable: \(xctestrunPath)")
         }
         if role == .run {
+            // The xctestrun must not live under the output directory: publication
+            // replaces the previous `final/`, so a run would consume its own input
+            // and then delete it. Canonicalize both sides (symlinks resolved) first.
+            let canonicalOutput = URL(fileURLWithPath: outputDirectoryPath)
+                .resolvingSymlinksInPath().standardizedFileURL.path
+            let canonicalXctestrun = URL(fileURLWithPath: xctestrunPath)
+                .resolvingSymlinksInPath().standardizedFileURL.path
+            if canonicalXctestrun == canonicalOutput || canonicalXctestrun.hasPrefix(canonicalOutput + "/") {
+                violations.append(
+                    "xctestrunPath (\(xctestrunPath)) lies inside outputDirectoryPath (\(outputDirectoryPath)) — "
+                    + "publishing results would overwrite/delete the artifact; separate the two paths"
+                )
+            }
             for (label, path) in [("setUpScriptPath", setUpScriptPath), ("tearDownScriptPath", tearDownScriptPath)] {
                 if let path, !fm.isReadableFile(atPath: path) {
                     violations.append("\(label) does not exist or is unreadable: \(path)")
@@ -298,6 +340,9 @@ public struct Config: Codable, Sendable {
             for node in nodes {
                 if let key = node.privateKey, !fm.isReadableFile(atPath: (key as NSString).expandingTildeInPath) {
                     violations.append("node '\(node.name)': privateKey does not exist or is unreadable: \(key)")
+                }
+                if let pub = node.publicKey, !fm.isReadableFile(atPath: (pub as NSString).expandingTildeInPath) {
+                    violations.append("node '\(node.name)': publicKey does not exist or is unreadable: \(pub)")
                 }
             }
         }

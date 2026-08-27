@@ -13,11 +13,19 @@ private final class RainbowConfigurator: @unchecked Sendable {
     }
 }
 
-/// Strips ASCII control characters (except newline/tab) so node- or test-provided
-/// text can never inject terminal escape sequences into the operator's console.
+/// Strips control characters (except newline/tab) so node- or test-provided text
+/// can never inject terminal escape sequences into the operator's console. Covers
+/// C0 + DEL + C1 (U+0080–U+009F: terminals interpret U+009B as CSI just like ESC-[)
+/// and the bidi override/isolate characters (display-order spoofing). Other format
+/// characters (ZWJ etc.) pass through — emoji in test names stay intact.
 private func sanitized(_ text: String) -> String {
-    String(String.UnicodeScalarView(text.unicodeScalars.filter {
-        $0 == "\n" || $0 == "\t" || ($0.value >= 0x20 && $0.value != 0x7F)
+    String(String.UnicodeScalarView(text.unicodeScalars.filter { scalar in
+        if scalar == "\n" || scalar == "\t" { return true }
+        if scalar.properties.generalCategory == .control { return false }
+        switch scalar.value {
+        case 0x202A...0x202E, 0x2066...0x2069: return false // bidi embedding/override/isolates
+        default: return true
+        }
     }))
 }
 

@@ -2,11 +2,21 @@ import Foundation
 
 enum JSONReport {
 
+    /// Groups by (suite, configuration): in a multi-configuration run the same
+    /// class legitimately produces one Result per configuration it ran under.
+    private struct SuiteKey: Hashable, Comparable {
+        let suite: String
+        let configuration: String?
+        static func < (lhs: SuiteKey, rhs: SuiteKey) -> Bool {
+            (lhs.suite, lhs.configuration ?? "") < (rhs.suite, rhs.configuration ?? "")
+        }
+    }
+
     static func generate(tests: TestCasesSnapshot, context: ReportContext) -> JSONReportModel {
-        let testsBySuite: [String: [TestCase]] = tests.cases
+        let testsBySuite: [SuiteKey: [TestCase]] = tests.cases
             .reduce(into: [:]) { result, testCase in
                 let suiteName = testCase.name.components(separatedBy: "/").dropLast().joined(separator: "/")
-                result[suiteName, default: []].append(testCase)
+                result[SuiteKey(suite: suiteName, configuration: testCase.configuration), default: []].append(testCase)
             }
 
         let reportSummary = JSONReportModel.Summary(
@@ -25,11 +35,12 @@ enum JSONReport {
         report.mergeStatus = context.mergeStatus
         report.healthEvents = context.healthEvents
         report.retainedArtifacts = context.retainedArtifacts
-        for suiteName in testsBySuite.keys.sorted() {
-            let suite = testsBySuite[suiteName] ?? []
+        for suiteKey in testsBySuite.keys.sorted() {
+            let suite = testsBySuite[suiteKey] ?? []
             let sorted = suite.sorted { $0.name < $1.name }
             let result = JSONReportModel.Result(
-                testSuite: suiteName,
+                testSuite: suiteKey.suite,
+                configuration: suiteKey.configuration,
                 passed: sorted.filter { $0.state == .pass }.count,
                 rerunned: sorted.filter { $0.launchCounter > 1 }.count,
                 skipped: sorted.filter { $0.state == .skipped }.count,

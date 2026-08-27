@@ -80,6 +80,39 @@ final class Phase8Tests: XCTestCase {
         XCTAssertThrowsError(try TestDiscovery.scheduledTests(fromEnumeration: unexpanded, configuration: nil, descriptors: descriptors, log: nil))
     }
 
+    /// XCTest and Swift Testing share the bundle/class/method namespace: a
+    /// COLLIDING identifier (same bundle, class name, method) cannot be selected,
+    /// retried, or reported apart — discovery must reject it loudly, never
+    /// silently dedupe one side away.
+    func testCollidingIdentifiersAcrossFrameworksAreAnError() throws {
+        let document = try JSONDecoder().decode(TestDiscovery.EnumerationDocument.self, from: Data("""
+        {"errors": [], "values": [{"disabledTests": [], "enabledTests": [
+            {"identifier": "B/Shared/testSame()"},
+            {"identifier": "B/Shared/testSame"}
+        ]}]}
+        """.utf8))
+        let descriptors = [TestBundleDescriptor(targetKey: "B", productModuleName: "B", bundleName: "B", executablePath: "/dev/null")]
+        XCTAssertThrowsError(try TestDiscovery.scheduledTests(fromEnumeration: document, configuration: nil, descriptors: descriptors, log: nil)) { error in
+            XCTAssertTrue("\(error)".contains("B/Shared/testSame()"), "\(error)")
+        }
+    }
+
+    /// RECORDED Xcode 16-line fixture (`xcresulttool get test-results tests` over a
+    /// real Swift Testing run): a suite-less top-level `@Test` function and a
+    /// `@Suite` case must both parse into canonical bundle-prefixed identifiers
+    /// through the PRODUCTION traversal.
+    func testSwiftTestingXCResultFixtureParses() throws {
+        guard let url = Bundle.module.url(forResource: "Fixtures/test-results-swift-testing", withExtension: "json") else {
+            return XCTFail("missing recorded fixture test-results-swift-testing.json")
+        }
+        let outcomes = try XCResultTool.outcomes(fromTestResultsJSON: Data(contentsOf: url))
+        XCTAssertEqual(outcomes.map(\.test).sorted(), [
+            "SwiftTestingFixtures/ModernSuite/suiteCaseWorks()",
+            "SwiftTestingFixtures/modernAdditionWorks()",
+        ])
+        XCTAssertTrue(outcomes.allSatisfy { $0.kind == .pass })
+    }
+
     func testEventBusWritesValidNDJSON() async throws {
         let path = NSTemporaryDirectory() + "sift-events-\(UUID().uuidString).ndjson"
         addTeardownBlock { try? FileManager.default.removeItem(atPath: path) }
