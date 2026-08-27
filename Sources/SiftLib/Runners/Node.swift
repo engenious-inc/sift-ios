@@ -20,6 +20,7 @@ struct Node: Sendable {
     private let sshFactory: @Sendable (Config.NodeConfig) -> SSHExecutor
     private let xctestrunProvider: @Sendable () throws -> XCTestRun
     private let buildZipPath: String
+    private let health: HealthSink
     private let log: Logging?
 
     /// Consecutive infrastructure failures before an executor is retired.
@@ -34,6 +35,7 @@ struct Node: Sendable {
         buildZipPath: String,
         xctestrunProvider: @escaping @Sendable () throws -> XCTestRun,
         sshFactory: @escaping @Sendable (Config.NodeConfig) -> SSHExecutor,
+        health: HealthSink = HealthSink(),
         log: Logging?
     ) {
         self.config = config
@@ -51,16 +53,23 @@ struct Node: Sendable {
         self.buildZipPath = buildZipPath
         self.xctestrunProvider = xctestrunProvider
         self.sshFactory = sshFactory
+        self.health = health
         self.log = log
+        // Node-specific remote workspace: two node entries sharing host+deploymentPath
+        // must never share upload/results/DerivedData/proc directories.
+        let nodeSlug = RunWorkspace.nodeSlug(for: config.name)
         self.communication = SSHCommunication(
             config: config,
-            remoteWorkPath: workspace.remoteWorkPath(deploymentPath: config.deploymentPath),
+            remoteWorkPath: workspace.remoteWorkPath(deploymentPath: config.deploymentPath, nodeSlug: nodeSlug),
             sshFactory: sshFactory,
+            health: health,
             log: log
         )
     }
 
-    private var remoteWorkPath: String { workspace.remoteWorkPath(deploymentPath: config.deploymentPath) }
+    private var remoteWorkPath: String {
+        workspace.remoteWorkPath(deploymentPath: config.deploymentPath, nodeSlug: RunWorkspace.nodeSlug(for: config.name))
+    }
 
     // MARK: - Lifecycle
 
@@ -90,6 +99,7 @@ struct Node: Sendable {
             log?.message(verboseMsg: "\(name): finished")
         } catch {
             log?.error("\(name): \(error)")
+            await health.record(RunHealthEvent(kind: .nodeFailed, source: name, detail: "\(error)"))
             await communication.cleanup()
         }
     }
@@ -123,9 +133,13 @@ struct Node: Sendable {
             try await executor.connect()
         } catch {
             log?.error("\(executor.executorID): connection failed — \(error)")
+            await health.record(RunHealthEvent(kind: .executorUnavailable, source: executor.executorID, detail: "connection failed: \(error)"))
             return
         }
-        guard await executor.ready() else { return }
+        guard await executor.ready() else {
+            await health.record(RunHealthEvent(kind: .executorUnavailable, source: executor.executorID, detail: "failed readiness check"))
+            return
+        }
 
         let xcodebuild = Xcodebuild(
             xcodePath: config.xcodePathRaw,
@@ -154,6 +168,7 @@ struct Node: Sendable {
                 let recovered = await recover(executor: executor)
                 if !recovered || consecutiveFailures >= Node.executorFailureLimit {
                     log?.error("\(executor.executorID): retiring executor after \(consecutiveFailures) consecutive unhealthy chunks")
+                    await health.record(RunHealthEvent(kind: .executorRetired, source: executor.executorID, detail: "\(consecutiveFailures) consecutive unhealthy chunks"))
                     return
                 }
             case .infrastructureFailure(let description):
@@ -163,6 +178,7 @@ struct Node: Sendable {
                 let recovered = await recover(executor: executor)
                 if !recovered || consecutiveFailures >= Node.executorFailureLimit {
                     log?.error("\(executor.executorID): retiring executor after \(consecutiveFailures) consecutive failures")
+                    await health.record(RunHealthEvent(kind: .executorRetired, source: executor.executorID, detail: "\(consecutiveFailures) consecutive infrastructure failures"))
                     return
                 }
             case .cancelled(let outcomes, let description):

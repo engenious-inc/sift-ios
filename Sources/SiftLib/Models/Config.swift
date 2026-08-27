@@ -43,9 +43,19 @@ public struct Config: Codable, Sendable {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         let data = try encoder.encode(self)
-        try data.write(to: url, options: .atomic)
-        // Configs can hold SSH credentials — never leave them world-readable.
-        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+        // Configs can hold SSH credentials: the file is born 0600 (owner-only temp
+        // file, atomically renamed) — there is never a default-permission window.
+        let temporaryPath = url.path + ".tmp-\(UUID().uuidString)"
+        guard FileManager.default.createFile(atPath: temporaryPath, contents: data,
+                                             attributes: [.posixPermissions: 0o600]) else {
+            throw ConfigError(violations: ["cannot write config to \(temporaryPath)"])
+        }
+        do {
+            _ = try FileManager.default.replaceItemAt(url, withItemAt: URL(fileURLWithPath: temporaryPath))
+        } catch {
+            try? FileManager.default.removeItem(atPath: temporaryPath)
+            throw error
+        }
     }
 
     // MARK: - Environment variable substitution
@@ -125,6 +135,9 @@ public struct Config: Codable, Sendable {
         if nodes.isEmpty {
             violations.append("at least one node is required")
         }
+        var seenNames = Set<String>()
+        var seenEndpoints = Set<String>()
+        var seenUDIDs = Set<String>()
         for node in nodes {
             let label = "node '\(node.name)'"
             validate(path: node.deploymentPath, name: "\(label) deploymentPath", into: &violations)
@@ -140,6 +153,19 @@ public struct Config: Codable, Sendable {
                 + (node.UDID.mac?.count ?? 0)
             if udidCount == 0 {
                 violations.append("\(label): at least one simulator, device, or mac UDID is required")
+            }
+            // Duplicate identities produce colliding remote workspaces or two
+            // executors hammering one destination — reject them up front.
+            if !seenNames.insert(node.name).inserted {
+                violations.append("duplicate node name '\(node.name)' — node names must be unique")
+            }
+            let endpoint = "\(node.host):\(node.port)|\(node.deploymentPath)"
+            if !seenEndpoints.insert(endpoint).inserted {
+                violations.append("\(label): duplicate endpoint (host \(node.host):\(node.port), deploymentPath \(node.deploymentPath)) — merge the UDID lists into one node entry")
+            }
+            let allUDIDs = (node.UDID.simulators ?? []) + (node.UDID.devices ?? []) + (node.UDID.mac ?? [])
+            for udid in allUDIDs where !seenUDIDs.insert("\(node.host)|\(udid.uppercased())").inserted {
+                violations.append("\(label): duplicate UDID \(udid) on host \(node.host) — one executor per device")
             }
         }
 

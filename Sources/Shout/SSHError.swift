@@ -75,7 +75,9 @@ public struct SSHError: Swift.Error, CustomStringConvertible, Sendable {
     }
     
     static func mostRecentError(session: OpaquePointer, backupMessage: String = "") -> SSHError {
-        let kind = Kind(rawValue: libssh2_session_last_errno(session)) ?? .genericError
+        // libssh2 errnos are negative; Kind raw values are their negations
+        // (matching codeError) — without the sign flip every error decayed to generic.
+        let kind = Kind(rawValue: -libssh2_session_last_errno(session)) ?? .genericError
         return SSHError(kind: kind, session: session, backupMessage: backupMessage)
     }
     

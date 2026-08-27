@@ -4,14 +4,17 @@ struct SSHCommunication: Communication {
     private let ssh: SSHExecutor
     private let config: Config.NodeConfig
     private let remoteWorkPath: String
+    private let health: HealthSink
     private let log: Logging?
 
     var nodeName: String { config.name }
 
-    init(config: Config.NodeConfig, remoteWorkPath: String, sshFactory: (Config.NodeConfig) -> SSHExecutor, log: Logging?) {
+    init(config: Config.NodeConfig, remoteWorkPath: String, sshFactory: (Config.NodeConfig) -> SSHExecutor,
+         health: HealthSink = HealthSink(), log: Logging?) {
         self.config = config
         self.remoteWorkPath = remoteWorkPath
         self.ssh = sshFactory(config)
+        self.health = health
         self.log = log
     }
 
@@ -30,12 +33,14 @@ struct SSHCommunication: Communication {
     func getBuildOnRunner(buildPath: String) async throws {
         log?.message(verboseMsg: "Uploading build to \(nodeName)...")
         let remoteZipPath = "\(remoteWorkPath)/build.zip"
-        let mkdir = try await ssh.run("mkdir -p \(remoteWorkPath.shellQuoted)")
+        // umask 077 + explicit chmod: on a shared Mac, other users must not be able
+        // to read proprietary bundles, logs, or results.
+        let mkdir = try await ssh.run("umask 077; mkdir -p \(remoteWorkPath.shellQuoted) && chmod -R 700 \(remoteWorkPath.shellQuoted)")
         guard mkdir.status == 0 else {
             throw NSError(domain: "\(nodeName): cannot create remote work directory \(remoteWorkPath): \(mkdir.output)", code: 1)
         }
         try await ssh.uploadFile(localPath: buildPath, remotePath: remoteZipPath)
-        let unzip = try await ssh.run("unzip -o -q \(remoteZipPath.shellQuoted) -d \(remoteWorkPath.shellQuoted)")
+        let unzip = try await ssh.run("umask 077; unzip -o -q \(remoteZipPath.shellQuoted) -d \(remoteWorkPath.shellQuoted)")
         guard unzip.status == 0 else {
             throw NSError(domain: "\(nodeName): unzip of uploaded build failed: \(unzip.output)", code: 1)
         }
@@ -78,10 +83,12 @@ struct SSHCommunication: Communication {
         }
         for case .unverified(let reason) in outcomes {
             log?.error("\(nodeName): could not verify a remote process died during cleanup (\(reason)) — check \(remoteWorkPath)/proc on the node")
+            await health.record(RunHealthEvent(kind: .processUnverified, source: nodeName, detail: "\(reason) — check \(remoteWorkPath)/proc"))
         }
         let removal = try? await ssh.run("rm -rf \(remoteWorkPath.shellQuoted)")
         if removal == nil || removal?.status != 0 {
             log?.warning("\(nodeName): remote cleanup incomplete — \(remoteWorkPath) may remain on the node")
+            await health.record(RunHealthEvent(kind: .cleanupIncomplete, source: nodeName, detail: "\(remoteWorkPath) may remain on the node"))
         }
     }
 }

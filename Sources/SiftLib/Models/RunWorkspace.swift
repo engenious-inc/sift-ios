@@ -1,38 +1,146 @@
 import Foundation
 
-/// Run-scoped directory layout. All temporary artifacts live under a unique per-run
-/// directory so cleanup can never touch anything Sift did not create.
+/// Run-scoped directory layout. Everything a run produces is STAGED under a unique
+/// per-run directory (0700) and published to `final/` only by an atomic rename at the
+/// end — a failed or dying run can never destroy the previous `final/`, and two runs
+/// sharing an output directory are serialized by an advisory lock.
 public struct RunWorkspace: Sendable {
     public let runID: String
     public let outputDirectoryPath: String
 
-    public init(outputDirectoryPath: String, runID: String = UUID().uuidString) {
+    /// Internally generated run identity — always a safe single path component.
+    public init(outputDirectoryPath: String) {
+        self.outputDirectoryPath = outputDirectoryPath
+        self.runID = UUID().uuidString
+    }
+
+    /// Caller-supplied run identity: strictly one safe path component, or an error —
+    /// a separator or dot-component would let cleanup escape the run directory.
+    public init(outputDirectoryPath: String, runID: String) throws {
+        guard Self.isSafePathComponent(runID) else {
+            throw XCTestRunError("runID must be a single path component (got '\(runID)')")
+        }
         self.outputDirectoryPath = outputDirectoryPath
         self.runID = runID
+    }
+
+    static func isSafePathComponent(_ value: String) -> Bool {
+        !value.isEmpty && value != "." && value != ".." && !value.contains("/") && !value.contains("\0")
     }
 
     /// Local scratch directory for this run (zips, unzipped results, process bookkeeping).
     public var workPath: String { "\(outputDirectoryPath)/.sift/runs/\(runID)" }
 
-    /// Final artifacts directory (merged xcresult, reports). Kept stable for CI consumers.
+    /// Where this run's artifacts are STAGED (reports, per-chunk bundles, merged
+    /// xcresult). Becomes `final/` atomically at publication.
+    public var stagingPath: String { "\(workPath)/staging" }
+
+    /// Stable location CI consumers read. Only ever replaced by a completed rename.
     public var finalPath: String { "\(outputDirectoryPath)/final" }
 
-    /// Remote scratch directory for this run on a node.
-    public func remoteWorkPath(deploymentPath: String) -> String {
-        "\(deploymentPath)/.sift/runs/\(runID)"
+    /// Remote scratch directory for this run on a node. `nodeSlug` isolates node
+    /// entries that share a host + deploymentPath — they must never share upload,
+    /// results, DerivedData, or process directories.
+    public func remoteWorkPath(deploymentPath: String, nodeSlug: String) -> String {
+        "\(deploymentPath)/.sift/runs/\(runID)/\(nodeSlug)"
+    }
+
+    /// Sanitizes a node name into a safe remote path component.
+    public static func nodeSlug(for nodeName: String) -> String {
+        let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-_."))
+        let mapped = nodeName.unicodeScalars.map { allowed.contains($0) ? Character($0) : "_" }
+        let slug = String(mapped)
+        return Self.isSafePathComponent(slug) ? slug : "node"
     }
 
     public func prepareLocal() throws {
         let fm = FileManager.default
-        try fm.createDirectory(atPath: workPath, withIntermediateDirectories: true)
-        // Replace only the final directory — never sibling content of outputDirectoryPath.
-        if fm.fileExists(atPath: finalPath) {
-            try fm.removeItem(atPath: finalPath)
+        // 0700 the whole run-private chain; `final/` is NOT touched here.
+        let ownerOnly: [FileAttributeKey: Any] = [.posixPermissions: 0o700]
+        try fm.createDirectory(atPath: "\(outputDirectoryPath)/.sift", withIntermediateDirectories: true, attributes: ownerOnly)
+        try fm.createDirectory(atPath: workPath, withIntermediateDirectories: true, attributes: ownerOnly)
+        try fm.createDirectory(atPath: stagingPath, withIntermediateDirectories: true, attributes: ownerOnly)
+    }
+
+    /// Atomically publishes the staged artifacts as `final/`. The previous `final/`
+    /// survives until the replacement is in place, then is removed.
+    /// Returns the published path.
+    @discardableResult
+    public func publish() throws -> String {
+        let fm = FileManager.default
+        let previousPath = "\(workPath)/final-previous"
+        let hadPrevious = fm.fileExists(atPath: finalPath)
+        if hadPrevious {
+            try? fm.removeItem(atPath: previousPath)
+            try fm.moveItem(atPath: finalPath, toPath: previousPath)
         }
-        try fm.createDirectory(atPath: finalPath, withIntermediateDirectories: true)
+        do {
+            try fm.moveItem(atPath: stagingPath, toPath: finalPath)
+        } catch {
+            // Restore the previous final — a failed publish must not lose it.
+            if hadPrevious {
+                try? fm.moveItem(atPath: previousPath, toPath: finalPath)
+            }
+            throw error
+        }
+        try? fm.removeItem(atPath: previousPath)
+        return finalPath
     }
 
     public func cleanupLocal() {
         try? FileManager.default.removeItem(atPath: workPath)
+    }
+
+    // MARK: - Output-directory lock
+
+    /// Advisory exclusive lock on the output directory, auto-released if the process
+    /// dies (flock semantics). `release()` (or deinit) unlocks.
+    public final class RunLock: @unchecked Sendable {
+        private var descriptor: Int32
+        private let path: String
+
+        fileprivate init(descriptor: Int32, path: String) {
+            self.descriptor = descriptor
+            self.path = path
+        }
+
+        public func release() {
+            guard descriptor >= 0 else { return }
+            flock(descriptor, LOCK_UN)
+            close(descriptor)
+            descriptor = -1
+        }
+
+        deinit { release() }
+
+        fileprivate static func owner(atPath path: String) -> String {
+            (try? String(contentsOfFile: path, encoding: .utf8))?
+                .trimmingCharacters(in: .whitespacesAndNewlines) ?? "unknown"
+        }
+    }
+
+    /// Takes the exclusive output-directory lock or throws naming the current owner.
+    public func acquireLock() throws -> RunLock {
+        let fm = FileManager.default
+        try fm.createDirectory(atPath: "\(outputDirectoryPath)/.sift", withIntermediateDirectories: true,
+                               attributes: [.posixPermissions: 0o700])
+        let lockPath = "\(outputDirectoryPath)/.sift/lock"
+        let descriptor = open(lockPath, O_CREAT | O_RDWR, 0o600)
+        guard descriptor >= 0 else {
+            throw XCTestRunError("cannot open output-directory lock at \(lockPath): \(String(cString: strerror(errno)))")
+        }
+        guard flock(descriptor, LOCK_EX | LOCK_NB) == 0 else {
+            let owner = RunLock.owner(atPath: lockPath)
+            close(descriptor)
+            throw XCTestRunError(
+                "another Sift run (\(owner)) owns the output directory \(outputDirectoryPath) — "
+                + "wait for it to finish or use a different outputDirectoryPath"
+            )
+        }
+        // Record the owner for the error message of whoever loses the race.
+        ftruncate(descriptor, 0)
+        let identity = "pid \(ProcessInfo.processInfo.processIdentifier), run \(runID)"
+        _ = identity.withCString { write(descriptor, $0, strlen($0)) }
+        return RunLock(descriptor: descriptor, path: lockPath)
     }
 }

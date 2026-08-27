@@ -138,8 +138,14 @@ public class SSH {
         let output = String(decoding: outputData, as: UTF8.self)
 
         if let signal = channel.exitSignal() {
-            // A signal-killed command has no meaningful exit status; report failure.
-            return (128 + 1, output + "\n[terminated by signal \(signal)]")
+            // Map to the shell convention (128 + signum) so callers can classify —
+            // e.g. TERM-killed commands report 143, matching local semantics.
+            let signalNumbers: [String: Int32] = [
+                "HUP": 1, "INT": 2, "QUIT": 3, "ABRT": 6, "KILL": 9,
+                "BUS": 10, "SEGV": 11, "PIPE": 13, "ALRM": 14, "TERM": 15,
+            ]
+            let number = signalNumbers[signal.uppercased()] ?? 15
+            return (128 + number, output + "\n[terminated by signal \(signal)]")
         }
         return (channel.exitStatus(), output)
     }
