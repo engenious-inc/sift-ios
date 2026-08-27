@@ -88,7 +88,7 @@ public class SFTP {
     ///   - remotePath: the path to the existing file on the remote server to download
     ///   - localURL: the location on the local device whether the file should be downloaded to
     /// - Throws: SSHError if file can't be created or download fails
-    public func download(remotePath: String, localURL: URL) throws {
+    public func download(remotePath: String, localURL: URL, shouldAbort: (() -> Bool)? = nil) throws {
         let sftpHandle = try SFTPHandle(
             cSession: cSession,
             sftpSession: sftpSession,
@@ -96,7 +96,7 @@ public class SFTP {
             flags: LIBSSH2_FXF_READ,
             mode: 0
         )
-        
+
         guard FileManager.default.createFile(atPath: localURL.path, contents: nil, attributes: nil),
             let fileHandle = try? FileHandle(forWritingTo: localURL) else {
             throw SSHError.genericError("couldn't create file at \(localURL.path)")
@@ -106,6 +106,9 @@ public class SFTP {
 
         var dataLeft = true
         while dataLeft {
+            if shouldAbort?() == true {
+                throw SSHError.genericError("SFTP download of \(remotePath) aborted (run cancelled)")
+            }
             switch sftpHandle.read() {
             case .data(let data):
                 do {
@@ -130,7 +133,8 @@ public class SFTP {
     ///   - remotePath: the location on the remote server whether the file should be uploaded to
     ///   - permissions: the file permissions to create the new file with; defaults to FilePermissions.default
     /// - Throws: SSHError if local file can't be read or upload fails
-    public func upload(localURL: URL, remotePath: String, permissions: FilePermissions = .default) throws {
+    public func upload(localURL: URL, remotePath: String, permissions: FilePermissions = .default,
+                       shouldAbort: (() -> Bool)? = nil) throws {
         // Stream in bounded chunks: build archives can be multi-GB, and loading
         // them into memory (or memory-mapping, which SIGBUSes if the file changes
         // mid-upload) is not acceptable.
@@ -148,6 +152,11 @@ public class SFTP {
         )
 
         while true {
+            // Checked between chunks so a cancelled run releases the serial SSH
+            // queue within one write instead of after a multi-GB transfer.
+            if shouldAbort?() == true {
+                throw SSHError.genericError("SFTP upload to \(remotePath) aborted (run cancelled)")
+            }
             guard let chunk = try fileHandle.read(upToCount: 512 * 1024), !chunk.isEmpty else { break }
             var offset = 0
             var zeroProgressCount = 0

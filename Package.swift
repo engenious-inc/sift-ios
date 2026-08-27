@@ -6,7 +6,9 @@ import PackageDescription
 let package = Package(
     name: "Sift",
     platforms: [
-        .macOS(.v12)
+        // The controller uses `xcresulttool get test-results` and `-enumerate-tests`,
+        // which ship with Xcode 16 — whose own floor is macOS 14.5.
+        .macOS(.v14)
     ],
     dependencies: [
         .package(url: "https://github.com/apple/swift-argument-parser", from: "1.0.0"),

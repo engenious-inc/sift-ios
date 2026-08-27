@@ -112,6 +112,13 @@ struct Node: Sendable {
     // MARK: - Worker loop
 
     private func runWorker(executor: TestExecutor, xctestrunPath: String) async {
+        await runWorkerLoop(executor: executor, xctestrunPath: xctestrunPath)
+        // Always runs — normal exhaustion, retirement, or cancellation — so the
+        // executor can restore any state it changed (e.g. shut a booted simulator down).
+        await executor.finish()
+    }
+
+    private func runWorkerLoop(executor: TestExecutor, xctestrunPath: String) async {
         do {
             try await executor.connect()
         } catch {
@@ -144,7 +151,7 @@ struct Node: Sendable {
                 consecutiveFailures += 1
                 log?.warning("\(executor.executorID): \(description)")
                 await scheduler.complete(lease, outcomes: outcomes)
-                let recovered = await executor.reset()
+                let recovered = await recover(executor: executor)
                 if !recovered || consecutiveFailures >= Node.executorFailureLimit {
                     log?.error("\(executor.executorID): retiring executor after \(consecutiveFailures) consecutive unhealthy chunks")
                     return
@@ -153,14 +160,36 @@ struct Node: Sendable {
                 consecutiveFailures += 1
                 log?.error("\(executor.executorID): \(description)")
                 await scheduler.complete(lease, outcomes: [])   // all tests → notExecuted, rerun-eligible
-                let recovered = await executor.reset()
+                let recovered = await recover(executor: executor)
                 if !recovered || consecutiveFailures >= Node.executorFailureLimit {
                     log?.error("\(executor.executorID): retiring executor after \(consecutiveFailures) consecutive failures")
                     return
                 }
+            case .cancelled(let outcomes, let description):
+                // Cancellation is worker control, not executor health: commit the
+                // salvage, skip reset, stop leasing.
+                log?.warning("\(executor.executorID): \(description)")
+                await scheduler.complete(lease, outcomes: outcomes)
+                return
             }
         }
         log?.message(verboseMsg: "\(executor.executorID): no more tests — worker done")
+    }
+
+    /// Failure recovery: a dead transport is repaired by reconnecting (the failure
+    /// may have been the SSH session, not the device), then the executor recovers
+    /// its own state (reboot for simulators — never an erase).
+    private func recover(executor: TestExecutor) async -> Bool {
+        var probeFailed = false
+        do { _ = try await executor.ssh.run("true") } catch { probeFailed = true }
+        if probeFailed {
+            log?.warning("\(executor.executorID): transport lost — reconnecting")
+            do { try await executor.connect() } catch {
+                log?.error("\(executor.executorID): reconnect failed — \(error)")
+                return false
+            }
+        }
+        return await executor.reset()
     }
 
     private enum ChunkOutcome {
@@ -169,6 +198,9 @@ struct Node: Sendable {
         /// (timeout, crash status): keep the verdicts, count the executor failure.
         case completedDegraded([TestOutcome], String)
         case infrastructureFailure(String)
+        /// The run was cancelled during this chunk: commit whatever was salvaged,
+        /// stop leasing, and never blame the executor (no reset, no health strike).
+        case cancelled([TestOutcome], String)
     }
 
     private func runChunk(lease: TestLease, executor: TestExecutor, xcodebuild: Xcodebuild, xctestrunPath: String) async -> ChunkOutcome {
@@ -206,7 +238,13 @@ struct Node: Sendable {
             return .infrastructureFailure("xcodebuild failed to run: \(error)")
         }
 
-        log?.message(verboseMsg: "\(executor.executorID): chunk finished with status \(chunkResult.status)")
+        log?.message(verboseMsg: "\(executor.executorID): chunk finished with status \(chunkResult.status) (\(chunkResult.endReason))")
+
+        // Chunk HEALTH comes from the observed status + end reason: a chunk that
+        // exited cleanly (0/65) stays clean even if cancellation arrived while its
+        // results were downloading.
+        let cleanExit = chunkResult.endReason == .exited && (chunkResult.status == 0 || chunkResult.status == 65)
+        let wasCancelled = chunkResult.endReason == .cancelled
 
         // Try to collect results even for unexpected statuses — partial results beat none.
         do {
@@ -219,22 +257,31 @@ struct Node: Sendable {
             let leasedTests = Set(lease.tests)
             let coversLease = outcomes.contains { leasedTests.contains(TestName.canonical($0.test)) }
             guard coversLease else {
+                if wasCancelled {
+                    return .cancelled([], "run cancelled — chunk produced no verdicts for the leased tests")
+                }
                 return .infrastructureFailure("result bundle contains no outcomes for the leased tests — " + statusDescription(chunkResult))
             }
             // 0 = clean pass, 65 = clean run with test failures; anything else
-            // (timeout 143, crashes) is a degraded chunk: keep failure/skip
-            // verdicts (they can only make the run redder), but a PASS from a
-            // killed chunk must be re-earned in a healthy chunk — committing it
-            // could turn a hung, partially-recorded run green.
-            if chunkResult.status == 0 || chunkResult.status == 65 {
+            // (timeout 143, crashes, cancellation kill) is a degraded chunk: keep
+            // failure/skip verdicts (they can only make the run redder), but a PASS
+            // from a killed chunk must be re-earned in a healthy chunk — committing
+            // it could turn a hung, partially-recorded run green.
+            if cleanExit {
                 reportOutcomes(outcomes, executor: executor)
                 return .completed(outcomes)
             }
             let degraded = Node.degradeOutcomes(outcomes)
             reportOutcomes(degraded, executor: executor)
+            if wasCancelled {
+                return .cancelled(degraded, statusDescription(chunkResult))
+            }
             return .completedDegraded(degraded, statusDescription(chunkResult))
         } catch {
-            if chunkResult.status == 0 || chunkResult.status == 65 {
+            if wasCancelled {
+                return .cancelled([], "run cancelled — chunk results unavailable: \(error)")
+            }
+            if cleanExit {
                 return .infrastructureFailure("tests ran (status \(chunkResult.status)) but results could not be collected: \(error)")
             }
             return .infrastructureFailure(statusDescription(chunkResult) + " — results unavailable: \(error)")
@@ -259,7 +306,11 @@ struct Node: Sendable {
 
     private func statusDescription(_ result: Xcodebuild.ChunkResult) -> String {
         var description = "xcodebuild exited with status \(result.status)"
-        if result.status == 143 { description += " (timeout — process was terminated)" }
+        switch result.endReason {
+        case .timedOut: description += " (timeout — process was terminated)"
+        case .cancelled: description += " (run cancelled — process was terminated)"
+        case .exited: break
+        }
         if !result.logTail.isEmpty {
             description += "\n--- log tail ---\n\(result.logTail)"
         }
@@ -278,7 +329,8 @@ struct Node: Sendable {
             throw NSError(domain: "zipping result bundle failed on \(executor.executorID): \(zip.output)", code: 1)
         }
         let localZipPath = "\(workspace.workPath)/\(zipName)"
-        try await executor.ssh.downloadFile(remotePath: remoteZipPath, localPath: localZipPath)
+        // Salvage mode: after Ctrl-C this download IS the partial report.
+        try await executor.ssh.downloadFile(remotePath: remoteZipPath, localPath: localZipPath, abortOnCancellation: false)
         _ = try? await executor.ssh.run("rm -rf \(remoteZipPath.shellQuoted) \(remoteBundlePath.shellQuoted)")
         return localZipPath
     }

@@ -13,6 +13,13 @@ final class SSH: SSHExecutor, @unchecked Sendable {
     private var ssh: Shout.SSH?
 
     private static let connectTimeoutMsec: UInt = 30_000
+    /// Short commands and status polls: a black-holed connection must fail fast,
+    /// never stall a worker behind a 15-minute cap.
+    private static let commandTimeoutMsec = 60_000
+    /// User scripts and remote zips can legitimately run long.
+    private static let longCommandTimeoutMsec = 15 * 60 * 1000
+    /// Bulk SFTP transfers (multi-GB build archives).
+    private static let transferTimeoutMsec = 15 * 60 * 1000
 
     init(
         host: String,
@@ -46,6 +53,20 @@ final class SSH: SSHExecutor, @unchecked Sendable {
         return ssh
     }
 
+    /// Thread-safe one-way flag bridging task cancellation into queue-confined loops.
+    private final class AbortFlag: @unchecked Sendable {
+        private let lock = NSLock()
+        private var aborted = false
+        var value: Bool {
+            lock.lock(); defer { lock.unlock() }
+            return aborted
+        }
+        func set() {
+            lock.lock(); defer { lock.unlock() }
+            aborted = true
+        }
+    }
+
     // MARK: - Connection
 
     func connect(
@@ -58,9 +79,7 @@ final class SSH: SSHExecutor, @unchecked Sendable {
         let host = self.host, port = self.port, policy = self.hostKeyVerification
         try await onQueue { [self] in
             let session = try Shout.SSH(host: host, port: port, timeout: SSH.connectTimeoutMsec)
-            // A black-holed connection must fail an operation, never hang a worker
-            // (and with it the whole run) forever.
-            session.setOperationTimeout(msec: 15 * 60 * 1000)
+            session.setOperationTimeout(msec: SSH.commandTimeoutMsec)
             switch policy {
             case .off:
                 break
@@ -90,6 +109,18 @@ final class SSH: SSHExecutor, @unchecked Sendable {
 
     @discardableResult
     func run(_ command: String) async throws -> (status: Int32, output: String) {
+        // User scripts and remote zip/unzip can run long; polls use runFast.
+        try await run(command, opTimeoutMsec: SSH.longCommandTimeoutMsec)
+    }
+
+    /// Short-timeout variant for internal probes (status polls, pid reads) where a
+    /// black-holed connection must surface within a minute.
+    @discardableResult
+    func runFast(_ command: String) async throws -> (status: Int32, output: String) {
+        try await run(command, opTimeoutMsec: SSH.commandTimeoutMsec)
+    }
+
+    private func run(_ command: String, opTimeoutMsec: Int) async throws -> (status: Int32, output: String) {
         // Always execute through /bin/sh: sshd hands the command to the user's
         // login shell, and zsh's parsing differs from sh in ways that silently
         // break scripts (no implicit word splitting of unquoted expansions).
@@ -100,15 +131,40 @@ final class SSH: SSHExecutor, @unchecked Sendable {
             wrapped = "/bin/sh -c \(command.shellQuoted)"
         }
         return try await onQueue { [self] in
-            try requireSession().capture(wrapped)
+            let session = try requireSession()
+            session.setOperationTimeout(msec: opTimeoutMsec)
+            defer { session.setOperationTimeout(msec: SSH.commandTimeoutMsec) }
+            return try session.capture(wrapped)
         }
     }
 
     // MARK: - File transfer
 
+    /// Bridges task cancellation to the queue-confined transfer loop: the transfer
+    /// aborts within one chunk, releasing the serial queue for teardown commands.
+    private func withTransferAbort<T: Sendable>(
+        _ body: @escaping @Sendable (_ shouldAbort: @escaping @Sendable () -> Bool) throws -> T
+    ) async throws -> T {
+        let flag = AbortFlag()
+        return try await withTaskCancellationHandler {
+            try await onQueue { [self] in
+                let session = try requireSession()
+                session.setOperationTimeout(msec: SSH.transferTimeoutMsec)
+                defer { session.setOperationTimeout(msec: SSH.commandTimeoutMsec) }
+                return try body { flag.value }
+            }
+        } onCancel: {
+            flag.set()
+        }
+    }
+
     func uploadFile(localPath: String, remotePath: String) async throws {
-        try await onQueue { [self] in
-            try requireSession().openSftp().upload(localURL: URL(fileURLWithPath: localPath), remotePath: remotePath)
+        try await withTransferAbort { [self] shouldAbort in
+            try requireSession().openSftp().upload(
+                localURL: URL(fileURLWithPath: localPath),
+                remotePath: remotePath,
+                shouldAbort: shouldAbort
+            )
         }
     }
 
@@ -116,14 +172,33 @@ final class SSH: SSHExecutor, @unchecked Sendable {
         // Data uploads carry the xctestrun (with injected environment secrets):
         // owner-only, never world-readable.
         let ownerOnly = FilePermissions(owner: [.read, .write], group: [], others: [])
-        try await onQueue { [self] in
+        try await withTransferAbort { [self] shouldAbort in
+            _ = shouldAbort // small payloads: abort granularity is the whole write
             try requireSession().openSftp().upload(data: data, remotePath: remotePath, permissions: ownerOnly)
         }
     }
 
-    func downloadFile(remotePath: String, localPath: String) async throws {
-        try await onQueue { [self] in
-            try requireSession().openSftp().download(remotePath: remotePath, localURL: URL(fileURLWithPath: localPath))
+    func downloadFile(remotePath: String, localPath: String, abortOnCancellation: Bool) async throws {
+        if abortOnCancellation {
+            try await withTransferAbort { [self] shouldAbort in
+                try requireSession().openSftp().download(
+                    remotePath: remotePath,
+                    localURL: URL(fileURLWithPath: localPath),
+                    shouldAbort: shouldAbort
+                )
+            }
+        } else {
+            // Salvage mode: result bundles downloaded after cancellation.
+            try await onQueue { [self] in
+                let session = try requireSession()
+                session.setOperationTimeout(msec: SSH.transferTimeoutMsec)
+                defer { session.setOperationTimeout(msec: SSH.commandTimeoutMsec) }
+                try session.openSftp().download(
+                    remotePath: remotePath,
+                    localURL: URL(fileURLWithPath: localPath),
+                    shouldAbort: nil
+                )
+            }
         }
     }
 
@@ -160,32 +235,42 @@ final class SSH: SSHExecutor, @unchecked Sendable {
         let launcher = "mkdir -p \(handle.directory.shellQuoted) || exit 1\n" +
             "/bin/sh -c \(inner.shellQuoted) > /dev/null 2>&1 < /dev/null &\n" +
             "exit 0"
-        let result = try await run(launcher)
+        let result = try await runFast(launcher)
         guard result.status == 0 else {
             throw SSHError.genericError("failed to start background process (status \(result.status)): \(result.output)")
         }
-        // Wait for the pid file: its presence proves the wrapper is running with
-        // its HUP trap installed (the write happens after the trap), so later
-        // channel-close HUPs cannot kill it.
-        for _ in 0..<50 {
-            let pid = try await run("cat \(handle.pidPath.shellQuoted) 2>/dev/null")
-            if pid.status == 0, !pid.output.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                return handle
+        // From here the wrapper may already be running: any failure below must
+        // terminate it before rethrowing, or a cancellation/drop during this wait
+        // orphans a launched xcodebuild.
+        do {
+            // Wait for the pid file: its presence proves the wrapper is running with
+            // its HUP trap installed (the write happens after the trap), so later
+            // channel-close HUPs cannot kill it. The sleep is uncancellable so a
+            // Ctrl-C during launch still observes the pid and owns the process.
+            for _ in 0..<50 {
+                let pid = try await runFast("cat \(handle.pidPath.shellQuoted) 2>/dev/null")
+                if pid.status == 0, !pid.output.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    return handle
+                }
+                await CommandLineExecutor.uncancellableSleep(seconds: 0.1)
             }
-            try await Task.sleep(nanoseconds: 100_000_000)
+            throw SSHError.genericError("background process did not start (no pid recorded in \(handle.pidPath))")
+        } catch {
+            _ = await terminateBackgroundProcess(handle, marker: "sift-attempt:\(attemptID)")
+            throw error
         }
-        throw SSHError.genericError("background process did not start (no pid recorded in \(handle.pidPath))")
     }
 
     func pollBackgroundProcess(_ handle: BackgroundProcessHandle) async throws -> Int32? {
-        let result = try await run("cat \(handle.statusPath.shellQuoted) 2>/dev/null")
+        let result = try await runFast("cat \(handle.statusPath.shellQuoted) 2>/dev/null")
         guard result.status == 0 else { return nil }
         let trimmed = result.output.trimmingCharacters(in: .whitespacesAndNewlines)
         guard let status = Int32(trimmed) else { return nil }
         return status
     }
 
-    func terminateBackgroundProcess(_ handle: BackgroundProcessHandle, marker: String) async {
+    @discardableResult
+    func terminateBackgroundProcess(_ handle: BackgroundProcessHandle, marker: String) async -> TerminationOutcome {
         // The recorded pid is the wrapper sh whose argv carries our unique marker.
         // Verify identity before signalling (a recycled pid must never be killed),
         // then TERM the wrapper's children (xcodebuild) and the wrapper itself,
@@ -194,7 +279,8 @@ final class SSH: SSHExecutor, @unchecked Sendable {
         // a TERM-ignoring xcodebuild would be unreachable via the tree walk and
         // would otherwise escape the KILL escalation. The bounded wait between
         // TERM and KILL happens Swift-side (no remote sleep loops — see
-        // startBackgroundProcess for the bash-3.2 wait4 hazard).
+        // startBackgroundProcess for the bash-3.2 wait4 hazard) and is UNCANCELLABLE:
+        // a Ctrl-C must not collapse the TERM grace into an instant KILL.
         // Each tree member is identified by pid AND process start time; both the
         // aliveness probe and the KILL escalation revalidate that identity so a
         // pid recycled during the grace window can never be signalled.
@@ -204,8 +290,8 @@ final class SSH: SSHExecutor, @unchecked Sendable {
             for child in $(pgrep -P "$1" 2>/dev/null); do collect_tree "$child"; done
         }
         PID=$(cat \(handle.pidPath.shellQuoted) 2>/dev/null)
-        [ -n "$PID" ] || exit 0
-        ps -p "$PID" -o command= 2>/dev/null | grep -qF \(marker.shellQuoted) || exit 0
+        [ -n "$PID" ] || { echo "sift-no-pid"; exit 0; }
+        ps -p "$PID" -o command= 2>/dev/null | grep -qF \(marker.shellQuoted) || { echo "sift-no-match"; exit 0; }
         for p in $(collect_tree "$PID"); do
             START=$(ps -p "$p" -o lstart= 2>/dev/null)
             [ -n "$START" ] || continue
@@ -214,7 +300,12 @@ final class SSH: SSHExecutor, @unchecked Sendable {
         done
         exit 0
         """
-        guard let termResult = try? await run(termScript) else { return }
+        guard let termResult = try? await runFast(termScript) else {
+            return .unverified("terminate command could not run (SSH session unavailable)")
+        }
+        if termResult.output.contains("sift-no-pid") || termResult.output.contains("sift-no-match") {
+            return .notFound
+        }
         let identities: [(pid: String, start: String)] = termResult.output
             .split(whereSeparator: \.isNewline)
             .compactMap { line in
@@ -224,7 +315,7 @@ final class SSH: SSHExecutor, @unchecked Sendable {
                 guard !pid.isEmpty, pid.allSatisfy(\.isNumber) else { return nil }
                 return (pid, parts[1].trimmingCharacters(in: .whitespaces))
             }
-        guard !identities.isEmpty else { return } // marker mismatch or already gone
+        guard !identities.isEmpty else { return .notFound } // already gone
 
         // signalMatching(signal): signals only pids whose start time still matches.
         func signalScript(_ signalName: String) -> String {
@@ -237,10 +328,38 @@ final class SSH: SSHExecutor, @unchecked Sendable {
             return lines.joined(separator: "\n")
         }
         for _ in 0..<10 {
-            try? await Task.sleep(nanoseconds: 1_000_000_000)
-            guard let probe = try? await run(signalScript("0")) else { continue }
-            if probe.output.contains("alive=0") { return }
+            await CommandLineExecutor.uncancellableSleep(seconds: 1)
+            guard let probe = try? await runFast(signalScript("0")) else { continue }
+            if probe.output.contains("alive=0") { return .confirmedDead }
         }
-        _ = try? await run(signalScript("KILL"))
+        guard let killResult = try? await runFast(signalScript("KILL")) else {
+            return .unverified("KILL escalation could not run (SSH session unavailable)")
+        }
+        await CommandLineExecutor.uncancellableSleep(seconds: 1)
+        guard let finalProbe = try? await runFast(signalScript("0")) else {
+            return .unverified("post-KILL probe could not run")
+        }
+        _ = killResult
+        return finalProbe.output.contains("alive=0") ? .confirmedDead : .unverified("process still alive after KILL")
+    }
+
+    func terminateOwnedProcesses(workDirectory: String) async -> [TerminationOutcome] {
+        let procDirectory = "\(workDirectory)/proc"
+        guard let listing = try? await runFast("ls \(procDirectory.shellQuoted) 2>/dev/null"), listing.status == 0 else {
+            return []
+        }
+        let attemptIDs = listing.output
+            .split(whereSeparator: \.isNewline)
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+        var outcomes: [TerminationOutcome] = []
+        for attemptID in attemptIDs {
+            let handle = BackgroundProcessHandle(attemptID: attemptID, directory: "\(procDirectory)/\(attemptID)")
+            let outcome = await terminateBackgroundProcess(handle, marker: "sift-attempt:\(attemptID)")
+            if outcome != .notFound {
+                outcomes.append(outcome)
+            }
+        }
+        return outcomes
     }
 }

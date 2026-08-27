@@ -44,8 +44,15 @@ extension Sift {
         var isTestProcessingDisabled: Bool = false
 
         func validate() throws {
-            if let timeout, timeout < 1 {
-                throw ValidationError("--timeout must be >= 1 second (got \(timeout))")
+            if let timeout {
+                guard timeout >= 1 else {
+                    throw ValidationError("--timeout must be >= 1 second (got \(timeout))")
+                }
+                // 10 years is beyond any real run; also keeps nanosecond conversion
+                // far from UInt64 overflow (which would trap at runtime).
+                guard timeout <= 315_360_000 else {
+                    throw ValidationError("--timeout must be <= 315360000 seconds (got \(timeout))")
+                }
             }
         }
 

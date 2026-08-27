@@ -25,7 +25,12 @@ actor ResultCollector {
             try? FileManager.default.removeItem(atPath: zipPath)
         }
         try FileManager.default.createDirectory(atPath: unzipDirectory, withIntermediateDirectories: true)
-        try await Run().runChecked("/usr/bin/unzip", ["-o", "-q", zipPath, "-d", unzipDirectory])
+        // Salvage semantics: after Ctrl-C this unzip IS the partial report — it must
+        // finish despite cancellation, bounded so a hang can never wedge shutdown.
+        try await Run().runChecked(
+            "/usr/bin/unzip", ["-o", "-q", zipPath, "-d", unzipDirectory],
+            onCancellation: .runToCompletion, timeout: 600
+        )
 
         let entries = try FileManager.default.contentsOfDirectory(atPath: unzipDirectory)
         let xcresults = entries.filter { $0.hasSuffix(".xcresult") }

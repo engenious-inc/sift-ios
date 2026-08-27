@@ -24,7 +24,8 @@ struct XCResultTool: Sendable {
     func testOutcomes(xcresultPath: String) async throws -> [TestOutcome] {
         let result = try await Run().runChecked(
             "/usr/bin/xcrun",
-            ["xcresulttool", "get", "test-results", "tests", "--path", xcresultPath]
+            ["xcresulttool", "get", "test-results", "tests", "--path", xcresultPath],
+            onCancellation: .runToCompletion, timeout: 600
         )
         guard let jsonData = result.stdout.data(using: .utf8) else {
             throw NSError(domain: "xcresulttool returned undecodable output for \(xcresultPath)", code: 1)
@@ -96,12 +97,16 @@ struct XCResultTool: Sendable {
         guard !inputPaths.isEmpty else { return false }
         if inputPaths.count == 1 {
             // Copy, not move — never destroy the source bundle.
-            try await Run().runChecked("/bin/cp", ["-R", inputPaths[0], outputPath])
+            try await Run().runChecked(
+                "/bin/cp", ["-R", inputPaths[0], outputPath],
+                onCancellation: .runToCompletion, timeout: 600
+            )
             return true
         }
         try await Run().runChecked(
             "/usr/bin/xcrun",
-            ["xcresulttool", "merge"] + inputPaths + ["--output-path", outputPath]
+            ["xcresulttool", "merge"] + inputPaths + ["--output-path", outputPath],
+            onCancellation: .runToCompletion, timeout: 900
         )
         return true
     }

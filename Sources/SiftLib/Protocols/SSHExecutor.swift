@@ -36,7 +36,9 @@ public protocol SSHExecutor: ShellExecutor {
 
     func uploadFile(localPath: String, remotePath: String) async throws
     func uploadFile(data: Data, remotePath: String) async throws
-    func downloadFile(remotePath: String, localPath: String) async throws
+    /// `abortOnCancellation: false` = salvage mode: after Ctrl-C the result bundle
+    /// download IS the partial report — it must complete despite cancellation.
+    func downloadFile(remotePath: String, localPath: String, abortOnCancellation: Bool) async throws
 
     /// Launches `command` detached on the node; its pid, exit status, and combined
     /// output are recorded under `workDirectory/proc/<attemptID>/`.
@@ -47,5 +49,28 @@ public protocol SSHExecutor: ShellExecutor {
 
     /// TERM → bounded wait → KILL. Only signals a pid whose command line contains
     /// `marker`, so a recycled pid can never be killed by mistake.
-    func terminateBackgroundProcess(_ handle: BackgroundProcessHandle, marker: String) async
+    @discardableResult
+    func terminateBackgroundProcess(_ handle: BackgroundProcessHandle, marker: String) async -> TerminationOutcome
+
+    /// Sweeps `workDirectory/proc/*/pid` and terminates every process that still
+    /// carries a `sift-attempt:` marker — the cleanup-time safety net for handles
+    /// lost to SSH drops or cancellation.
+    func terminateOwnedProcesses(workDirectory: String) async -> [TerminationOutcome]
+}
+
+extension SSHExecutor {
+    func downloadFile(remotePath: String, localPath: String) async throws {
+        try await downloadFile(remotePath: remotePath, localPath: localPath, abortOnCancellation: true)
+    }
+}
+
+/// Result of a termination attempt — cleanup must distinguish "confirmed dead"
+/// from "could not verify" (dead session, probe failure).
+public enum TerminationOutcome: Sendable, Equatable {
+    /// Process (and its snapshotted descendants) verified gone.
+    case confirmedDead
+    /// No matching live process: never started, already exited, or marker mismatch.
+    case notFound
+    /// Termination could not be verified — the reason says why.
+    case unverified(String)
 }

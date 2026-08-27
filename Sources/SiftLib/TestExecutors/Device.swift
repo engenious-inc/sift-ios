@@ -33,7 +33,7 @@ struct Device: TestExecutor {
     }
 
     func ready() async -> Bool {
-        guard type == .device else { return true } // macOS: the node itself is the destination
+        guard type == .device else { return await macReady() }
         // Preflight: the device must be visible and available to Xcode's device
         // stack. A failed check is a failed check — never "assume available".
         let command = "export DEVELOPER_DIR=\(config.developerDirPath.shellQuoted); xcrun xcdevice list"
@@ -53,14 +53,27 @@ struct Device: TestExecutor {
         return true
     }
 
-    private func deviceEntry(inXCDeviceOutput output: String) -> [String: Any]? {
-        // xcdevice may prefix warnings before the JSON array.
-        guard let start = output.firstIndex(of: "["),
-              let data = String(output[start...]).data(using: .utf8),
-              let entries = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] else {
-            return nil
+    /// macOS destinations get a light preflight too — the node must be a reachable
+    /// Mac with a working shell, never "assume available".
+    private func macReady() async -> Bool {
+        guard let result = try? await ssh.run("sw_vers -productVersion"), result.status == 0 else {
+            log?.warning("\(executorID): macOS preflight failed (sw_vers) — ignored for this run")
+            return false
         }
-        return entries.first { ($0["identifier"] as? String)?.caseInsensitiveCompare(UDID) == .orderedSame }
+        return true
+    }
+
+    private func deviceEntry(inXCDeviceOutput output: String) -> [String: Any]? {
+        // xcdevice may prefix warnings (which can themselves contain '[', e.g.
+        // "[MT] ...") before the JSON — try every '[' candidate until one parses
+        // as the device array.
+        for index in output.indices where output[index] == "[" {
+            guard let data = String(output[index...]).data(using: .utf8) else { continue }
+            if let entries = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] {
+                return entries.first { ($0["identifier"] as? String)?.caseInsensitiveCompare(UDID) == .orderedSame }
+            }
+        }
+        return nil
     }
 
     @discardableResult
