@@ -54,6 +54,31 @@ final class SSHIntegrationTests: XCTestCase {
         _ = try await ssh.run("rm -f \(remotePath.shellQuoted)")
     }
 
+    func testTransferBenchmarkSessionReuseAndReconnect() async throws {
+        let ssh = try await makeConnectedSSH()
+        let remotePath = "/tmp/sift-bench-\(UUID().uuidString)"
+        addTeardownBlock { _ = try? await ssh.run("rm -f \(remotePath.shellQuoted)") }
+        // 32 MB synthetic payload; timings recorded, never asserted (machines differ).
+        let payloadPath = NSTemporaryDirectory() + "sift-bench-\(UUID().uuidString).bin"
+        let payload = Data((0..<(32 * 1024 * 1024)).map { _ in UInt8.random(in: 0...255) })
+        try payload.write(to: URL(fileURLWithPath: payloadPath))
+        addTeardownBlock { try? FileManager.default.removeItem(atPath: payloadPath) }
+
+        let start = Date()
+        try await ssh.uploadFile(localPath: payloadPath, remotePath: remotePath)
+        let firstUpload = Date().timeIntervalSince(start)
+        // Second transfer reuses the cached SFTP channel (no re-open round-trip).
+        let start2 = Date()
+        try await ssh.uploadFile(localPath: payloadPath, remotePath: remotePath)
+        let secondUpload = Date().timeIntervalSince(start2)
+        print("[bench] 32MB SFTP upload: first \(String(format: "%.2f", firstUpload))s, cached-channel \(String(format: "%.2f", secondUpload))s")
+
+        // Short final write + overwrite truncation still correct through the cache.
+        try await ssh.uploadFile(data: Data("tiny".utf8), remotePath: remotePath)
+        let check = try await ssh.run("wc -c < \(remotePath.shellQuoted)")
+        XCTAssertEqual(check.output.trimmingCharacters(in: .whitespacesAndNewlines), "4")
+    }
+
     func testBackgroundProcessLifecycle() async throws {
         let ssh = try await makeConnectedSSH()
         let workDirectory = "/tmp/sift-bg-\(UUID().uuidString)"

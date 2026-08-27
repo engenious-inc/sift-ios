@@ -55,6 +55,15 @@ public class SFTP {
                 return ReadWriteProcessor.processWrite(result: value, session: cSession)
             }
         }
+
+        /// Zero-copy variant: writes directly from a caller-owned buffer slice.
+        func write(buffer: UnsafeRawBufferPointer) -> ReadWriteProcessor.WriteResult {
+            guard let base = buffer.baseAddress else {
+                return .error(SSHError.genericError("SFTP write failed to bind memory"))
+            }
+            let result = libssh2_sftp_write(sftpHandle, base.assumingMemoryBound(to: Int8.self), buffer.count)
+            return ReadWriteProcessor.processWrite(result: result, session: cSession)
+        }
         
         func readDir(_ attrs: inout LIBSSH2_SFTP_ATTRIBUTES) -> ReadWriteProcessor.ReadResult {
             let result = libssh2_sftp_readdir_ex(sftpHandle, &buffer, SFTPHandle.bufferSize, nil, 0, &attrs)
@@ -158,25 +167,30 @@ public class SFTP {
                 throw SSHError.genericError("SFTP upload to \(remotePath) aborted (run cancelled)")
             }
             guard let chunk = try fileHandle.read(upToCount: 512 * 1024), !chunk.isEmpty else { break }
-            var offset = 0
-            var zeroProgressCount = 0
-            while offset < chunk.count {
-                let upTo = Swift.min(offset + SFTPHandle.bufferSize, chunk.count)
-                switch sftpHandle.write(chunk.subdata(in: offset ..< upTo)) {
-                case .written(let bytesSent):
-                    if bytesSent <= 0 {
-                        zeroProgressCount += 1
-                        if zeroProgressCount > 1000 {
-                            throw SSHError.genericError("SFTP upload to \(remotePath) made no progress")
+            // Zero-copy: every 32 KiB write reads straight from the chunk buffer —
+            // no per-write Data allocation on a multi-GB archive.
+            try chunk.withUnsafeBytes { (raw: UnsafeRawBufferPointer) in
+                var offset = 0
+                var zeroProgressCount = 0
+                while offset < raw.count {
+                    let upTo = Swift.min(offset + SFTPHandle.bufferSize, raw.count)
+                    let slice = UnsafeRawBufferPointer(rebasing: raw[offset ..< upTo])
+                    switch sftpHandle.write(buffer: slice) {
+                    case .written(let bytesSent):
+                        if bytesSent <= 0 {
+                            zeroProgressCount += 1
+                            if zeroProgressCount > 1000 {
+                                throw SSHError.genericError("SFTP upload to \(remotePath) made no progress")
+                            }
+                        } else {
+                            zeroProgressCount = 0
+                            offset += bytesSent
                         }
-                    } else {
-                        zeroProgressCount = 0
-                        offset += bytesSent
+                    case .eagain:
+                        continue
+                    case .error(let error):
+                        throw error
                     }
-                case .eagain:
-                    continue
-                case .error(let error):
-                    throw error
                 }
             }
         }

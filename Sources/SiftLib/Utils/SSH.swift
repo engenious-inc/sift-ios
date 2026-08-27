@@ -11,6 +11,9 @@ final class SSH: SSHExecutor, @unchecked Sendable {
     private let arch: Config.NodeConfig.Arch?
     private let hostKeyVerification: Config.NodeConfig.HostKeyVerification
     private var ssh: Shout.SSH?
+    /// One cached SFTP channel per connection (opening one per transfer costs a
+    /// round-trip each). Queue-confined; discarded on any transfer error.
+    private var cachedSftp: SFTP?
 
     private static let connectTimeoutMsec: UInt = 30_000
     /// Short commands and status polls: a black-holed connection must fail fast,
@@ -143,24 +146,49 @@ final class SSH: SSHExecutor, @unchecked Sendable {
             let session = try requireSession()
             session.setOperationTimeout(msec: opTimeoutMsec)
             defer { session.setOperationTimeout(msec: SSH.commandTimeoutMsec) }
-            return try session.capture(wrapped)
+            // 1 MiB tail: a noisy setup script cannot balloon controller memory.
+            return try session.capture(wrapped, outputTailLimit: 1_048_576)
         }
     }
 
     // MARK: - File transfer
 
+    /// Cached-or-fresh SFTP channel. MUST be called on the serial queue.
+    private func sftpSession() throws -> SFTP {
+        if let cachedSftp { return cachedSftp }
+        let sftp = try requireSession().openSftp()
+        cachedSftp = sftp
+        return sftp
+    }
+
+    /// Runs one transfer on the serial queue with the transfer timeout, reusing the
+    /// cached SFTP channel and discarding it on any error (a broken channel must
+    /// never poison later transfers).
+    private func transfer<T: Sendable>(
+        _ body: @escaping @Sendable (SFTP) throws -> T
+    ) async throws -> T {
+        try await onQueue { [self] in
+            let session = try requireSession()
+            session.setOperationTimeout(msec: SSH.transferTimeoutMsec)
+            defer { session.setOperationTimeout(msec: SSH.commandTimeoutMsec) }
+            do {
+                return try body(try sftpSession())
+            } catch {
+                cachedSftp = nil
+                throw error
+            }
+        }
+    }
+
     /// Bridges task cancellation to the queue-confined transfer loop: the transfer
     /// aborts within one chunk, releasing the serial queue for teardown commands.
     private func withTransferAbort<T: Sendable>(
-        _ body: @escaping @Sendable (_ shouldAbort: @escaping @Sendable () -> Bool) throws -> T
+        _ body: @escaping @Sendable (SFTP, _ shouldAbort: @escaping @Sendable () -> Bool) throws -> T
     ) async throws -> T {
         let flag = AbortFlag()
         return try await withTaskCancellationHandler {
-            try await onQueue { [self] in
-                let session = try requireSession()
-                session.setOperationTimeout(msec: SSH.transferTimeoutMsec)
-                defer { session.setOperationTimeout(msec: SSH.commandTimeoutMsec) }
-                return try body { flag.value }
+            try await transfer { sftp in
+                try body(sftp) { flag.value }
             }
         } onCancel: {
             flag.set()
@@ -170,8 +198,8 @@ final class SSH: SSHExecutor, @unchecked Sendable {
     func uploadFile(localPath: String, remotePath: String) async throws {
         // Owner-only: uploaded builds are proprietary binaries on a possibly-shared Mac.
         let ownerOnly = FilePermissions(owner: [.read, .write], group: [], others: [])
-        try await withTransferAbort { [self] shouldAbort in
-            try requireSession().openSftp().upload(
+        try await withTransferAbort { sftp, shouldAbort in
+            try sftp.upload(
                 localURL: URL(fileURLWithPath: localPath),
                 remotePath: remotePath,
                 permissions: ownerOnly,
@@ -184,16 +212,16 @@ final class SSH: SSHExecutor, @unchecked Sendable {
         // Data uploads carry the xctestrun (with injected environment secrets):
         // owner-only, never world-readable.
         let ownerOnly = FilePermissions(owner: [.read, .write], group: [], others: [])
-        try await withTransferAbort { [self] shouldAbort in
+        try await withTransferAbort { sftp, shouldAbort in
             _ = shouldAbort // small payloads: abort granularity is the whole write
-            try requireSession().openSftp().upload(data: data, remotePath: remotePath, permissions: ownerOnly)
+            try sftp.upload(data: data, remotePath: remotePath, permissions: ownerOnly)
         }
     }
 
     func downloadFile(remotePath: String, localPath: String, abortOnCancellation: Bool) async throws {
         if abortOnCancellation {
-            try await withTransferAbort { [self] shouldAbort in
-                try requireSession().openSftp().download(
+            try await withTransferAbort { sftp, shouldAbort in
+                try sftp.download(
                     remotePath: remotePath,
                     localURL: URL(fileURLWithPath: localPath),
                     shouldAbort: shouldAbort
@@ -201,11 +229,8 @@ final class SSH: SSHExecutor, @unchecked Sendable {
             }
         } else {
             // Salvage mode: result bundles downloaded after cancellation.
-            try await onQueue { [self] in
-                let session = try requireSession()
-                session.setOperationTimeout(msec: SSH.transferTimeoutMsec)
-                defer { session.setOperationTimeout(msec: SSH.commandTimeoutMsec) }
-                try session.openSftp().download(
+            try await transfer { sftp in
+                try sftp.download(
                     remotePath: remotePath,
                     localURL: URL(fileURLWithPath: localPath),
                     shouldAbort: nil

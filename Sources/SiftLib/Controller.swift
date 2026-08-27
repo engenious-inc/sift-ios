@@ -170,10 +170,18 @@ public struct Controller {
 
         let buildZipPath = try await zipBuild()
 
+        // Historical durations drive longest-first scheduling; a missing/corrupt
+        // store just means randomized order (the first run's behavior).
+        var timings = TestTimings.load(outputDirectoryPath: config.outputDirectoryPath, log: log)
+        let estimates = artifactPlatform.map { timings.estimates(platform: $0, units: unitsForRun) } ?? [:]
+        if !estimates.isEmpty {
+            log?.message(verboseMsg: "Timings store: \(estimates.count)/\(unitsForRun.count) tests have historical durations — scheduling longest-first")
+        }
         let scheduler = TestScheduler(
             units: unitsForRun,
             rerunLimit: config.rerunFailedTest,
             infrastructureRetryLimit: 1,
+            estimates: estimates,
             log: log
         )
         let collector = ResultCollector(workspace: workspace, log: log)
@@ -216,6 +224,14 @@ public struct Controller {
 
         let snapshot = await scheduler.snapshot()
         let executionDuration = Date.timeIntervalSinceReferenceDate - startTime
+
+        // Feed real verdict durations back into the timings store for the next run.
+        if let platform = artifactPlatform {
+            for observation in await scheduler.timingObservations() {
+                timings.record(platform: platform, unit: observation.unit, duration: observation.duration)
+            }
+            timings.save(outputDirectoryPath: config.outputDirectoryPath, log: log)
+        }
 
         // Reports never depend on the merge: the snapshot's verdicts exist whether or
         // not xcresulttool cooperates. A failed merge is recorded (health event +
@@ -299,24 +315,45 @@ public struct Controller {
         let testRootPath = xctestrun.testRootPath
         // Union of dependent products across every selected configuration.
         let dependentPaths = selectedConfigurations.flatMap { xctestrun.dependentProductPaths(config: $0) }
+        var unrepresentable: [String] = []
         let filesToZip = Set(
             dependentPaths.map { path -> String in
                 var path = path
                 if path.contains("-Runner.app") {
                     path = path.components(separatedBy: "-Runner.app").dropLast().joined() + "-Runner.app"
                 }
-                return path.replacingOccurrences(of: testRootPath + "/", with: "")
+                let relative = path.replacingOccurrences(of: testRootPath + "/", with: "")
+                if relative.hasPrefix("/") { unrepresentable.append(path) }
+                return relative
             }
         )
+        // A product outside __TESTROOT__ cannot be packaged relative to it — failing
+        // here beats a cryptic zip error (or a silently absent binary on the node).
+        guard unrepresentable.isEmpty else {
+            throw XCTestRunError(
+                "dependent products outside the xctestrun's directory cannot be packaged:\n"
+                + unrepresentable.map { "  - \($0)" }.joined(separator: "\n")
+            )
+        }
+        guard !filesToZip.isEmpty else {
+            throw XCTestRunError("the xctestrun lists no dependent products to package")
+        }
         log?.message(verboseMsg: "Zipping dependent products:\n\t- " + filesToZip.sorted().joined(separator: "\n\t- "))
 
+        let compressionLevel = config.transferCompressionLevel ?? 0
         let zipPath = "\(workspace.workPath)/build.zip"
+        let zipStart = Date.timeIntervalSinceReferenceDate
+        // "--" terminates options: a product name starting with "-" can never be
+        // parsed as a zip flag.
         try await Run().runChecked(
             "/usr/bin/zip",
-            ["-r", "-X", "-q", "-0", zipPath] + filesToZip.sorted(),
+            ["-r", "-X", "-q", "-\(compressionLevel)", zipPath, "--"] + filesToZip.sorted(),
             currentDirectory: testRootPath
         )
-        log?.message(verboseMsg: "Build zip: \(zipPath)")
+        let zipSeconds = Date.timeIntervalSinceReferenceDate - zipStart
+        let sizeBytes = (try? FileManager.default.attributesOfItem(atPath: zipPath)[.size] as? Int64) ?? nil
+        let sizeMB = sizeBytes.map { Double($0) / 1_048_576 } ?? 0
+        log?.message(verboseMsg: String(format: "Build zip: %@ (%.1f MB, level %d, %.1fs)", zipPath, sizeMB, compressionLevel, zipSeconds))
         return zipPath
     }
 

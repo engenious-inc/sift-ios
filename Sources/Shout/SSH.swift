@@ -109,8 +109,11 @@ public class SSH {
     /// and reports signal-terminated commands as failures even though libssh2
     /// returns exit status 0 for them.
     ///
+    /// - Parameter outputTailLimit: when set, only the LAST `outputTailLimit` bytes
+    ///   are retained in memory — a runaway remote command cannot balloon the
+    ///   controller's memory. The stream is always drained fully either way.
     /// - Returns: a tuple with the exit code and the combined stdout+stderr output
-    public func capture(_ command: String) throws -> (status: Int32, output: String) {
+    public func capture(_ command: String, outputTailLimit: Int? = nil) throws -> (status: Int32, output: String) {
         let channel = try session.openCommandChannel()
 
         if let ptyType = ptyType {
@@ -125,11 +128,19 @@ public class SSH {
         var streamOpen = true
         while streamOpen {
             switch channel.readData(stream: 0) {
-            case .data(let data): outputData.append(data)
+            case .data(let data):
+                outputData.append(data)
+                // Amortized trim: cut back to the tail once we exceed twice the limit.
+                if let limit = outputTailLimit, outputData.count > limit * 2 {
+                    outputData.removeFirst(outputData.count - limit)
+                }
             case .done: streamOpen = false
             case .eagain: break
             case .error(let error): throw error
             }
+        }
+        if let limit = outputTailLimit, outputData.count > limit {
+            outputData.removeFirst(outputData.count - limit)
         }
 
         try channel.close()

@@ -21,6 +21,9 @@ public struct Config: Codable, Sendable {
     /// Opt back in to xcodebuild's own parallel testing inside a chunk (default: disabled —
     /// nested parallelism spawns simulator clones the scheduler cannot account for).
     public var allowXcodebuildParallelTesting: Bool?
+    /// zip compression level 0-9 for the build archive (default 0 = store).
+    /// Level 1 is usually a net win for remote farms; 0 minimizes controller CPU.
+    public var transferCompressionLevel: Int?
     public var nodes: [NodeConfig]
     public var tests: [String]?
 
@@ -157,6 +160,9 @@ public struct Config: Codable, Sendable {
         }
         if let timeout = testsExecutionTimeout, timeout < 1 {
             violations.append("testsExecutionTimeout must be >= 1 (got \(timeout))")
+        }
+        if let level = transferCompressionLevel, !(0...9).contains(level) {
+            violations.append("transferCompressionLevel must be in 0...9 (got \(level))")
         }
         if nodes.isEmpty {
             violations.append("at least one node is required")
