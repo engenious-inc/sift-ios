@@ -64,27 +64,27 @@ enum CommandLineExecutor {
         private let lock = NSLock()
         private var fired = false
         private let processGroup: pid_t
-        private let waiter: TerminationWaiter
         private static let timerQueue = DispatchQueue(label: "sift.process.termination")
 
-        init(processGroup: pid_t, waiter: TerminationWaiter) {
+        init(processGroup: pid_t) {
             self.processGroup = processGroup
-            self.waiter = waiter
         }
 
-        /// TERM the group now, KILL it after `grace` if the direct child has not
-        /// exited. Safe to call multiple times; signals to a fully-reaped group are
-        /// ESRCH no-ops, and pgid recycling is not a concern while our zombie child
-        /// keeps the pid reserved (the reaper's waitpid runs after exit).
+        /// TERM the group now, KILL it after `grace` if the GROUP still has live
+        /// members. Liveness is the group's (`kill(-pgid, 0)`), never the direct
+        /// child's: a leader that exits on TERM must not shield a TERM-ignoring
+        /// descendant from the KILL. Safe to call multiple times; a pgid is not
+        /// recycled while any member (zombies included) remains, and signalling a
+        /// dissolved group is an ESRCH no-op.
         func begin(grace: TimeInterval) {
             lock.lock()
             let alreadyFired = fired
             fired = true
             lock.unlock()
             guard !alreadyFired else { return }
-            if !waiter.isFinished { kill(-processGroup, SIGTERM) }
-            Self.timerQueue.asyncAfter(deadline: .now() + grace) { [processGroup, waiter] in
-                if !waiter.isFinished {
+            if kill(-processGroup, 0) == 0 { kill(-processGroup, SIGTERM) }
+            Self.timerQueue.asyncAfter(deadline: .now() + grace) { [processGroup] in
+                if kill(-processGroup, 0) == 0 {
                     kill(-processGroup, SIGKILL)
                 }
             }
@@ -180,7 +180,7 @@ enum CommandLineExecutor {
             terminationWaiter.finish()
         }
 
-        let latch = TerminationLatch(processGroup: pid, waiter: terminationWaiter)
+        let latch = TerminationLatch(processGroup: pid)
 
         // Independent watchdog. Detached: the caller's cancellation never propagates
         // into it, so a cancelled task cannot collapse the timeout. We cancel it
@@ -194,8 +194,11 @@ enum CommandLineExecutor {
             }
         }
 
-        async let stdoutDone: Void = drain(stdoutPipe.fileHandleForReading, into: stdoutCollector)
-        async let stderrDone: Void = drain(stderrPipe.fileHandleForReading, into: stderrCollector)
+        // Plain Tasks (not async let): their handles are captured by the
+        // cancellation-handler closure below, and the drains themselves resume on
+        // EOF regardless of cancellation.
+        let stdoutDrain = Task { await drain(stdoutPipe.fileHandleForReading, into: stdoutCollector) }
+        let stderrDrain = Task { await drain(stderrPipe.fileHandleForReading, into: stderrCollector) }
 
         switch onCancellation {
         case .terminateProcess:
@@ -219,7 +222,20 @@ enum CommandLineExecutor {
             try? stdoutPipe.fileHandleForReading.close()
             try? stderrPipe.fileHandleForReading.close()
         }
-        _ = await (stdoutDone, stderrDone)
+        switch onCancellation {
+        case .terminateProcess:
+            // Cancellation arriving DURING the drain (child already exited, a
+            // descendant still holds a pipe) must still signal the group.
+            await withTaskCancellationHandler {
+                await stdoutDrain.value
+                await stderrDrain.value
+            } onCancel: {
+                latch.begin(grace: 2)
+            }
+        case .runToCompletion:
+            await stdoutDrain.value
+            await stderrDrain.value
+        }
         drainGuard.cancel()
 
         // Decode waitpid status the way Foundation.Process reported it: exit code

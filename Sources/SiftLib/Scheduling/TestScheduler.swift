@@ -39,11 +39,18 @@ public actor TestScheduler {
     private let medianEstimate: Double
     private var activeExecutors: Set<String> = []
     private let log: Logging?
+    /// Same monotonic clock the controller reports with (injectable for tests).
+    private let monotonicNow: @Sendable () -> Double
+    /// Stamped the first moment every queue AND the in-flight set are empty —
+    /// the true end of test execution, before any node teardown runs.
+    private var exhaustedAt: Double?
 
     private var waiters: [(executorID: String, maxCount: Int, continuation: CheckedContinuation<TestLease?, Never>)] = []
 
     public init(units: [TestUnit], rerunLimit: Int, infrastructureRetryLimit: Int = 1,
-                estimates: [TestUnit: Double] = [:], log: Logging? = nil) {
+                estimates: [TestUnit: Double] = [:], log: Logging? = nil,
+                monotonicNow: @escaping @Sendable () -> Double = { Double(clock_gettime_nsec_np(CLOCK_MONOTONIC)) / 1_000_000_000 }) {
+        self.monotonicNow = monotonicNow
         var seen = Set<TestUnit>()
         var canonical: [TestUnit] = []
         for unit in units {
@@ -201,6 +208,7 @@ public actor TestScheduler {
             apply(outcome, to: unit, healthy: healthy)
         }
         pump()
+        markExhaustedIfDrained()
     }
 
     /// Returns a lease wholesale (executor died before running anything).
@@ -222,6 +230,7 @@ public actor TestScheduler {
             apply(TestOutcome(test: test, kind: .notExecuted, message: "Executor failed before execution"), to: unit, healthy: false)
         }
         pump()
+        markExhaustedIfDrained()
     }
 
     private func apply(_ outcome: TestOutcome, to unit: TestUnit, healthy: Bool = true) {
@@ -301,6 +310,18 @@ public actor TestScheduler {
             waiter.continuation.resume(returning: nil)
         }
         waiters = []
+        markExhaustedIfDrained()
+    }
+
+    private func markExhaustedIfDrained() {
+        guard exhaustedAt == nil, inFlight.isEmpty, pending.isEmpty, pendingRetries.isEmpty else { return }
+        exhaustedAt = monotonicNow()
+    }
+
+    /// Monotonic timestamp of the moment execution truly ended (all queues and
+    /// in-flight leases empty) — nil while work remains.
+    public func executionEnded() -> Double? {
+        exhaustedAt
     }
 
     // MARK: - Reporting

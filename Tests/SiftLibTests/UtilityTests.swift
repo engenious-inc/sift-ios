@@ -51,6 +51,32 @@ final class UtilityTests: XCTestCase {
         }
     }
 
+    /// Process-GROUP escalation: the sh leader dies on TERM, its grandchild traps
+    /// TERM and keeps respawning sleeps. Escalation keyed on the DIRECT child would
+    /// stop there and leak the grandchild; group-liveness escalation must KILL it.
+    func testTermIgnoringGrandchildIsKilledByGroupEscalation() async throws {
+        let marker = "sift-grptest-\(UUID().uuidString.prefix(8))"
+        let grandchild = "trap '' TERM; : \(marker); while :; do /bin/sleep 1; done"
+        let result = try await CommandLineExecutor.launch(
+            executable: "/bin/sh", arguments: ["-c", "/bin/sh -c \(grandchild.shellQuoted) & wait"],
+            onCancellation: .terminateProcess, timeout: 1
+        )
+        // The leader dies to the group TERM — or, if the shell rides TERM out
+        // inside `wait` (observed with bash-3.2), to the group KILL escalation.
+        XCTAssertEqual(result.terminationReason, .uncaughtSignal)
+        XCTAssertTrue([SIGTERM, SIGKILL].contains(result.status), "unexpected status \(result.status)")
+        var survivorSeen = true
+        for _ in 0..<20 {
+            let probe = try await Run().runUnchecked("/usr/bin/pgrep", ["-f", marker])
+            if probe.status != 0 { survivorSeen = false; break } // exit 1: no match
+            await CommandLineExecutor.uncancellableSleep(seconds: 0.5)
+        }
+        if survivorSeen { // never leave a stray loop behind, even on failure
+            _ = try? await Run().run("pkill -9 -f \(marker.shellQuoted)")
+        }
+        XCTAssertFalse(survivorSeen, "TERM-ignoring grandchild survived group escalation")
+    }
+
     // MARK: - TestName canonicalization
 
     func testCanonicalization() {

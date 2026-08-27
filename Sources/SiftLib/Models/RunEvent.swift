@@ -101,7 +101,9 @@ public final class ProgressReporter: @unchecked Sendable {
             }
         case "testFinished":
             if let test = event.data["test"], event.data["outcome"] != "notExecuted" {
-                finished.insert(test)
+                // Key by (configuration, test): in a multi-configuration run the
+                // same identifier legitimately finishes once per configuration.
+                finished.insert("\(event.data["configuration"] ?? "")|\(test)")
                 if event.data["outcome"] == "failed" { failed += 1 }
             }
         case "runFinished":

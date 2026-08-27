@@ -112,7 +112,7 @@ EOF
   python3 - "$E2E_DIR/out/final/final_result.json" <<'PY'
 import json, sys
 summary = json.load(open(sys.argv[1]))["summary"]
-assert summary["tests"] >= 6, f"expected the full fixture suite, got {summary['tests']}"
+assert summary["tests"] == 6, f"expected exactly the 6 fixture tests, got {summary['tests']}"
 assert summary["passed"] == summary["tests"], f"fixture tests failed: {summary}"
 assert summary["unexecuted"] == 0, f"unexecuted tests in a clean run: {summary}"
 print(f"    fixture run: {summary['passed']}/{summary['tests']} passed")
@@ -134,8 +134,17 @@ PY
   [ "$SIGINT_CODE" = 130 ] || { echo "FAIL: SIGINT run exited $SIGINT_CODE, expected 130"; exit 1; }
   [ -f "$E2E_DIR/out/final/final_result.json" ] \
       || { echo "FAIL: cancelled run published no partial reports"; exit 1; }
-  grep -q runFinished "$E2E_DIR/events.ndjson" \
-      || { echo "FAIL: event stream has no terminal runFinished event"; exit 1; }
+  python3 - "$E2E_DIR/out/final/final_result.json" "$E2E_DIR/events.ndjson" <<'PY'
+import json, sys
+summary = json.load(open(sys.argv[1]))["summary"]
+assert summary["tests"] == 6, f"partial report must still list all 6 tests: {summary}"
+assert summary["passed"] < 6, f"SIGINT landed after everything finished - nothing was actually cancelled: {summary}"
+lines = [l for l in open(sys.argv[2]).read().splitlines() if l.strip()]
+last = json.loads(lines[-1])
+assert last["kind"] == "runFinished", f"stream must END with a terminal runFinished event, got {last['kind']}"
+assert last["data"].get("status") in ("passed", "failed", "error"), f"terminal event carries no status: {last}"
+print(f"    cancelled run: {summary['passed']}/6 completed before SIGINT; terminal event status={last['data']['status']}")
+PY
 
   echo "==> Process-leak sweep"
   LEAKED=$(pgrep -fl "sift-attempt:" | grep -v pgrep || true)

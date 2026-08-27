@@ -80,20 +80,21 @@ public struct RunWorkspace: Sendable {
             try? fm.removeItem(atPath: stagingPath)
             return finalPath
         }
-        // Filesystem without swap support (e.g. NFS/SMB): fall back to two moves.
-        // This reintroduces a sub-millisecond no-final window — strictly a fallback.
-        let previousPath = "\(workPath)/final-previous"
-        try? fm.removeItem(atPath: previousPath)
-        try fm.moveItem(atPath: finalPath, toPath: previousPath)
-        do {
-            try fm.moveItem(atPath: stagingPath, toPath: finalPath)
-        } catch {
-            // Restore the previous final — a failed publish must not lose it.
-            try? fm.moveItem(atPath: previousPath, toPath: finalPath)
-            throw error
-        }
-        try? fm.removeItem(atPath: previousPath)
-        return finalPath
+        // Filesystem without atomic exchange (e.g. NFS/SMB): NEVER fall back to a
+        // two-move replace — a crash between the moves would leave no `final/` at
+        // all, and on a network filesystem that window is not small. Park the new
+        // results at a sibling path (single rename) and fail loudly: the previous
+        // `final/` is untouched, nothing is lost, and the error names both paths.
+        let swapErrno = errno
+        let parkedPath = "\(outputDirectoryPath)/final-incoming-\(runID)"
+        try? fm.removeItem(atPath: parkedPath)
+        try fm.moveItem(atPath: stagingPath, toPath: parkedPath)
+        throw XCTestRunError(
+            "this filesystem does not support atomically replacing \(finalPath) "
+            + "(renameatx_np: \(String(cString: strerror(swapErrno)))) — the previous final/ was preserved and "
+            + "this run's complete results were parked at \(parkedPath); move them into place manually, "
+            + "or point outputDirectoryPath at a local (APFS/HFS+) volume"
+        )
     }
 
     /// Removes the run-private scratch directory. A failure is reported (the
