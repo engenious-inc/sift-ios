@@ -14,7 +14,18 @@ struct Xcodebuild {
     var allowXcodebuildParallelTesting: Bool = false
 
     struct ChunkResult {
+        /// Why the chunk ended — chunk HEALTH derives from this + status, never from
+        /// `Task.isCancelled` (which can flip after a clean exit).
+        enum EndReason: Sendable {
+            /// The xcodebuild process exited on its own.
+            case exited
+            /// Sift killed it at the chunk deadline.
+            case timedOut
+            /// The run was cancelled; the process was terminated (or had just exited).
+            case cancelled
+        }
         let status: Int
+        let endReason: EndReason
         /// Path (on the node) of the exact result bundle this attempt produced.
         let resultBundlePath: String
         let logTail: String
@@ -68,28 +79,50 @@ struct Xcodebuild {
             attemptID: attemptID
         )
 
-        let pollInterval: UInt64 = 3
-        let deadline = Date().addingTimeInterval(TimeInterval(testsExecutionTimeout))
+        // Monotonic clock: never affected by NTP steps or wall-clock changes.
+        let clock = ContinuousClock()
+        let deadline = clock.now.advanced(by: .seconds(testsExecutionTimeout))
+        let pollInterval: Duration = .seconds(3)
         var status: Int32?
+        var endReason: ChunkResult.EndReason = .exited
         do {
             while true {
-                try await Task.sleep(nanoseconds: pollInterval * 1_000_000_000)
-                status = try await shell.pollBackgroundProcess(handle)
-                if status != nil { break }
-                if Date() >= deadline {
-                    log?.error("xcodebuild chunk timed out after \(testsExecutionTimeout)s on \(UDID) — terminating")
-                    await shell.terminateBackgroundProcess(handle, marker: "sift-attempt:\(attemptID)")
-                    status = 143
+                let remaining = clock.now.duration(to: deadline)
+                if remaining <= .zero {
+                    // Poll once more before killing: a completed status is a completed
+                    // chunk even at the deadline edge (its verdicts are real).
+                    status = try await shell.pollBackgroundProcess(handle)
+                    if status == nil {
+                        log?.error("xcodebuild chunk timed out after \(testsExecutionTimeout)s on \(UDID) — terminating")
+                        await shell.terminateBackgroundProcess(handle, marker: "sift-attempt:\(attemptID)")
+                        status = 143
+                        endReason = .timedOut
+                    }
                     break
                 }
+                try await Task.sleep(for: min(pollInterval, remaining))
+                status = try await shell.pollBackgroundProcess(handle)
+                if status != nil { break }
             }
+        } catch is CancellationError {
+            // Run cancelled mid-chunk: terminate with the FULL (shielded) TERM grace,
+            // then read the status the wrapper may have written — xcodebuild that
+            // finalized a bundle on TERM is salvageable, and the caller collects it.
+            await shell.terminateBackgroundProcess(handle, marker: "sift-attempt:\(attemptID)")
+            status = try? await shell.pollBackgroundProcess(handle)
+            endReason = .cancelled
         } catch {
-            // Cancellation or a polling failure must never orphan the remote process.
+            // A polling failure must never orphan the remote process.
             await shell.terminateBackgroundProcess(handle, marker: "sift-attempt:\(attemptID)")
             throw error
         }
 
         let logTail = (try? await shell.run("tail -c 4000 \(handle.logPath.shellQuoted)").output) ?? ""
-        return ChunkResult(status: Int(status ?? -1), resultBundlePath: resultBundlePath, logTail: logTail)
+        return ChunkResult(
+            status: Int(status ?? 143),
+            endReason: endReason,
+            resultBundlePath: resultBundlePath,
+            logTail: logTail
+        )
     }
 }

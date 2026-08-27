@@ -21,6 +21,13 @@ protocol TestExecutor: Sendable {
     /// Recovery after an infrastructure failure. Returns false when recovery failed.
     @discardableResult
     func reset() async -> Bool
+    /// Called once when the worker loop ends (normally, retired, or cancelled) —
+    /// restores any state the executor changed (e.g. shuts down a simulator Sift booted).
+    func finish() async
+}
+
+extension TestExecutor {
+    func finish() async {}
 }
 
 /// Result of running one chunk on an executor.

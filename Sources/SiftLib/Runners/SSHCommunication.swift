@@ -55,8 +55,33 @@ struct SSHCommunication: Communication {
         try await ssh.run(command)
     }
 
-    /// Removes exactly this run's remote directory — nothing else.
+    /// Terminates every process this run still owns on the node, then removes
+    /// exactly this run's remote directory — nothing else. If the session died,
+    /// one bounded reconnect is attempted before giving up; failures are logged
+    /// with the exact path left behind, never swallowed silently.
     func cleanup() async {
-        _ = try? await ssh.run("rm -rf \(remoteWorkPath.shellQuoted)")
+        var outcomes = await ssh.terminateOwnedProcesses(workDirectory: remoteWorkPath)
+        var needsReconnect = outcomes.contains { $0 != .confirmedDead }
+        if !needsReconnect {
+            do { _ = try await ssh.run("true") } catch { needsReconnect = true }
+        }
+        if needsReconnect {
+            // The session may be dead (SSH drop): reconnect once and re-sweep so a
+            // launched xcodebuild can never outlive the run unobserved.
+            log?.message(verboseMsg: "\(nodeName): cleanup reconnecting to verify process termination")
+            do {
+                try await connect()
+                outcomes = await ssh.terminateOwnedProcesses(workDirectory: remoteWorkPath)
+            } catch {
+                log?.error("\(nodeName): cleanup reconnect failed (\(error)) — remote processes may be unverified")
+            }
+        }
+        for case .unverified(let reason) in outcomes {
+            log?.error("\(nodeName): could not verify a remote process died during cleanup (\(reason)) — check \(remoteWorkPath)/proc on the node")
+        }
+        let removal = try? await ssh.run("rm -rf \(remoteWorkPath.shellQuoted)")
+        if removal == nil || removal?.status != 0 {
+            log?.warning("\(nodeName): remote cleanup incomplete — \(remoteWorkPath) may remain on the node")
+        }
     }
 }

@@ -12,12 +12,23 @@ public struct Run: ShellExecutor {
     }
 
     /// Runs an executable directly (no shell). Throws `CommandError` on nonzero exit status.
+    /// `onCancellation`/`timeout` control what task cancellation does to the child —
+    /// salvage work (result unpacking/parsing after Ctrl-C) passes `.runToCompletion`
+    /// with a bounded timeout.
     @discardableResult
-    public func runChecked(_ executable: String, _ arguments: [String], currentDirectory: String? = nil) async throws -> CommandResult {
+    public func runChecked(
+        _ executable: String,
+        _ arguments: [String],
+        currentDirectory: String? = nil,
+        onCancellation: CancellationBehavior = .terminateProcess,
+        timeout: TimeInterval? = nil
+    ) async throws -> CommandResult {
         let result = try await CommandLineExecutor.launch(
             executable: executable,
             arguments: arguments,
-            currentDirectory: currentDirectory
+            currentDirectory: currentDirectory,
+            onCancellation: onCancellation,
+            timeout: timeout
         )
         guard result.status == 0 else {
             throw CommandError(
