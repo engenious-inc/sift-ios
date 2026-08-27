@@ -75,6 +75,165 @@ public struct TestCasesSnapshot: Sendable {
     public var sortedNames: [String] { cases.map(\.name).sorted() }
 }
 
+/// One discovered, runnable test with its full identity. The first identifier component
+/// is the `.xctest` BUNDLE basename — the one namespace `xcodebuild -only-testing:` and
+/// xcresult both speak — never `ProductModuleName` (which can differ, e.g. "My UITests"
+/// vs "My_UITests").
+public struct ScheduledTest: Sendable, Hashable {
+    /// Test-plan configuration this test belongs to (nil for FormatVersion 1 / single-config).
+    public let configurationName: String?
+    /// The xctestrun target key (V1 root key / V2 BlueprintName).
+    public let targetKey: String
+    public let productModuleName: String
+    /// `.xctest` bundle basename without extension — the canonical first identifier component.
+    public let bundleName: String
+    /// "Class" or "Outer/Inner" for nested classes.
+    public let classPath: String
+    /// Method name including "()".
+    public let method: String
+
+    public init(configurationName: String?, targetKey: String, productModuleName: String,
+                bundleName: String, classPath: String, method: String) {
+        self.configurationName = configurationName
+        self.targetKey = targetKey
+        self.productModuleName = productModuleName
+        self.bundleName = bundleName
+        self.classPath = classPath
+        self.method = method
+    }
+
+    /// Stable report/scheduling identifier: "Bundle/Class/test()".
+    public var id: String { "\(bundleName)/\(classPath)/\(method)" }
+}
+
+/// A user-supplied test selector: a full method, a class, or a whole bundle.
+/// Class- and bundle-level selectors are prefixes — they never receive "()".
+public enum TestSelector: Sendable, Hashable {
+    case bundle(String)
+    case testClass(bundle: String, classPath: String)
+    case method(bundle: String, classPath: String, method: String)
+
+    /// Parses "Bundle", "Bundle/Class", "Bundle/Outer/Inner", or "Bundle/Class/test[()]".
+    /// A trailing "()" (or a last component starting with "test") selects a method;
+    /// otherwise the selector stays a class/bundle prefix.
+    public static func parse(_ raw: String) -> TestSelector? {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        var components = trimmed.components(separatedBy: "/").filter { !$0.isEmpty }
+        guard let last = components.last else { return nil }
+        switch components.count {
+        case 1:
+            return .bundle(last)
+        case 2 where !isMethodComponent(last):
+            return .testClass(bundle: components[0], classPath: components[1])
+        default:
+            if isMethodComponent(last) {
+                components.removeLast()
+                let bundle = components.removeFirst()
+                return .method(bundle: bundle,
+                               classPath: components.joined(separator: "/"),
+                               method: TestName.canonical(last))
+            }
+            let bundle = components.removeFirst()
+            return .testClass(bundle: bundle, classPath: components.joined(separator: "/"))
+        }
+    }
+
+    private static func isMethodComponent(_ component: String) -> Bool {
+        component.hasSuffix("()") || component.hasPrefix("test")
+    }
+
+    public func matches(_ test: ScheduledTest) -> Bool {
+        switch self {
+        case .bundle(let bundle):
+            return bundle == test.bundleName
+        case .testClass(let bundle, let classPath):
+            return bundle == test.bundleName
+                && (test.classPath == classPath || test.classPath.hasPrefix(classPath + "/"))
+        case .method(let bundle, let classPath, let method):
+            return bundle == test.bundleName && test.classPath == classPath && test.method == method
+        }
+    }
+
+    public var description: String {
+        switch self {
+        case .bundle(let bundle): return bundle
+        case .testClass(let bundle, let classPath): return "\(bundle)/\(classPath)"
+        case .method(let bundle, let classPath, let method): return "\(bundle)/\(classPath)/\(method)"
+        }
+    }
+
+    /// Expands user selectors against the discovered set. Selectors matching nothing are
+    /// an error (close matches suggested) — a typo must never burn retries as a phantom test.
+    public static func expand(
+        rawSelectors: [String],
+        against discovered: [ScheduledTest]
+    ) throws -> [ScheduledTest] {
+        var seen = Set<String>()
+        var result: [ScheduledTest] = []
+        var unknown: [String] = []
+        for raw in rawSelectors {
+            guard let selector = parse(raw) else { continue }
+            let matched = discovered.filter { selector.matches($0) }
+            if matched.isEmpty {
+                unknown.append(closeMatchMessage(for: raw, selector: selector, discovered: discovered))
+                continue
+            }
+            for test in matched where seen.insert(test.id).inserted {
+                result.append(test)
+            }
+        }
+        guard unknown.isEmpty else {
+            throw XCTestRunError(
+                "Unknown test selector(s):\n" + unknown.map { "  - \($0)" }.joined(separator: "\n")
+            )
+        }
+        return result
+    }
+
+    private static func closeMatchMessage(for raw: String, selector: TestSelector, discovered: [ScheduledTest]) -> String {
+        let needle: String
+        switch selector {
+        case .bundle(let bundle): needle = bundle
+        case .testClass(_, let classPath): needle = classPath.components(separatedBy: "/").last ?? classPath
+        case .method(_, _, let method): needle = method.replacingOccurrences(of: "()", with: "")
+        }
+        let lowered = needle.lowercased()
+        let suggestions = discovered
+            .map(\.id)
+            .filter { id in
+                if id.lowercased().contains(lowered) { return true }
+                // Typo tolerance on the last two components (class, method).
+                return id.components(separatedBy: "/").suffix(2).contains { component in
+                    editDistance(component.replacingOccurrences(of: "()", with: "").lowercased(), lowered) <= 2
+                }
+            }
+            .prefix(5)
+        guard !suggestions.isEmpty else { return "'\(raw)' matches no discovered test" }
+        return "'\(raw)' matches no discovered test — did you mean:\n" +
+            suggestions.map { "      \($0)" }.joined(separator: "\n")
+    }
+
+    /// Bounded Levenshtein distance for typo suggestions (identifiers are short).
+    private static func editDistance(_ a: String, _ b: String) -> Int {
+        let a = Array(a.utf8), b = Array(b.utf8)
+        guard !a.isEmpty else { return b.count }
+        guard !b.isEmpty else { return a.count }
+        guard abs(a.count - b.count) <= 2 else { return .max }
+        var previous = Array(0...b.count)
+        var current = [Int](repeating: 0, count: b.count + 1)
+        for i in 1...a.count {
+            current[0] = i
+            for j in 1...b.count {
+                let cost = a[i - 1] == b[j - 1] ? 0 : 1
+                current[j] = min(previous[j] + 1, current[j - 1] + 1, previous[j - 1] + cost)
+            }
+            swap(&previous, &current)
+        }
+        return previous[b.count]
+    }
+}
+
 /// Canonical test identifier handling. The dumped-bundle form ("Module/Class/testName()")
 /// is canonical; user input with or without trailing parens, CRLF, or stray whitespace
 /// normalizes to it. One representation is used for scheduling, xcodebuild arguments,

@@ -1,0 +1,29 @@
+{
+  "errors" : [
+
+  ],
+  "values" : [
+    {
+      "disabledTests" : [
+        {
+          "identifier" : "My UITests/LoginTests/testDisabledByPlan()"
+        }
+      ],
+      "enabledTests" : [
+        {
+          "identifier" : "My UITests/LoginTests/testLogin()"
+        },
+        {
+          "identifier" : "My UITests/LoginTests/testLogout()"
+        },
+        {
+          "identifier" : "My UITests/Outer/Inner/testNested()"
+        },
+        {
+          "identifier" : "ObjCTests/LegacyObjCTests/testObjCStyleAssertion()"
+        }
+      ],
+      "testPlan" : "AllTests"
+    }
+  ]
+}

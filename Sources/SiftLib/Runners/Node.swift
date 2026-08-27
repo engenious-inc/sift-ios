@@ -12,6 +12,7 @@ struct Node: Sendable {
     private let tearDownScriptPath: String?
     private let onlyTestConfiguration: String?
     private let skipTestConfiguration: String?
+    private let allowXcodebuildParallelTesting: Bool
     private let testsBucket: Int
     private let scheduler: TestScheduler
     private let collector: ResultCollector
@@ -43,6 +44,7 @@ struct Node: Sendable {
         self.tearDownScriptPath = globalConfig.tearDownScriptPath
         self.onlyTestConfiguration = globalConfig.onlyTestConfiguration
         self.skipTestConfiguration = globalConfig.skipTestConfiguration
+        self.allowXcodebuildParallelTesting = globalConfig.allowXcodebuildParallelTesting ?? false
         self.testsBucket = globalConfig.testsBucket
         self.scheduler = scheduler
         self.collector = collector
@@ -123,7 +125,8 @@ struct Node: Sendable {
             shell: executor.ssh,
             testsExecutionTimeout: testsExecutionTimeout,
             onlyTestConfiguration: onlyTestConfiguration,
-            skipTestConfiguration: skipTestConfiguration
+            skipTestConfiguration: skipTestConfiguration,
+            allowXcodebuildParallelTesting: allowXcodebuildParallelTesting
         )
 
         var consecutiveFailures = 0

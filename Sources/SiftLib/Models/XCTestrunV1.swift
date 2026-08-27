@@ -17,6 +17,7 @@ public struct XCTestRunV1: XCTestRun {
     }
 
     public let xctestrunFileName: String
+    public let xctestrunPath: String
     public let testRootPath: String
 
     private let rawData: Data
@@ -27,6 +28,7 @@ public struct XCTestRunV1: XCTestRun {
 
     init(path: String, rawData: Data, root: [String: Any]) throws {
         self.rawData = rawData
+        self.xctestrunPath = path
         let pathComponents = path.components(separatedBy: "/")
         self.xctestrunFileName = pathComponents.last ?? path
         self.testRootPath = pathComponents.dropLast().joined(separator: "/")
@@ -66,8 +68,29 @@ public struct XCTestRunV1: XCTestRun {
         }
     }
 
-    public func testBundleExecPaths(config: String?) -> [(target: String, path: String)] {
-        modules.map { ($0.productModuleName, executablePath(of: $0)) }
+    public func platform() throws -> TestPlatform {
+        guard let module = modules.first else {
+            throw XCTestRunError("xctestrun V1 contains no test modules: \(xctestrunPath)")
+        }
+        let dyld = dyldPaths(of: module.testingEnvironmentVariables)
+        guard let platform = TestPlatform.derive(testHostPath: module.testHostPath, dyldPaths: dyld) else {
+            throw XCTestRunError(
+                "cannot derive the target platform of \(xctestrunFileName) — " +
+                "unrecognized TestHostPath '\(module.testHostPath)'"
+            )
+        }
+        return platform
+    }
+
+    public func testBundles(config: String?) -> [TestBundleDescriptor] {
+        modules.map { module in
+            TestBundleDescriptor(
+                targetKey: module.key,
+                productModuleName: module.productModuleName,
+                bundleName: TestBundleDescriptor.bundleName(fromBundlePath: module.testBundlePath),
+                executablePath: executablePath(of: module)
+            )
+        }
     }
 
     public func dependentProductPaths(config: String?) -> [String] {
@@ -79,7 +102,7 @@ public struct XCTestRunV1: XCTestRun {
     public func onlyTestIdentifiers(config: String?) -> [String: [String]] {
         modules.reduce(into: [:]) { result, module in
             if !module.onlyTestIdentifiers.isEmpty {
-                result[module.productModuleName] = module.onlyTestIdentifiers
+                result[TestBundleDescriptor.bundleName(fromBundlePath: module.testBundlePath)] = module.onlyTestIdentifiers
             }
         }
     }
@@ -87,9 +110,18 @@ public struct XCTestRunV1: XCTestRun {
     public func skipTestIdentifiers(config: String?) -> [String: [String]] {
         modules.reduce(into: [:]) { result, module in
             if !module.skipTestIdentifiers.isEmpty {
-                result[module.productModuleName] = module.skipTestIdentifiers
+                result[TestBundleDescriptor.bundleName(fromBundlePath: module.testBundlePath)] = module.skipTestIdentifiers
             }
         }
+    }
+
+    private func dyldPaths(of environment: [String: String]) -> String {
+        [
+            environment["DYLD_FALLBACK_LIBRARY_PATH"],
+            environment["DYLD_LIBRARY_PATH"],
+            environment["DYLD_FALLBACK_FRAMEWORK_PATH"],
+            environment["DYLD_FRAMEWORK_PATH"],
+        ].compactMap { $0 }.joined(separator: ":")
     }
 
     private func executablePath(of module: Module) -> String {
@@ -100,15 +132,8 @@ public struct XCTestRunV1: XCTestRun {
         let basename = bundlePath.components(separatedBy: "/").last ?? module.productModuleName
         let executableName = (basename as NSString).deletingPathExtension
 
-        let environment = module.testingEnvironmentVariables
-        let dyldPaths = [
-            environment["DYLD_FALLBACK_LIBRARY_PATH"],
-            environment["DYLD_LIBRARY_PATH"],
-            environment["DYLD_FALLBACK_FRAMEWORK_PATH"],
-            environment["DYLD_FRAMEWORK_PATH"],
-        ].compactMap { $0 }.joined(separator: ":")
-
-        if dyldPaths.contains("MacOSX.platform") || dyldPaths.contains("/MacOS") {
+        let dyld = dyldPaths(of: module.testingEnvironmentVariables)
+        if dyld.contains("MacOSX.platform") || dyld.contains("/MacOS") {
             return "\(bundlePath)/Contents/MacOS/\(executableName)"
         }
         return "\(bundlePath)/\(executableName)"
@@ -131,7 +156,7 @@ public struct XCTestRunV1: XCTestRun {
         var root = try PlistTree.parse(rawData)
         for (key, value) in root where key != "__xctestrun_metadata__" {
             guard var moduleDictionary = value as? [String: Any] else { continue }
-            PlistTree.merge(environment: injectedEnvironment, intoKey: "EnvironmentVariables", of: &moduleDictionary)
+            try PlistTree.merge(environment: injectedEnvironment, intoKey: "EnvironmentVariables", of: &moduleDictionary)
             if let timeout = injectedTimeout {
                 moduleDictionary["TestTimeoutsEnabled"] = true
                 moduleDictionary["DefaultTestExecutionTimeAllowance"] = timeout
