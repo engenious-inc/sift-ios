@@ -26,8 +26,11 @@ struct Xcodebuild {
         }
         let status: Int
         let endReason: EndReason
+        let attemptID: String
         /// Path (on the node) of the exact result bundle this attempt produced.
         let resultBundlePath: String
+        /// Path (on the node) of the wrapper's full combined xcodebuild log.
+        let remoteLogPath: String
         let logTail: String
     }
 
@@ -121,7 +124,9 @@ struct Xcodebuild {
         return ChunkResult(
             status: Int(status ?? 143),
             endReason: endReason,
+            attemptID: attemptID,
             resultBundlePath: resultBundlePath,
+            remoteLogPath: handle.logPath,
             logTail: logTail
         )
     }

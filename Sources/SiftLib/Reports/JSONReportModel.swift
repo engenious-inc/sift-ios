@@ -2,10 +2,18 @@ import Foundation
 
 // MARK: - JSONReportModel
 struct JSONReportModel: Codable {
-    /// Schema version: 2 adds `rerun` (correct spelling; `rerunned` is kept for
-    /// one compatibility release) and the `attempts` history.
-    var schemaVersion: Int = 2
+    /// Schema version 3 (additive over 2): `hostname`, `mergeStatus`, `healthEvents`,
+    /// `retainedArtifacts`, `summary.executionDuration`, `results[].className`,
+    /// `results[].unexecutedDetails`. Version 2 added `rerun` + `attempts`.
+    var schemaVersion: Int = 3
     var summary: Summary
+    var hostname: String = ""
+    /// "merged" | "failed" | "nothingToMerge"
+    var mergeStatus: String = "nothingToMerge"
+    var healthEvents: [RunHealthEvent] = []
+    /// final/-relative paths kept for post-mortems (failed-ingest archives, raw
+    /// bundles after a failed merge, unhealthy-chunk logs live under final/logs).
+    var retainedArtifacts: [String] = []
     var results: [Result] = []
     var attempts: [Attempt] = []
 }
@@ -14,6 +22,9 @@ extension JSONReportModel {
     // MARK: - Result
     struct Result: Codable {
         var testSuite: String
+        /// Dotted form matching JUnit's classname ("Bundle.Class") — `testSuite`
+        /// keeps its historical slash form.
+        var className: String
         var passed, rerunned, skipped, failed, unexecuted: Int
         var rerun: Int
         var passedTests: [PassedTest]
@@ -21,11 +32,15 @@ extension JSONReportModel {
         var skippedTests: [String]
         var failedTests: [FailedTest]
         var unexecutedTests: [String]
+        /// Unexecuted tests WITH their infrastructure reason (unexecutedTests keeps
+        /// its historical string-array shape).
+        var unexecutedDetails: [UnexecutedTest]
 
         init(testSuite: String, passed: Int, rerunned: Int, skipped: Int, failed: Int, unexecuted: Int,
              passedTests: [PassedTest], rerunnedTests: [String], skippedTests: [String],
-             failedTests: [FailedTest], unexecutedTests: [String]) {
+             failedTests: [FailedTest], unexecutedTests: [String], unexecutedDetails: [UnexecutedTest] = []) {
             self.testSuite = testSuite
+            self.className = testSuite.replacingOccurrences(of: "/", with: ".")
             self.passed = passed
             self.rerunned = rerunned
             self.rerun = rerunned
@@ -37,7 +52,15 @@ extension JSONReportModel {
             self.skippedTests = skippedTests
             self.failedTests = failedTests
             self.unexecutedTests = unexecutedTests
+            self.unexecutedDetails = unexecutedDetails
         }
+    }
+
+    // MARK: - UnexecutedTest
+    struct UnexecutedTest: Codable {
+        var test: String
+        var message: String
+        var infrastructureAttempts: Int
     }
 
     // MARK: - FailedTest
@@ -56,9 +79,13 @@ extension JSONReportModel {
     struct Summary: Codable {
         var tests, passed, rerunned, skipped, failed, unexecuted: Int
         var rerun: Int
+        /// End-to-end wall time (merge + reports included).
         var duration: Double
+        /// Test-execution span only (until the scheduler drained).
+        var executionDuration: Double
 
-        init(tests: Int, passed: Int, rerunned: Int, skipped: Int, failed: Int, unexecuted: Int, duration: Double) {
+        init(tests: Int, passed: Int, rerunned: Int, skipped: Int, failed: Int, unexecuted: Int,
+             duration: Double, executionDuration: Double = 0) {
             self.tests = tests
             self.passed = passed
             self.rerunned = rerunned
@@ -67,6 +94,7 @@ extension JSONReportModel {
             self.failed = failed
             self.unexecuted = unexecuted
             self.duration = duration
+            self.executionDuration = executionDuration
         }
     }
 

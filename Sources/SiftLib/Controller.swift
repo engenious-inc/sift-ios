@@ -136,12 +136,25 @@ public struct Controller {
 
         guard !unitsForRun.isEmpty else {
             if allowEmptyTests {
-                log?.warning("No tests to execute (--allow-empty-tests set) — exiting cleanly")
+                // A permitted empty run still publishes REAL zero-test reports through
+                // the same atomic path — stale artifacts from an older run must never
+                // masquerade as this run's results.
+                log?.warning("No tests to execute (--allow-empty-tests set) — publishing zero-test reports")
+                let lock = try workspace.acquireLock()
+                defer { lock.release() }
+                try workspace.prepareLocal()
+                defer { workspace.cleanupLocal() }
+                let snapshot = TestCasesSnapshot(cases: [])
+                try writeReports(snapshot: snapshot, context: ReportContext(
+                    duration: 0, executionDuration: 0,
+                    mergeStatus: "nothingToMerge", healthEvents: [], retainedArtifacts: []
+                ))
+                try workspace.publish()
                 return RunOutcome(
-                    snapshot: TestCasesSnapshot(cases: []),
+                    snapshot: snapshot,
                     duration: 0,
                     mergedResultPath: nil,
-                    reportsWritten: false,
+                    reportsWritten: true,
                     emptyRunAllowed: true
                 )
             }
@@ -202,23 +215,39 @@ public struct Controller {
         await scheduler.drain()
 
         let snapshot = await scheduler.snapshot()
-        let duration = Date.timeIntervalSinceReferenceDate - startTime
+        let executionDuration = Date.timeIntervalSinceReferenceDate - startTime
 
+        // Reports never depend on the merge: the snapshot's verdicts exist whether or
+        // not xcresulttool cooperates. A failed merge is recorded (health event +
+        // non-zero exit) and the raw per-chunk bundles are published as evidence.
+        var mergeStatus = "nothingToMerge"
         var mergedPath: String?
         do {
             mergedPath = try await collector.mergeAll()
+            if mergedPath != nil { mergeStatus = "merged" }
         } catch {
-            log?.error("Result merge FAILED: \(error)")
-            throw XCTestRunError("xcresult merge failed: \(error)")
+            mergeStatus = "failed"
+            log?.error("Result merge FAILED — reports are still written; raw per-chunk bundles are published: \(error)")
+            await health.record(RunHealthEvent(kind: .mergeFailed, source: "controller", detail: "\(error)"))
         }
 
-        try writeReports(snapshot: snapshot, duration: duration)
+        let healthEvents = await health.all()
+        let retainedArtifacts = await collector.retainedArtifacts().map {
+            $0.replacingOccurrences(of: workspace.stagingPath, with: "final")
+        }
+        let duration = Date.timeIntervalSinceReferenceDate - startTime
+        try writeReports(snapshot: snapshot, context: ReportContext(
+            duration: duration,
+            executionDuration: executionDuration,
+            mergeStatus: mergeStatus,
+            healthEvents: healthEvents,
+            retainedArtifacts: retainedArtifacts
+        ))
         // Everything was staged under the run directory; one atomic rename makes it
         // `final/` — the previous final survives any failure before this point.
         let publishedPath = try workspace.publish()
         printSummary(snapshot: snapshot, duration: duration)
 
-        let healthEvents = await health.all()
         if !healthEvents.isEmpty {
             log?.warning("Infrastructure health (\(healthEvents.count) event(s)):")
             for event in healthEvents {
@@ -231,6 +260,7 @@ public struct Controller {
             duration: duration,
             mergedResultPath: mergedPath.map { _ in "\(publishedPath)/final_result.xcresult" },
             reportsWritten: true,
+            mergeFailed: mergeStatus == "failed",
             healthEvents: healthEvents
         )
     }
@@ -292,11 +322,11 @@ public struct Controller {
 
     // MARK: - Reports
 
-    private func writeReports(snapshot: TestCasesSnapshot, duration: Double) throws {
+    private func writeReports(snapshot: TestCasesSnapshot, context: ReportContext) throws {
         let junitURL = URL(fileURLWithPath: "\(workspace.stagingPath)/final_result.xml")
         let jsonURL = URL(fileURLWithPath: "\(workspace.stagingPath)/final_result.json")
-        try JSONReport.generate(tests: snapshot, duration: duration).write(to: jsonURL)
-        try JUnit().generate(tests: snapshot).write(to: junitURL, atomically: true, encoding: .utf8)
+        try JSONReport.generate(tests: snapshot, context: context).write(to: jsonURL)
+        try JUnit().generate(tests: snapshot, hostname: context.hostname).write(to: junitURL, atomically: true, encoding: .utf8)
 
         let summaryText = """
         Total Tests: \(snapshot.count)
