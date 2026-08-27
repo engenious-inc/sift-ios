@@ -8,6 +8,10 @@ struct Xcodebuild {
     let testsExecutionTimeout: Int
     let onlyTestConfiguration: String?
     let skipTestConfiguration: String?
+    /// Recorded xctestruns can carry ParallelizationEnabled=true; unless the user
+    /// explicitly opts in, Sift disables xcodebuild's own parallel testing so a chunk
+    /// can never spawn untracked simulator clones behind the scheduler's back.
+    var allowXcodebuildParallelTesting: Bool = false
 
     struct ChunkResult {
         let status: Int
@@ -35,6 +39,9 @@ struct Xcodebuild {
             "-resultBundlePath", resultBundlePath,
             "-test-timeouts-enabled", "YES",
         ]
+        if !allowXcodebuildParallelTesting {
+            arguments += ["-parallel-testing-enabled", "NO"]
+        }
         if let onlyTestConfiguration {
             arguments += ["-only-test-configuration", onlyTestConfiguration]
         }

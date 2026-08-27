@@ -14,19 +14,22 @@ final class XCTestRunTests: XCTestCase {
         let path = try fixture("v2-sim.xctestrun")
         let xctestrun = try XCTestRunFactory.create(path: path, log: nil)
         XCTAssertTrue(xctestrun is XCTestRunV2)
-        let bundles = xctestrun.testBundleExecPaths(config: nil)
+        let bundles = xctestrun.testBundles(config: nil)
         XCTAssertEqual(bundles.count, 1)
-        XCTAssertEqual(bundles[0].target, "BulkTest")
-        XCTAssertTrue(bundles[0].path.contains("BulkTest.xctest/BulkTest"), "iOS bundle exec path: \(bundles[0].path)")
+        XCTAssertEqual(bundles[0].bundleName, "BulkTest")
+        XCTAssertEqual(bundles[0].productModuleName, "BulkTest")
+        XCTAssertTrue(bundles[0].executablePath.contains("BulkTest.xctest/BulkTest"), "iOS bundle exec path: \(bundles[0].executablePath)")
         XCTAssertFalse(xctestrun.dependentProductPaths(config: nil).isEmpty)
+        XCTAssertEqual(try xctestrun.platform(), .simulator)
     }
 
     func testV2MacBundleExecPathUsesContentsMacOS() throws {
         let path = try fixture("v2-mac.xctestrun")
         let xctestrun = try XCTestRunFactory.create(path: path, log: nil)
-        let bundles = xctestrun.testBundleExecPaths(config: nil)
+        let bundles = xctestrun.testBundles(config: nil)
         XCTAssertEqual(bundles.count, 1)
-        XCTAssertTrue(bundles[0].path.hasSuffix("BulkTest.xctest/Contents/MacOS/BulkTest"), bundles[0].path)
+        XCTAssertTrue(bundles[0].executablePath.hasSuffix("BulkTest.xctest/Contents/MacOS/BulkTest"), bundles[0].executablePath)
+        XCTAssertEqual(try xctestrun.platform(), .macOS)
     }
 
     func testV2RoundTripPreservesUnmodeledKeys() throws {
@@ -79,10 +82,10 @@ final class XCTestRunTests: XCTestCase {
         var xctestrun = try XCTestRunFactory.create(path: path, log: nil)
         XCTAssertTrue(xctestrun is XCTestRunV1)
 
-        let bundles = xctestrun.testBundleExecPaths(config: nil)
+        let bundles = xctestrun.testBundles(config: nil)
         XCTAssertEqual(bundles.count, 1)
-        XCTAssertEqual(bundles[0].target, "MyUITests")
-        XCTAssertTrue(bundles[0].path.contains("MyUITests.xctest/MyUITests"))
+        XCTAssertEqual(bundles[0].bundleName, "MyUITests")
+        XCTAssertTrue(bundles[0].executablePath.contains("MyUITests.xctest/MyUITests"))
 
         XCTAssertEqual(xctestrun.skipTestIdentifiers(config: nil)["MyUITests"], ["MyUITests/testSkipped"])
         XCTAssertEqual(xctestrun.dependentProductPaths(config: nil).count, 2)

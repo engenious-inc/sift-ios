@@ -18,6 +18,9 @@ public struct Config: Codable, Sendable {
     public var tearDownScriptPath: String?
     public var onlyTestConfiguration: String?
     public var skipTestConfiguration: String?
+    /// Opt back in to xcodebuild's own parallel testing inside a chunk (default: disabled —
+    /// nested parallelism spawns simulator clones the scheduler cannot account for).
+    public var allowXcodebuildParallelTesting: Bool?
     public var nodes: [NodeConfig]
     public var tests: [String]?
 

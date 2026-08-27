@@ -84,11 +84,34 @@ Values support `${ENV_VAR}` substitution; unresolved variables are an error.
 
 ```bash
 Sift run --config config.json            # exit 0 = all passed; 1 = failures; 124 = timeout/cancelled
-Sift run --config config.json --only-testing 'Module/Class/testName()'
+Sift run --config config.json --only-testing 'Bundle/Class/testName()'
+Sift run --config config.json --only-testing 'Bundle/Class'        # whole class
+Sift run --config config.json --only-testing 'Bundle'              # whole bundle
 Sift run --config config.json --tests-path tests.txt   # newline-separated test list
 Sift run --config config.json --timeout 3600           # global watchdog (exit 124 on expiry)
 Sift list --config config.json           # print all tests in the bundles, no SSH needed
 ```
+
+Test identifiers use the `.xctest` **bundle name** as their first component (the same
+namespace `xcodebuild -only-testing:` uses) — for a target named "My UITests" that is
+`My UITests/LoginTests/testLogin()`. A selector that matches nothing is an error with
+close-match suggestions, never a silently scheduled phantom test.
+
+### Test discovery
+
+Discovery uses `xcodebuild -enumerate-tests` (Xcode 16+) by default: it sees
+Objective-C and Swift tests alike, respects test-plan enablement, and never invents
+phantom tests. Enumerating a simulator-platform artifact needs an **available local
+iOS simulator** on the controller machine (it may be shut down; Sift picks a booted
+one first). Device-platform artifacts need a connected device for enumeration — or
+use the transitional `--discovery symbols` backend (Swift-only `nm` scan), which is
+kept for one release and then removed.
+
+Sift passes `-parallel-testing-enabled NO` to each chunk so xcodebuild cannot spawn
+untracked simulator clones behind the scheduler's back; set
+`"allowXcodebuildParallelTesting": true` in the config to opt back in deliberately.
+A run whose executors do not match the artifact's platform (e.g. a simulator-built
+xctestrun with device UDIDs) is rejected up front with every mismatch listed.
 
 Exit codes: `0` success · `1` test failures / unexecuted tests / infrastructure failure · `64` invalid config · `124` global timeout or SIGINT/SIGTERM cancellation (partial reports are still written).
 

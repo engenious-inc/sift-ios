@@ -5,9 +5,12 @@ public struct Controller {
     private let xctestrunPath: String
     private let workspace: RunWorkspace
     private let discovery: TestDiscovery
+    private let discoveryBackend: DiscoveryBackend
     private let log: Logging?
 
     public private(set) var bundleTests: [String] = []
+    private var discoveredTests: [ScheduledTest] = []
+    private var artifactPlatform: TestPlatform?
     private var requestedTests: [String]
 
     private let allowEmptyTests: Bool
@@ -16,12 +19,14 @@ public struct Controller {
         config: Config,
         tests: [String]? = nil,
         allowEmptyTests: Bool = false,
+        discoveryBackend: DiscoveryBackend = .enumeration,
         log: Logging?
     ) {
         self.config = config
         self.xctestrunPath = config.xctestrunPath
         self.workspace = RunWorkspace(outputDirectoryPath: config.outputDirectoryPath)
         self.discovery = TestDiscovery(log: log)
+        self.discoveryBackend = discoveryBackend
         self.requestedTests = tests ?? []
         self.allowEmptyTests = allowEmptyTests
         self.log = log
@@ -32,35 +37,37 @@ public struct Controller {
     public mutating func discoverTests() async throws -> [String] {
         let xctestrun = try XCTestRunFactory.create(path: xctestrunPath, log: log)
         try xctestrun.validate(configurationName: config.onlyTestConfiguration)
+        self.artifactPlatform = try xctestrun.platform()
 
-        var tests = try await discovery.tests(xctestrun: xctestrun, configuration: config.onlyTestConfiguration)
+        var tests = try await discovery.tests(
+            xctestrun: xctestrun,
+            configuration: config.onlyTestConfiguration,
+            backend: discoveryBackend
+        )
 
         let only = xctestrun.onlyTestIdentifiers(config: config.onlyTestConfiguration)
         if !only.isEmpty {
             log?.message(verboseMsg: "OnlyTestIdentifiers:\n\(only)")
             tests = tests.filter { test in
-                let moduleName = test.components(separatedBy: "/").first ?? ""
-                guard let identifiers = only[moduleName.replacingOccurrences(of: " ", with: "_")], !identifiers.isEmpty else {
-                    return true
-                }
-                return identifiers.contains { identifierMatches($0, test: test) }
+                guard let identifiers = only[test.bundleName], !identifiers.isEmpty else { return true }
+                return identifiers.contains { identifierMatches($0, test: test.id) }
             }
         }
         let skip = xctestrun.skipTestIdentifiers(config: config.onlyTestConfiguration)
         if !skip.isEmpty {
             log?.message(verboseMsg: "SkipTestIdentifiers:\n\(skip)")
             tests = tests.filter { test in
-                let moduleName = test.components(separatedBy: "/").first ?? ""
-                guard let identifiers = skip[moduleName.replacingOccurrences(of: " ", with: "_")] else { return true }
-                return !identifiers.contains { identifierMatches($0, test: test) }
+                guard let identifiers = skip[test.bundleName] else { return true }
+                return !identifiers.contains { identifierMatches($0, test: test.id) }
             }
         }
 
-        self.bundleTests = tests
-        return tests
+        self.discoveredTests = tests
+        self.bundleTests = tests.map(\.id)
+        return bundleTests
     }
 
-    /// True when `identifier` ("Class" or "Class/test") selects `test` ("Module/Class/test()").
+    /// True when `identifier` ("Class" or "Class/test") selects `test` ("Bundle/Class/test()").
     private func identifierMatches(_ identifier: String, test: String) -> Bool {
         let testComponents = test.components(separatedBy: "/").dropFirst().map { $0.replacingOccurrences(of: "()", with: "") }
         let identifierComponents = identifier.components(separatedBy: "/").map { $0.replacingOccurrences(of: "()", with: "") }
@@ -73,8 +80,19 @@ public struct Controller {
     public mutating func run() async throws -> RunOutcome {
         let startTime = Date.timeIntervalSinceReferenceDate
 
-        let discovered = try await discoverTests()
-        let testsForRun = requestedTests.isEmpty ? discovered : TestName.canonicalList(requestedTests)
+        _ = try await discoverTests()
+
+        // Requested selectors are expanded against the discovered set: class/module
+        // granularity works, and a typo is a selection error here — never a phantom
+        // test burning infrastructure retries downstream.
+        let testsForRun: [String]
+        if requestedTests.isEmpty {
+            testsForRun = bundleTests
+        } else {
+            testsForRun = try TestSelector.expand(rawSelectors: requestedTests, against: discoveredTests).map(\.id)
+        }
+
+        try validateExecutorPlatforms()
 
         guard !testsForRun.isEmpty else {
             if allowEmptyTests {
@@ -87,10 +105,7 @@ public struct Controller {
                     emptyRunAllowed: true
                 )
             }
-            throw NSError(
-                domain: "No tests were discovered for execution. If an empty test list is expected, pass --allow-empty-tests.",
-                code: 1
-            )
+            throw XCTestRunError("No tests were discovered for execution. If an empty test list is expected, pass --allow-empty-tests.")
         }
 
         log?.message("Total tests for execution: \(testsForRun.count)")
@@ -149,7 +164,7 @@ public struct Controller {
             mergedPath = try await collector.mergeAll()
         } catch {
             log?.error("Result merge FAILED: \(error)")
-            throw NSError(domain: "xcresult merge failed: \(error)", code: 1)
+            throw XCTestRunError("xcresult merge failed: \(error)")
         }
 
         try writeReports(snapshot: snapshot, duration: duration)
@@ -161,6 +176,33 @@ public struct Controller {
             mergedResultPath: mergedPath,
             reportsWritten: true
         )
+    }
+
+    /// A simulator-built artifact cannot run on devices or macOS (and vice versa).
+    /// Reject the run listing every incompatible node/UDID rather than failing
+    /// chunk-by-chunk at execution time.
+    private func validateExecutorPlatforms() throws {
+        guard let platform = artifactPlatform else { return }
+        var violations: [String] = []
+        for node in config.nodes {
+            func check(_ udids: [String]?, type: TestExecutorType, label: String) {
+                guard let udids, !udids.isEmpty else { return }
+                if !platform.allowedExecutorTypes.contains(type) {
+                    violations.append(
+                        "node '\(node.name)': \(udids.count) \(label) UDID(s) configured, but the xctestrun "
+                        + "was built for \(platform.displayName)"
+                    )
+                }
+            }
+            check(node.UDID.simulators, type: .simulator, label: "simulator")
+            check(node.UDID.devices, type: .device, label: "device")
+            check(node.UDID.mac, type: .macOS, label: "mac")
+        }
+        guard violations.isEmpty else {
+            throw XCTestRunError(
+                "Executor/platform mismatch:\n" + violations.map { "  - \($0)" }.joined(separator: "\n")
+            )
+        }
     }
 
     // MARK: - Build packaging

@@ -2,6 +2,8 @@
 import Foundation
 import SiftLib
 
+extension DiscoveryBackend: ExpressibleByArgument {}
+
 @main
 struct Sift: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
@@ -34,6 +36,9 @@ extension Sift {
 
         @Flag(name: [.customLong("allow-empty-tests")], help: "Exit successfully when no tests are discovered instead of failing.")
         var allowEmptyTests: Bool = false
+
+        @Option(name: [.customLong("discovery")], help: "Test discovery backend: 'enumeration' (xcodebuild -enumerate-tests, default) or 'symbols' (legacy Swift-only symbol scan; transitional).")
+        var discovery: DiscoveryBackend = .enumeration
 
         @Flag(name: [.customLong("disable-tests-results-processing")], help: .hidden)
         var isTestProcessingDisabled: Bool = false
@@ -71,11 +76,13 @@ extension Sift {
                 throw ExitCode(64) // EX_USAGE: bad configuration
             }
 
+            let discoveryBackend = discovery
             let runTask = Task {
                 var controller = Controller(
                     config: config,
                     tests: tests,
                     allowEmptyTests: allowEmptyTests,
+                    discoveryBackend: discoveryBackend,
                     log: log
                 )
                 return try await controller.run()
@@ -153,6 +160,9 @@ extension Sift {
         @Option(name: [.customShort("c"), .customLong("config")], help: "Path to the JSON config file.")
         var path: String
 
+        @Option(name: [.customLong("discovery")], help: "Test discovery backend: 'enumeration' (default) or 'symbols'.")
+        var discovery: DiscoveryBackend = .enumeration
+
         func run() async throws {
             var log = Log()
             log.quiet = true
@@ -165,7 +175,7 @@ extension Sift {
                 throw ExitCode(64) // same mapping as `run`: bad configuration
             }
             do {
-                var controller = Controller(config: config, log: log)
+                var controller = Controller(config: config, discoveryBackend: discovery, log: log)
                 // Discovery only: no build zipping, no SSH connections.
                 let tests = try await controller.discoverTests()
                 for test in tests.sorted() {
