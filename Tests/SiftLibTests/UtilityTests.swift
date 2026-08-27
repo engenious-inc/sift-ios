@@ -120,9 +120,11 @@ final class UtilityTests: XCTestCase {
     }
 
     func testDiscoveryAgainstRealBulkBinary() async throws {
-        let binary = "/Users/antonprokuda/Repos/Bulk/DerivedData/mac/Build/Products/Debug/BulkTest-Runner.app/Contents/PlugIns/BulkTest.xctest/Contents/MacOS/BulkTest"
-        guard FileManager.default.fileExists(atPath: binary) else {
-            throw XCTSkip("Bulk build products not present on this machine")
+        // Env-driven so the test is machine-independent: point SIFT_TEST_BULK_BINARY
+        // at a built .xctest executable to enable it.
+        guard let binary = ProcessInfo.processInfo.environment["SIFT_TEST_BULK_BINARY"],
+              FileManager.default.fileExists(atPath: binary) else {
+            throw XCTSkip("SIFT_TEST_BULK_BINARY not set or not present on this machine")
         }
         let tests = try await TestDiscovery().dump(binaryPath: binary, moduleName: "BulkTest")
         XCTAssertEqual(tests.count, 30)

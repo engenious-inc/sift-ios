@@ -57,7 +57,7 @@ final class SSHIntegrationTests: XCTestCase {
     func testBackgroundProcessLifecycle() async throws {
         let ssh = try await makeConnectedSSH()
         let workDirectory = "/tmp/sift-bg-\(UUID().uuidString)"
-        defer { Task { _ = try? await ssh.run("rm -rf \(workDirectory.shellQuoted)") } }
+        addTeardownBlock { _ = try? await ssh.run("rm -rf \(workDirectory.shellQuoted)") }
 
         let handle = try await ssh.startBackgroundProcess(
             command: "echo started; sleep 1; echo done; exit 7",
@@ -83,7 +83,7 @@ final class SSHIntegrationTests: XCTestCase {
     func testBackgroundProcessTermination() async throws {
         let ssh = try await makeConnectedSSH()
         let workDirectory = "/tmp/sift-bg-\(UUID().uuidString)"
-        defer { Task { _ = try? await ssh.run("rm -rf \(workDirectory.shellQuoted)") } }
+        addTeardownBlock { _ = try? await ssh.run("rm -rf \(workDirectory.shellQuoted)") }
 
         let handle = try await ssh.startBackgroundProcess(
             command: "sleep 300",
@@ -106,7 +106,7 @@ final class SSHIntegrationTests: XCTestCase {
     func testTerminationRefusesWrongMarker() async throws {
         let ssh = try await makeConnectedSSH()
         let workDirectory = "/tmp/sift-bg-\(UUID().uuidString)"
-        defer { Task { _ = try? await ssh.run("rm -rf \(workDirectory.shellQuoted)") } }
+        addTeardownBlock { _ = try? await ssh.run("rm -rf \(workDirectory.shellQuoted)") }
 
         let handle = try await ssh.startBackgroundProcess(
             command: "sleep 5; exit 0",
