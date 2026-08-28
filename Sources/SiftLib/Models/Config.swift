@@ -198,19 +198,29 @@ public struct Config: Codable, Sendable {
                 if node.password != nil || node.privateKey != nil || node.publicKey != nil || node.passphrase != nil {
                     violations.append("\(label): local transport takes no credentials")
                 }
+                // Same orphaned-field rule as credentials: ssh-only fields on a local
+                // node usually mean a copied entry whose transport was flipped — the
+                // author may believe tests run on `host` when they run right here.
+                if node.host != nil || node.port != nil || node.username != nil || node.hostKeyVerification != nil {
+                    violations.append("\(label): local transport takes no host, port, username, or hostKeyVerification")
+                }
             } else {
                 let host = node.host ?? ""
-                if host.trimmingCharacters(in: .whitespaces).isEmpty {
+                if host.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                     violations.append("\(label): host is required for the ssh transport")
-                } else if host != host.trimmingCharacters(in: .whitespaces) || host.contains(" ") {
+                } else if host.rangeOfCharacter(from: .whitespacesAndNewlines) != nil {
                     violations.append("\(label): host contains whitespace ('\(host)')")
                 }
-                if (node.username ?? "").trimmingCharacters(in: .whitespaces).isEmpty {
+                let username = node.username ?? ""
+                if username.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                     violations.append("\(label): username is required for the ssh transport")
+                } else if username.rangeOfCharacter(from: .whitespacesAndNewlines) != nil {
+                    violations.append("\(label): username contains whitespace ('\(username)')")
                 }
             }
-            if node.name.trimmingCharacters(in: .whitespaces).isEmpty {
-                violations.append("node with host \(node.host): name must not be empty")
+            let endpointHost = node.transport == .local ? "local" : "\(node.hostValue):\(node.portValue)"
+            if node.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                violations.append("node at \(endpointHost): name must not be empty")
             }
             // Exactly one authentication method may be set: password OR privateKey.
             // Both is ambiguous (which wins?); neither means ssh-agent.
@@ -238,13 +248,18 @@ public struct Config: Codable, Sendable {
                 if !(1...16).contains(provision.count) {
                     violations.append("\(label): provisionSimulators.count must be in 1...16 (got \(provision.count))")
                 }
-                if provision.deviceType.trimmingCharacters(in: .whitespaces).isEmpty {
+                if provision.deviceType.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                     violations.append("\(label): provisionSimulators.deviceType must not be empty")
                 }
             }
-            let udidCount = (node.UDID.simulators?.count ?? 0)
-                + (node.UDID.devices?.count ?? 0)
-                + (node.UDID.mac?.count ?? 0)
+            let allUDIDs = (node.UDID.simulators ?? []) + (node.UDID.devices ?? []) + (node.UDID.mac ?? [])
+            // Content check, not format: devices/simulators/macs have several legit
+            // UDID shapes, but empty or whitespace-bearing values can only be
+            // templating artifacts that would otherwise fail at destination time.
+            for udid in allUDIDs where udid.isEmpty || udid.rangeOfCharacter(from: .whitespacesAndNewlines) != nil {
+                violations.append("\(label): invalid UDID '\(udid)' — UDIDs must be non-empty and contain no whitespace")
+            }
+            let udidCount = allUDIDs.filter { !$0.isEmpty && $0.rangeOfCharacter(from: .whitespacesAndNewlines) == nil }.count
             if udidCount == 0 && provisioned == 0 {
                 violations.append("\(label): at least one simulator, device, or mac UDID (or provisionSimulators) is required")
             }
@@ -253,12 +268,10 @@ public struct Config: Codable, Sendable {
             if !seenNames.insert(node.name).inserted {
                 violations.append("duplicate node name '\(node.name)' — node names must be unique")
             }
-            let endpointHost = node.transport == .local ? "local" : "\(node.hostValue):\(node.portValue)"
             let endpoint = "\(endpointHost)|\(node.deploymentPath)"
             if !seenEndpoints.insert(endpoint).inserted {
                 violations.append("\(label): duplicate endpoint (\(endpointHost), deploymentPath \(node.deploymentPath)) — merge the UDID lists into one node entry")
             }
-            let allUDIDs = (node.UDID.simulators ?? []) + (node.UDID.devices ?? []) + (node.UDID.mac ?? [])
             for udid in allUDIDs where !seenUDIDs.insert("\(endpointHost)|\(udid.uppercased())").inserted {
                 violations.append("\(label): duplicate UDID \(udid) on \(endpointHost) — one executor per device")
             }

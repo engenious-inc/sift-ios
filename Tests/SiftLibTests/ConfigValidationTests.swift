@@ -19,6 +19,8 @@ final class ConfigValidationTests: XCTestCase {
         bucket: Int = 4,
         rerun: Int = 1,
         port: Int = 22,
+        host: String = "127.0.0.1",
+        name: String = "n1",
         udids: String = #""simulators": ["ABC-123"]"#
     ) -> Data {
         """
@@ -28,8 +30,8 @@ final class ConfigValidationTests: XCTestCase {
             "rerunFailedTest": \(rerun),
             "testsBucket": \(bucket),
             "nodes": [{
-                "name": "n1",
-                "host": "127.0.0.1",
+                "name": "\(name)",
+                "host": "\(host)",
                 "port": \(port),
                 "username": "u",
                 "deploymentPath": "\(deployment)",
@@ -42,6 +44,53 @@ final class ConfigValidationTests: XCTestCase {
 
     func testValidConfigPasses() throws {
         XCTAssertNoThrow(try Config(data: makeConfigJSON()))
+    }
+
+    /// A copied ssh entry whose transport was flipped to "local" must be rejected,
+    /// not silently run the whole load on the controller machine.
+    func testLocalNodeWithSSHFieldsRejected() {
+        let json = Data("""
+        {"xctestrunPath": "/tmp/some.xctestrun", "outputDirectoryPath": "/tmp/o",
+         "rerunFailedTest": 1, "testsBucket": 1,
+         "nodes": [{"name": "here", "transport": "local", "host": "ci-mac-7", "deploymentPath": "/tmp/d",
+                    "UDID": {"simulators": ["A"]}, "xcodePath": "/Applications/Xcode.app"}]}
+        """.utf8)
+        XCTAssertThrowsError(try Config(data: json)) { error in
+            XCTAssertTrue("\(error)".contains("local transport takes no host"), "\(error)")
+        }
+    }
+
+    /// `.whitespaces` misses \n and \r; a templated "10.0.0.5\n" must fail here,
+    /// not as a confusing DNS error inside libssh2.
+    func testHostWithNewlineOrTabRejected() {
+        for badHost in [#"10.0.0.5\n"#, #"build\thost"#] {
+            XCTAssertThrowsError(try Config(data: makeConfigJSON(host: badHost))) { error in
+                XCTAssertTrue("\(error)".contains("host contains whitespace"), "\(error)")
+            }
+        }
+    }
+
+    func testNewlineOnlyNodeNameRejected() {
+        XCTAssertThrowsError(try Config(data: makeConfigJSON(name: #"\n"#))) { error in
+            XCTAssertTrue("\(error)".contains("name must not be empty"), "\(error)")
+        }
+    }
+
+    func testUsernameWithWhitespaceRejected() {
+        let json = makeConfigJSON().replacingFirst(of: #""username": "u""#, with: #""username": "u ser""#)
+        XCTAssertThrowsError(try Config(data: json)) { error in
+            XCTAssertTrue("\(error)".contains("username contains whitespace"), "\(error)")
+        }
+    }
+
+    /// An empty or padded UDID must fail preflight instead of surfacing later as a
+    /// destination-resolution error on the node.
+    func testEmptyOrPaddedUDIDRejected() {
+        for badUDIDs in [#""simulators": [""]"#, #""simulators": [" ABC-123"]"#] {
+            XCTAssertThrowsError(try Config(data: makeConfigJSON(udids: badUDIDs))) { error in
+                XCTAssertTrue("\(error)".contains("invalid UDID"), "\(error)")
+            }
+        }
     }
 
     /// `sift list` works from a MINIMAL discovery config: only the xctestrun path.

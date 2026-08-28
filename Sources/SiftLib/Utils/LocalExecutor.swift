@@ -25,6 +25,15 @@ final class LocalExecutor: SSHExecutor, @unchecked Sendable {
 
     @discardableResult
     func run(_ command: String) async throws -> (status: Int32, output: String) {
+        try await run(command, timeout: 900)
+    }
+
+    @discardableResult
+    func runBounded(_ command: String, timeoutSeconds: Int) async throws -> (status: Int32, output: String) {
+        try await run(command, timeout: Double(timeoutSeconds))
+    }
+
+    private func run(_ command: String, timeout: Double) async throws -> (status: Int32, output: String) {
         // Mirrors the SSH transport: /bin/sh semantics, and the command must run to
         // completion even on a cancelled task (teardown/terminate sequences execute
         // during cancellation), bounded so nothing can hang shutdown forever.
@@ -33,7 +42,7 @@ final class LocalExecutor: SSHExecutor, @unchecked Sendable {
         let arguments = arch.map { ["-\($0.rawValue)", "/bin/sh", "-c", command] } ?? ["-c", command]
         let result = try await CommandLineExecutor.launch(
             executable: executable, arguments: arguments,
-            onCancellation: .runToCompletion, timeout: 900
+            onCancellation: .runToCompletion, timeout: timeout
         )
         return (result.status, result.stdout)
     }

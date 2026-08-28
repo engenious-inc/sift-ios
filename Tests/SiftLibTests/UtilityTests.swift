@@ -51,6 +51,19 @@ final class UtilityTests: XCTestCase {
         }
     }
 
+    /// A kill can cut the stream mid-multibyte-character; decoding must salvage
+    /// the valid bytes rather than discard the whole capture.
+    func testInvalidUTF8OutputIsLossilyDecodedNotDiscarded() async throws {
+        let result = try await CommandLineExecutor.launch(
+            executable: "/bin/sh", arguments: ["-c", "printf 'ok-\\377-end'"],
+            onCancellation: .terminateProcess, timeout: 10
+        )
+        XCTAssertEqual(result.status, 0)
+        XCTAssertTrue(result.stdout.hasPrefix("ok-"), result.stdout)
+        XCTAssertTrue(result.stdout.hasSuffix("-end"), result.stdout)
+        XCTAssertTrue(result.stdout.contains("\u{FFFD}"), result.stdout)
+    }
+
     /// Process-GROUP escalation: the sh leader dies on TERM, its grandchild traps
     /// TERM and keeps respawning sleeps. Escalation keyed on the DIRECT child would
     /// stop there and leak the grandchild; group-liveness escalation must KILL it.

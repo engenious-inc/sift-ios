@@ -136,6 +136,11 @@ final class SSH: SSHExecutor, @unchecked Sendable {
         try await run(command, opTimeoutMsec: SSH.commandTimeoutMsec)
     }
 
+    @discardableResult
+    func runBounded(_ command: String, timeoutSeconds: Int) async throws -> (status: Int32, output: String) {
+        try await run(command, opTimeoutMsec: timeoutSeconds * 1000)
+    }
+
     private func run(_ command: String, opTimeoutMsec: Int) async throws -> (status: Int32, output: String) {
         // Always execute through /bin/sh: sshd hands the command to the user's
         // login shell, and zsh's parsing differs from sh in ways that silently
