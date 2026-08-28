@@ -5,6 +5,16 @@ import SiftLib
 extension DiscoveryBackend: ExpressibleByArgument {}
 
 @main
+struct SiftMain {
+    static func main() async {
+        // If a supervisor exec'd sift with SIGCHLD ignored (dispositions survive
+        // exec), macOS auto-reaps children and waitpid can only fail — restore the
+        // default before the first subprocess is spawned.
+        signal(SIGCHLD, SIG_DFL)
+        await Sift.main()
+    }
+}
+
 struct Sift: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "sift",

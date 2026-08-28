@@ -171,12 +171,16 @@ enum CommandLineExecutor {
         // Blocking reaper: waitpid is the one exit signal that cannot miss an
         // already-exited child (kqueue NOTE_EXIT can). One short-lived GCD thread
         // per command, matching the pipe handlers' footprint.
-        let exitStatus = ExitStatusBox()
+        let waitResult = WaitResultBox()
         let terminationWaiter = TerminationWaiter()
-        DispatchQueue.global().async {
+        DispatchQueue.global().async { [pid] in
             var status: Int32 = 0
-            while waitpid(pid, &status, 0) == -1 && errno == EINTR {}
-            exitStatus.record(status)
+            var reaped: pid_t
+            repeat { reaped = waitpid(pid, &status, 0) } while reaped == -1 && errno == EINTR
+            // A non-EINTR failure (e.g. ECHILD when a supervisor left SIGCHLD
+            // ignored and the kernel auto-reaped) means the exit status is
+            // unknowable — recording `status` here would fabricate exit 0.
+            waitResult.record(reaped == pid ? .exited(status) : .waitFailed(errno))
             terminationWaiter.finish()
         }
 
@@ -238,28 +242,62 @@ enum CommandLineExecutor {
         }
         drainGuard.cancel()
 
-        // Decode waitpid status the way Foundation.Process reported it: exit code
-        // for a normal exit, signal number + .uncaughtSignal for a signalled death.
-        let raw = exitStatus.value
-        let signalNumber = raw & 0x7f
-        return CommandResult(
-            status: signalNumber != 0 ? signalNumber : (raw >> 8) & 0xff,
-            stdout: String(data: stdoutCollector.take(), encoding: .utf8) ?? "",
-            stderr: String(data: stderrCollector.take(), encoding: .utf8) ?? "",
-            terminationReason: signalNumber != 0 ? .uncaughtSignal : .exit
-        )
+        // Lossy decoding: a kill/timeout can cut the stream mid-multibyte-character,
+        // and a strict decode would discard the entire captured output over one
+        // dangling prefix — exactly on the failure paths where it is needed most.
+        let stdout = String(decoding: stdoutCollector.take(), as: UTF8.self)
+        let stderr = String(decoding: stderrCollector.take(), as: UTF8.self)
+
+        switch waitResult.value {
+        case .exited(let raw)?:
+            // Decode waitpid status the way Foundation.Process reported it: exit code
+            // for a normal exit, signal number + .uncaughtSignal for a signalled death.
+            let signalNumber = raw & 0x7f
+            return CommandResult(
+                status: signalNumber != 0 ? signalNumber : (raw >> 8) & 0xff,
+                stdout: stdout,
+                stderr: stderr,
+                terminationReason: signalNumber != 0 ? .uncaughtSignal : .exit
+            )
+        case .waitFailed(let code)?:
+            var diagnostic = "waitpid failed: \(String(cString: strerror(code))) — child exit status unknown"
+            if !stderr.isEmpty { diagnostic += "\nchild stderr: \(stderr)" }
+            throw CommandError(
+                command: ([executable] + arguments).joined(separator: " "),
+                status: -1,
+                stderr: diagnostic,
+                stdout: stdout
+            )
+        case nil:
+            // finish() only runs after record(); reaching here would be a latch bug.
+            var diagnostic = "child exit status was never recorded"
+            if !stderr.isEmpty { diagnostic += "\nchild stderr: \(stderr)" }
+            throw CommandError(
+                command: ([executable] + arguments).joined(separator: " "),
+                status: -1,
+                stderr: diagnostic,
+                stdout: stdout
+            )
+        }
     }
 
-    private final class ExitStatusBox: @unchecked Sendable {
+    /// How the reaper's waitpid ended: with the child's raw status, or with a
+    /// wait error that makes the real status unknowable.
+    private enum WaitResult {
+        case exited(Int32)
+        case waitFailed(Int32) // errno
+    }
+
+    private final class WaitResultBox: @unchecked Sendable {
         private let lock = NSLock()
-        private var status: Int32 = -1
-        func record(_ newStatus: Int32) {
+        private var result: WaitResult?
+        func record(_ newResult: WaitResult) {
             lock.lock(); defer { lock.unlock() }
-            status = newStatus
+            result = newResult
         }
-        var value: Int32 {
+        var value: WaitResult? {
             lock.lock(); defer { lock.unlock() }
-            return status
+            return result
         }
     }
 

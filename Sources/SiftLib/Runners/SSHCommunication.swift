@@ -19,7 +19,8 @@ struct SSHCommunication {
     }
 
     func connect() async throws {
-        log?.message(verboseMsg: "Connecting to \(nodeName) (\(config.host):\(config.port))...")
+        let endpoint = config.transport == .local ? "local" : "\(config.hostValue):\(config.portValue)"
+        log?.message(verboseMsg: "Connecting to \(nodeName) (\(endpoint))...")
         try await ssh.connect(
             username: config.usernameValue,
             password: config.password,
@@ -72,8 +73,11 @@ struct SSHCommunication {
         var outcomes = await ssh.terminateOwnedProcesses(workDirectory: remoteWorkPath)
         var needsReconnect = outcomes.contains { $0 != .confirmedDead }
         if !needsReconnect {
-            do { _ = try await ssh.run("true") } catch { needsReconnect = true }
+            // runFast: a black-holed session must surface here within a minute, not
+            // stall shutdown for the 15-minute long-command timeout.
+            do { _ = try await ssh.runFast("true") } catch { needsReconnect = true }
         }
+        var sessionUsable = true
         if needsReconnect {
             // The session may be dead (SSH drop): reconnect once and re-sweep so a
             // launched xcodebuild can never outlive the run unobserved.
@@ -82,6 +86,7 @@ struct SSHCommunication {
                 try await connect()
                 outcomes = await ssh.terminateOwnedProcesses(workDirectory: remoteWorkPath)
             } catch {
+                sessionUsable = false
                 log?.error("\(nodeName): cleanup reconnect failed (\(error)) — remote processes may be unverified")
             }
         }
@@ -89,7 +94,14 @@ struct SSHCommunication {
             log?.error("\(nodeName): could not verify a remote process died during cleanup (\(reason)) — check \(remoteWorkPath)/proc on the node")
             await health.record(RunHealthEvent(kind: .processUnverified, source: nodeName, detail: "\(reason) — check \(remoteWorkPath)/proc"))
         }
-        let removal = try? await ssh.run("rm -rf \(remoteWorkPath.shellQuoted)")
+        // Removal only over a session that last proved usable, and bounded even
+        // then: the session can die between that proof and this command, and the
+        // full long-command timeout would wedge shutdown. 5 minutes is roomy for
+        // a genuinely large deletion; the no-removal warning below is the honest
+        // outcome for a node whose session is gone.
+        let removal = sessionUsable
+            ? (try? await ssh.runBounded("rm -rf \(remoteWorkPath.shellQuoted)", timeoutSeconds: 300))
+            : nil
         if removal == nil || removal?.status != 0 {
             log?.warning("\(nodeName): remote cleanup incomplete — \(remoteWorkPath) may remain on the node")
             await health.record(RunHealthEvent(kind: .cleanupIncomplete, source: nodeName, detail: "\(remoteWorkPath) may remain on the node"))
