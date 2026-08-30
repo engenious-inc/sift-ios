@@ -70,12 +70,14 @@ public struct SSHError: Swift.Error, CustomStringConvertible, Sendable {
         return SSHError(kind: Kind(rawValue: -code) ?? .genericError, session: session)
     }
     
-    static func genericError(_ message: String) -> SSHError {
+    public static func genericError(_ message: String) -> SSHError {
         return SSHError(kind: .genericError, message: message)
     }
     
     static func mostRecentError(session: OpaquePointer, backupMessage: String = "") -> SSHError {
-        let kind = Kind(rawValue: libssh2_session_last_errno(session)) ?? .genericError
+        // libssh2 errnos are negative; Kind raw values are their negations
+        // (matching codeError) — without the sign flip every error decayed to generic.
+        let kind = Kind(rawValue: -libssh2_session_last_errno(session)) ?? .genericError
         return SSHError(kind: kind, session: session, backupMessage: backupMessage)
     }
     

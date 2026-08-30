@@ -1,0 +1,62 @@
+{
+  "devices" : [
+    {
+      "architecture" : "arm64",
+      "deviceId" : "E8BEE54F-6E53-4354-AC05-6E30D6385879",
+      "deviceName" : "iPhone 17 Pro",
+      "modelName" : "iPhone 17 Pro",
+      "osBuildNumber" : "23F77",
+      "osVersion" : "26.5",
+      "platform" : "iOS Simulator"
+    }
+  ],
+  "testNodes" : [
+    {
+      "children" : [
+        {
+          "children" : [
+            {
+              "duration" : "0.00065s",
+              "durationInSeconds" : 0.0006549358367919922,
+              "name" : "modernAdditionWorks()",
+              "nodeIdentifier" : "modernAdditionWorks()",
+              "nodeIdentifierURL" : "test://com.apple.xcode/SiftFixtures/SwiftTestingFixtures/modernAdditionWorks()",
+              "nodeType" : "Test Case",
+              "result" : "Passed"
+            },
+            {
+              "children" : [
+                {
+                  "duration" : "0.000075s",
+                  "durationInSeconds" : 7.510185241699219e-05,
+                  "name" : "suiteCaseWorks()",
+                  "nodeIdentifier" : "ModernSuite/suiteCaseWorks()",
+                  "nodeIdentifierURL" : "test://com.apple.xcode/SiftFixtures/SwiftTestingFixtures/ModernSuite/suiteCaseWorks()",
+                  "nodeType" : "Test Case",
+                  "result" : "Passed"
+                }
+              ],
+              "name" : "ModernSuite",
+              "nodeIdentifierURL" : "test://com.apple.xcode/SiftFixtures/SwiftTestingFixtures/ModernSuite",
+              "nodeType" : "Test Suite",
+              "result" : "Passed"
+            }
+          ],
+          "name" : "SwiftTestingFixtures",
+          "nodeIdentifierURL" : "test://com.apple.xcode/SiftFixtures/SwiftTestingFixtures",
+          "nodeType" : "Unit test bundle",
+          "result" : "Passed"
+        }
+      ],
+      "name" : "FixtureTests",
+      "nodeType" : "Test Plan",
+      "result" : "Passed"
+    }
+  ],
+  "testPlanConfigurations" : [
+    {
+      "configurationId" : "1",
+      "configurationName" : "Test Scheme Action"
+    }
+  ]
+}

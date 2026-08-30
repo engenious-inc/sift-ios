@@ -58,58 +58,47 @@ public struct SSHAgent: SSHAuthMethod {
 
 /// Key-based authentication method
 public struct SSHKey: SSHAuthMethod {
-    
+
     public let privateKey: String
-    public let publicKey: String
+    /// nil = let libssh2 derive the public key from the private key (a missing
+    /// `.pub` sidecar must not fail authentication).
+    public let publicKey: String?
     public let passphrase: String?
-    
+
     /// Creates a new key-based authentication
     ///
     /// - Parameters:
     ///   - privateKey: the path to the private key
     ///   - publicKey: the path to the public key; defaults to private key path + ".pub"
+    ///     when that file exists, else nil (derived from the private key)
     ///   - passphrase: the passphrase encrypting the key; defaults to nil
     public init(privateKey: String, publicKey: String? = nil, passphrase: String? = nil) {
         self.privateKey = NSString(string: privateKey).expandingTildeInPath
         if let publicKey = publicKey {
             self.publicKey = NSString(string: publicKey).expandingTildeInPath
         } else {
-            self.publicKey = self.privateKey + ".pub"
+            let sidecar = self.privateKey + ".pub"
+            self.publicKey = FileManager.default.fileExists(atPath: sidecar) ? sidecar : nil
         }
         self.passphrase = passphrase
     }
     
     public func authenticate(ssh: SSH, username: String) throws {
-        // If programatically given a passphrase, use it
-        if let passphrase = passphrase {
-            try ssh.session.authenticate(username: username,
-                                             privateKey: privateKey,
-                                             publicKey: publicKey,
-                                             passphrase: passphrase)
-            return
-        }
-        
-        // Otherwise, try logging in without any passphrase
+        // Never prompt interactively: Sift runs headless in CI, where a getpass()
+        // prompt hangs the run forever. A passphrase-protected key without a
+        // passphrase is a configuration error, not a prompt opportunity.
         do {
             try ssh.session.authenticate(username: username,
-                                             privateKey: privateKey,
-                                             publicKey: publicKey,
-                                             passphrase: nil)
-            return
-        } catch {}
-        
-        // If that doesn't work, try using the Agent in case the passphrase has been saved there
-        do {
-            try SSHAgent().authenticate(ssh: ssh, username: username)
-            return
-        } catch {}
-        
-        // Finally, as a fallback, ask for the passphrase
-        let enteredPassphrase = String(cString: getpass("Enter passphrase for \(privateKey) (empty for no passphrase):"))
-        try ssh.session.authenticate(username: username,
                                          privateKey: privateKey,
                                          publicKey: publicKey,
-                                         passphrase: enteredPassphrase)
+                                         passphrase: passphrase)
+        } catch {
+            throw SSHError.genericError(
+                "key authentication failed for \(username) with key \(privateKey)" +
+                (passphrase == nil ? " (no passphrase given — if the key is encrypted, provide 'passphrase' in the node config or use ssh-agent)" : "") +
+                ": \(error)"
+            )
+        }
     }
     
 }
