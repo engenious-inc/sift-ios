@@ -1,227 +1,284 @@
 import Foundation
 
+/// FormatVersion 2 xctestrun (Xcode 11+ test-plan format).
+///
+/// Queries are answered from an immutable typed snapshot taken at parse time.
+/// Mutations (environment injection, timeouts) are recorded as values and applied
+/// to the ORIGINAL property-list tree in `data()`, so every key Sift does not
+/// model survives the round trip to the nodes unchanged.
 public struct XCTestRunV2: XCTestRun {
-	
-	var testConfigurations: [TestConfiguration]
-	var testPlan: TestPlan
-	var xctestrunMetadata: XctestrunMetadata?
-	
-	enum CodingKeys: String, CodingKey {
-		case testConfigurations = "TestConfigurations"
-		case testPlan = "TestPlan"
-		case xctestrunMetadata = "__xctestrun_metadata__"
-	}
-	
-	public private(set) var testRootPath = ""
-	public private(set) var xctestrunFileName = ""
-	
-	public func testBundleExecPaths(config: String?) -> [(target: String, path: String)] {
-		guard let testConfig = self.testConfigurations.first(where: { config == nil ? true : $0.name == config }) else {
-			return []
-		}
-		
-		return testConfig.testTargets.compactMap {
-			guard let path = $0.testBundleExecPath?.replacingOccurrences(of: "__TESTROOT__", with: self.testRootPath) else {
-				return nil
-			}
-			return ($0.productModuleName, path)
-		}
-	}
-	
-	public func dependentProductPaths(config: String?) -> [String] {
-		guard let testConfig = self.testConfigurations.first(where: { config == nil ? true : $0.name == config }) else {
-			return []
-		}
-		
-		return testConfig.testTargets
-			.flatMap { $0.dependentProductPaths }
-			.map { $0.replacingOccurrences(of: "__TESTROOT__", with: self.testRootPath) }
-	}
-	
-	public func onlyTestIdentifiers(config: String?) -> [String: [String]] {
-		guard let testConfig = self.testConfigurations.first(where: { config == nil ? true : $0.name == config }) else {
-			return [:]
-		}
-		
-		return testConfig.testTargets
-			.reduce([String: [String]]()) { (result, target) -> [String: [String]] in
-				var result = result
-				result[target.productModuleName] = target.onlyTestIdentifiers ?? []
-				return result
-			}
-	}
-	
-	public func skipTestIdentifiers(config: String?) -> [String: [String]] {
-		guard let testConfig = self.testConfigurations.first(where: { config == nil ? true : $0.name == config }) else {
-			return [:]
-		}
-		
-		return testConfig.testTargets
-			.reduce([String: [String]]()) { (result, target) -> [String: [String]] in
-				var result = result
-				result[target.productModuleName] = target.skipTestIdentifiers ?? []
-				return result
-			}
-	}
-	
-    mutating public func addEnvironmentVariables(_ values: [String: String]?) {
-		guard let values = values, !values.isEmpty else { return }
-		self.testConfigurations
-			.compactMap { $0.testTargets }
-			.flatMap { $0 }
-			.forEach {
-				$0.environmentVariables?.merge(values) { (_, new) -> String in new }
-			}
-	}
-    
-    mutating public func add(timeout: Int) {
-        self.testConfigurations
-            .compactMap { $0.testTargets }
-            .flatMap { $0 }
-            .forEach {
-                $0.testTimeoutsEnabled = true
-                $0.defaultTestExecutionTimeAllowance = timeout
-            }
+
+    struct Target: Sendable {
+        var blueprintName: String?
+        var productModuleName: String
+        var testBundlePath: String
+        var testHostPath: String
+        var isEnabled: Bool
+        var dependentProductPaths: [String]
+        var onlyTestIdentifiers: [String]
+        var skipTestIdentifiers: [String]
+        var testingEnvironmentVariables: [String: String]
+
+        var targetKey: String { blueprintName ?? productModuleName }
+        var bundleName: String { TestBundleDescriptor.bundleName(fromBundlePath: testBundlePath) }
     }
-	
-	public func save(path: String) throws {
-		try (data() as NSData).write(toFile: path)
-	}
-	
-	public func data() throws -> Data {
-		return try PropertyListEncoder().encode(self)
-	}
-	
-	init(path: String) throws {
-		let data = try NSData(contentsOfFile: path) as Data
-		self = try PropertyListDecoder().decode(XCTestRunV2.self, from: data)
-		
-		let pathComponents = path.components(separatedBy: "/")
-		xctestrunFileName = pathComponents.last!
-		testRootPath = pathComponents.dropLast().joined(separator: "/")
-	}
+
+    struct Configuration: Sendable {
+        var name: String?
+        var isEnabled: Bool
+        var targets: [Target]
+
+        var enabledTargets: [Target] { targets.filter(\.isEnabled) }
+    }
+
+    public let xctestrunFileName: String
+    public let xctestrunPath: String
+    public let testRootPath: String
+
+    private let rawData: Data
+    private let configurations: [Configuration]
+
+    private var injectedEnvironment: [String: String] = [:]
+    private var injectedTimeout: Int?
+
+    init(path: String, rawData: Data, root: [String: Any]) throws {
+        self.rawData = rawData
+        self.xctestrunPath = path
+        let pathComponents = path.components(separatedBy: "/")
+        self.xctestrunFileName = pathComponents.last ?? path
+        self.testRootPath = pathComponents.dropLast().joined(separator: "/")
+
+        guard let rawConfigurations = root["TestConfigurations"] as? [[String: Any]] else {
+            throw XCTestRunError("xctestrun V2 has no TestConfigurations array: \(path)")
+        }
+        self.configurations = try rawConfigurations.map { rawConfiguration in
+            guard let rawTargets = rawConfiguration["TestTargets"] as? [[String: Any]] else {
+                throw XCTestRunError("xctestrun V2 configuration has no TestTargets array: \(path)")
+            }
+            let targets = try rawTargets.map { rawTarget -> Target in
+                guard let productModuleName = rawTarget["ProductModuleName"] as? String,
+                      let testBundlePath = rawTarget["TestBundlePath"] as? String,
+                      let testHostPath = rawTarget["TestHostPath"] as? String else {
+                    throw XCTestRunError("xctestrun V2 target is missing ProductModuleName/TestBundlePath/TestHostPath: \(path)")
+                }
+                return Target(
+                    blueprintName: rawTarget["BlueprintName"] as? String,
+                    productModuleName: productModuleName,
+                    testBundlePath: testBundlePath,
+                    testHostPath: testHostPath,
+                    isEnabled: rawTarget["IsEnabled"] as? Bool ?? true,
+                    dependentProductPaths: rawTarget["DependentProductPaths"] as? [String] ?? [],
+                    onlyTestIdentifiers: rawTarget["OnlyTestIdentifiers"] as? [String] ?? [],
+                    skipTestIdentifiers: rawTarget["SkipTestIdentifiers"] as? [String] ?? [],
+                    testingEnvironmentVariables: rawTarget["TestingEnvironmentVariables"] as? [String: String] ?? [:]
+                )
+            }
+            return Configuration(
+                name: rawConfiguration["Name"] as? String,
+                isEnabled: rawConfiguration["IsEnabled"] as? Bool ?? true,
+                targets: targets
+            )
+        }
+        guard !configurations.isEmpty else {
+            throw XCTestRunError("xctestrun V2 contains no test configurations: \(path)")
+        }
+    }
+
+    // MARK: - Configuration selection
+
+    /// Configurations that are enabled in the file.
+    private var enabledConfigurations: [Configuration] { configurations.filter(\.isEnabled) }
+
+    public func validate(configurationName: String?) throws {
+        guard let configurationName else {
+            guard !enabledConfigurations.isEmpty else {
+                throw XCTestRunError("\(xctestrunFileName) has no enabled test configurations")
+            }
+            return
+        }
+        guard let configuration = configurations.first(where: { $0.name == configurationName }) else {
+            let known = configurations.compactMap(\.name).joined(separator: "', '")
+            throw XCTestRunError(
+                "test configuration '\(configurationName)' not found in \(xctestrunFileName); available: '\(known)'"
+            )
+        }
+        guard configuration.isEnabled else {
+            throw XCTestRunError("test configuration '\(configurationName)' is disabled in \(xctestrunFileName)")
+        }
+    }
+
+    /// `selected = enabled ∩ (only == nil ? all : {only}) ∖ {skip}`.
+    /// Unknown names and an empty result are errors — a selector must never
+    /// silently select nothing.
+    public func selectedConfigurationNames(only: String?, skip: String?) throws -> [String?] {
+        try validate(configurationName: only)
+        if let skip {
+            guard configurations.contains(where: { $0.name == skip }) else {
+                let known = configurations.compactMap(\.name).joined(separator: "', '")
+                throw XCTestRunError(
+                    "skipTestConfiguration '\(skip)' not found in \(xctestrunFileName); available: '\(known)'"
+                )
+            }
+        }
+        let afterOnly = enabledConfigurations.filter { only == nil || $0.name == only }
+        let selected = afterOnly.filter { $0.name != skip || skip == nil }
+        guard !selected.isEmpty else {
+            throw XCTestRunError(
+                "configuration selection left nothing to run in \(xctestrunFileName) "
+                + "(only: \(only ?? "-"), skip: \(skip ?? "-"))"
+            )
+        }
+        return selected.map(\.name)
+    }
+
+    private func selectedConfiguration(_ name: String?) -> Configuration? {
+        guard let name else { return enabledConfigurations.first }
+        return enabledConfigurations.first { $0.name == name }
+    }
+
+    public func platform() throws -> TestPlatform {
+        guard let target = (selectedConfiguration(nil) ?? configurations.first)?.targets.first else {
+            throw XCTestRunError("xctestrun V2 contains no test targets: \(xctestrunPath)")
+        }
+        guard let platform = TestPlatform.derive(
+            testHostPath: target.testHostPath,
+            dyldPaths: dyldPaths(of: target.testingEnvironmentVariables)
+        ) else {
+            throw XCTestRunError(
+                "cannot derive the target platform of \(xctestrunFileName) — " +
+                "unrecognized TestHostPath '\(target.testHostPath)'"
+            )
+        }
+        return platform
+    }
+
+    public func testBundles(config: String?) -> [TestBundleDescriptor] {
+        guard let configuration = selectedConfiguration(config) else { return [] }
+        return configuration.enabledTargets.map { target in
+            TestBundleDescriptor(
+                targetKey: target.targetKey,
+                productModuleName: target.productModuleName,
+                bundleName: target.bundleName,
+                executablePath: executablePath(of: target)
+            )
+        }
+    }
+
+    public func dependentProductPaths(config: String?) -> [String] {
+        guard let configuration = selectedConfiguration(config) else { return [] }
+        return configuration.enabledTargets
+            .flatMap(\.dependentProductPaths)
+            .map { $0.replacingOccurrences(of: "__TESTROOT__", with: testRootPath) }
+    }
+
+    public func onlyTestIdentifiers(config: String?) -> [String: [String]] {
+        guard let configuration = selectedConfiguration(config) else { return [:] }
+        return configuration.enabledTargets.reduce(into: [:]) { result, target in
+            if !target.onlyTestIdentifiers.isEmpty {
+                result[target.bundleName] = target.onlyTestIdentifiers
+            }
+        }
+    }
+
+    public func skipTestIdentifiers(config: String?) -> [String: [String]] {
+        guard let configuration = selectedConfiguration(config) else { return [:] }
+        return configuration.enabledTargets.reduce(into: [:]) { result, target in
+            if !target.skipTestIdentifiers.isEmpty {
+                result[target.bundleName] = target.skipTestIdentifiers
+            }
+        }
+    }
+
+    private func dyldPaths(of environment: [String: String]) -> String {
+        [
+            environment["DYLD_FALLBACK_LIBRARY_PATH"],
+            environment["DYLD_LIBRARY_PATH"],
+            environment["DYLD_FALLBACK_FRAMEWORK_PATH"],
+            environment["DYLD_FRAMEWORK_PATH"],
+        ].compactMap { $0 }.joined(separator: ":")
+    }
+
+    /// Path to the test bundle's executable, used by `nm` for symbol discovery.
+    private func executablePath(of target: Target) -> String {
+        let bundlePath = target.testBundlePath
+            .replacingOccurrences(of: "__TESTHOST__", with: target.testHostPath)
+            .replacingOccurrences(of: "__TESTROOT__", with: testRootPath)
+        // Bundle executable name = bundle basename minus its extension only —
+        // never split on the first dot ("My.App.xctest" → "My.App").
+        let basename = bundlePath.components(separatedBy: "/").last ?? target.productModuleName
+        let executableName = (basename as NSString).deletingPathExtension
+
+        if dyldPaths(of: target.testingEnvironmentVariables).contains("MacOSX.platform") {
+            return "\(bundlePath)/Contents/MacOS/\(executableName)"
+        }
+        return "\(bundlePath)/\(executableName)"
+    }
+
+    // MARK: - Mutations
+
+    public mutating func addEnvironmentVariables(_ values: [String: String]?) {
+        guard let values, !values.isEmpty else { return }
+        injectedEnvironment.merge(values) { _, new in new }
+    }
+
+    public mutating func add(timeout: Int) {
+        injectedTimeout = timeout
+    }
+
+    // MARK: - Serialization
+
+    public func data() throws -> Data {
+        var root = try PlistTree.parse(rawData)
+        guard var rawConfigurations = root["TestConfigurations"] as? [[String: Any]] else {
+            throw XCTestRunError("xctestrun V2 lost its TestConfigurations during reserialization")
+        }
+        for configurationIndex in rawConfigurations.indices {
+            guard var rawTargets = rawConfigurations[configurationIndex]["TestTargets"] as? [[String: Any]] else { continue }
+            for targetIndex in rawTargets.indices {
+                try PlistTree.merge(environment: injectedEnvironment, intoKey: "EnvironmentVariables", of: &rawTargets[targetIndex])
+                if let timeout = injectedTimeout {
+                    rawTargets[targetIndex]["TestTimeoutsEnabled"] = true
+                    rawTargets[targetIndex]["DefaultTestExecutionTimeAllowance"] = timeout
+                    rawTargets[targetIndex]["MaximumTestExecutionTimeAllowance"] = timeout
+                }
+            }
+            rawConfigurations[configurationIndex]["TestTargets"] = rawTargets
+        }
+        root["TestConfigurations"] = rawConfigurations
+        return try PlistTree.serialize(root)
+    }
 }
 
-extension XCTestRunV2 {
-	
-	// MARK: - TestConfiguration
-	class TestConfiguration: Codable, @unchecked Sendable {
-		var name: String?
-		var testTargets: [TestTarget]
+enum PlistTree {
+    static func parse(_ data: Data) throws -> [String: Any] {
+        guard let root = try PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any] else {
+            throw XCTestRunError("property list root is not a dictionary")
+        }
+        return root
+    }
 
-		enum CodingKeys: String, CodingKey {
-			case name = "Name"
-			case testTargets = "TestTargets"
-		}
-	}
+    static func serialize(_ root: [String: Any]) throws -> Data {
+        try PropertyListSerialization.data(fromPropertyList: root, format: .xml, options: 0)
+    }
 
-	// MARK: - TestTarget
-	class TestTarget: Codable {
-		var isXCTRunnerHostedTestBundle, isUITestBundle, testTimeoutsEnabled: Bool?
-		var testHostBundleIdentifier: String?
-		var useUITargetAppProvidedByTests: Bool?
-		var toolchainsSettingValue, uiTargetAppCommandLineArguments: [String]?
-		var testLanguage: String?
-		var productModuleName: String
-		var defaultTestExecutionTimeAllowance: Int?
-		var uiTargetAppEnvironmentVariables: [String: String]?
-		var userAttachmentLifetime: String?
-		var	testHostPath: String
-		var onlyTestIdentifiers: [String]?
-		var skipTestIdentifiers: [String]?
-		var environmentVariables: [String: String]?
-		var commandLineArguments: [String]?
-		var systemAttachmentLifetime: String?
-		var testingEnvironmentVariables: [String: String]?
-		var blueprintName, blueprintProviderName, testRegion: String?
-		var bundleIdentifiersForCrashReportEmphasis: [String]?
-		var testBundlePath: String
-		var dependentProductPaths: [String]
-        var UITargetAppMainThreadCheckerEnabled: Bool?
-        var UITargetAppPath: String?
-		
-		private var platform: String? {
-			if let DYLD_FALLBACK_LIBRARY_PATH = testingEnvironmentVariables?["DYLD_FALLBACK_LIBRARY_PATH"] {
-                if DYLD_FALLBACK_LIBRARY_PATH.contains("MacOSX.platform") {
-                    return "MacOSX"
-                } else if DYLD_FALLBACK_LIBRARY_PATH.contains("iPhoneSimulator.platform") {
-                    return "iPhoneSimulator"
-                }
-                return nil
-			}
-			
-			if let DYLD_LIBRARY_PATH = testingEnvironmentVariables?["DYLD_LIBRARY_PATH"] {
-				if DYLD_LIBRARY_PATH.contains("MacOSX.platform") {
-					return "MacOSX"
-				} else if DYLD_LIBRARY_PATH.contains("iPhoneSimulator.platform") {
-					return "iPhoneSimulator"
-				}
-				return nil
-			}
-			
-			if let DYLD_INSERT_LIBRARIES = testingEnvironmentVariables?["DYLD_INSERT_LIBRARIES"] {
-				return DYLD_INSERT_LIBRARIES.contains("iPhoneOS.platform") ? "iPhoneOS" : nil
-			}
-			
-			return nil
-		}
-		
-		//Path to *.xctest/execution file
-		var testBundleExecPath: String? {
-			let platform = platform ?? "iPhoneSimulator"
-			let bundleName = testBundlePath.components(separatedBy: "/").last?.components(separatedBy: ".").first ?? productModuleName
-			let path = platform == "MacOSX" ? "\(testBundlePath)/Contents/MacOS/\(bundleName)" : "\(testBundlePath)/\(bundleName)"
-			return path.replacingOccurrences(of: "__TESTHOST__", with: testHostPath)
-		}
-		
-		enum CodingKeys: String, CodingKey {
-			case isXCTRunnerHostedTestBundle = "IsXCTRunnerHostedTestBundle"
-			case isUITestBundle = "IsUITestBundle"
-			case testTimeoutsEnabled = "TestTimeoutsEnabled"
-			case testHostBundleIdentifier = "TestHostBundleIdentifier"
-			case useUITargetAppProvidedByTests = "UseUITargetAppProvidedByTests"
-			case toolchainsSettingValue = "ToolchainsSettingValue"
-			case uiTargetAppCommandLineArguments = "UITargetAppCommandLineArguments"
-			case testLanguage = "TestLanguage"
-			case productModuleName = "ProductModuleName"
-			case defaultTestExecutionTimeAllowance = "DefaultTestExecutionTimeAllowance"
-			case uiTargetAppEnvironmentVariables = "UITargetAppEnvironmentVariables"
-			case userAttachmentLifetime = "UserAttachmentLifetime"
-			case testHostPath = "TestHostPath"
-			case onlyTestIdentifiers = "OnlyTestIdentifiers"
-			case skipTestIdentifiers = "SkipTestIdentifiers"
-			case environmentVariables = "EnvironmentVariables"
-			case commandLineArguments = "CommandLineArguments"
-			case systemAttachmentLifetime = "SystemAttachmentLifetime"
-			case testingEnvironmentVariables = "TestingEnvironmentVariables"
-			case blueprintName = "BlueprintName"
-            case blueprintProviderName = "BlueprintProviderName"
-			case testRegion = "TestRegion"
-			case bundleIdentifiersForCrashReportEmphasis = "BundleIdentifiersForCrashReportEmphasis"
-			case testBundlePath = "TestBundlePath"
-			case dependentProductPaths = "DependentProductPaths"
-            case UITargetAppMainThreadCheckerEnabled = "UITargetAppMainThreadCheckerEnabled"
-            case UITargetAppPath = "UITargetAppPath"
-		}
-	}
-
-	// MARK: - TestPlan
-	struct TestPlan: Codable {
-		var isDefault: Bool?
-		var name: String?
-
-		enum CodingKeys: String, CodingKey {
-			case isDefault = "IsDefault"
-			case name = "Name"
-		}
-	}
-
-	// MARK: - XctestrunMetadata
-	struct XctestrunMetadata: Codable {
-		var formatVersion: Int?
-
-		enum CodingKeys: String, CodingKey {
-			case formatVersion = "FormatVersion"
-		}
-	}
+    /// Merges injected variables into the dictionary at `key`, creating it when absent.
+    /// An existing dictionary is preserved as `[String: Any]` — only the injected keys are
+    /// overwritten, and a non-dictionary value at `key` is an error rather than a silent
+    /// replacement (the historical bug dropped whole environments on a failed String cast).
+    static func merge(environment: [String: String], intoKey key: String, of dictionary: inout [String: Any]) throws {
+        guard !environment.isEmpty else { return }
+        var existing: [String: Any]
+        switch dictionary[key] {
+        case nil:
+            existing = [:]
+        case let dict as [String: Any]:
+            existing = dict
+        default:
+            throw XCTestRunError("xctestrun key '\(key)' is not a dictionary — cannot inject environment")
+        }
+        for (name, value) in environment {
+            existing[name] = value
+        }
+        dictionary[key] = existing
+    }
 }

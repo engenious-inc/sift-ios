@@ -1,0 +1,333 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 77;
+	objects = {
+
+/* Begin PBXFileReference section */
+		AA0000000000000000000041 /* My UITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = "My UITests.xctest"; sourceTree = BUILT_PRODUCTS_DIR; };
+		AA0000000000000000000042 /* ObjCTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = ObjCTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		AA0000000000000000000043 /* SwiftTestingFixtures.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = SwiftTestingFixtures.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+/* End PBXFileReference section */
+
+/* Begin PBXFileSystemSynchronizedRootGroup section */
+		AA0000000000000000000031 /* My UITests */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			explicitFileTypes = {
+			};
+			explicitFolders = (
+			);
+			path = "My UITests";
+			sourceTree = "<group>";
+		};
+		AA0000000000000000000032 /* ObjCTests */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			explicitFileTypes = {
+			};
+			explicitFolders = (
+			);
+			path = ObjCTests;
+			sourceTree = "<group>";
+		};
+		AA0000000000000000000033 /* SwiftTestingFixtures */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			explicitFileTypes = {
+			};
+			explicitFolders = (
+			);
+			path = SwiftTestingFixtures;
+			sourceTree = "<group>";
+		};
+/* End PBXFileSystemSynchronizedRootGroup section */
+
+/* Begin PBXGroup section */
+		AA0000000000000000000051 = {
+			isa = PBXGroup;
+			children = (
+				AA0000000000000000000031 /* My UITests */,
+				AA0000000000000000000032 /* ObjCTests */,
+				AA0000000000000000000033 /* SwiftTestingFixtures */,
+				AA0000000000000000000052 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		AA0000000000000000000052 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				AA0000000000000000000041 /* My UITests.xctest */,
+				AA0000000000000000000042 /* ObjCTests.xctest */,
+				AA0000000000000000000043 /* SwiftTestingFixtures.xctest */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		AA0000000000000000000001 /* My UITests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = AA0000000000000000000011 /* Build configuration list for PBXNativeTarget "My UITests" */;
+			buildPhases = (
+				AA0000000000000000000021 /* Sources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			fileSystemSynchronizedGroups = (
+				AA0000000000000000000031 /* My UITests */,
+			);
+			name = "My UITests";
+			packageProductDependencies = (
+			);
+			productName = "My UITests";
+			productReference = AA0000000000000000000041 /* My UITests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
+		AA0000000000000000000002 /* ObjCTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = AA0000000000000000000012 /* Build configuration list for PBXNativeTarget "ObjCTests" */;
+			buildPhases = (
+				AA0000000000000000000022 /* Sources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			fileSystemSynchronizedGroups = (
+				AA0000000000000000000032 /* ObjCTests */,
+			);
+			name = ObjCTests;
+			packageProductDependencies = (
+			);
+			productName = ObjCTests;
+			productReference = AA0000000000000000000042 /* ObjCTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
+		AA0000000000000000000003 /* SwiftTestingFixtures */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = AA0000000000000000000014 /* Build configuration list for PBXNativeTarget "SwiftTestingFixtures" */;
+			buildPhases = (
+				AA0000000000000000000023 /* Sources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			fileSystemSynchronizedGroups = (
+				AA0000000000000000000033 /* SwiftTestingFixtures */,
+			);
+			name = SwiftTestingFixtures;
+			packageProductDependencies = (
+			);
+			productName = SwiftTestingFixtures;
+			productReference = AA0000000000000000000043 /* SwiftTestingFixtures.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		AA0000000000000000000061 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = 1;
+				LastUpgradeCheck = 1600;
+				TargetAttributes = {
+				};
+			};
+			buildConfigurationList = AA0000000000000000000013 /* Build configuration list for PBXProject "SiftFixtures" */;
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				en,
+				Base,
+			);
+			mainGroup = AA0000000000000000000051;
+			minimizedProjectReferenceProxies = 1;
+			preferredProjectObjectVersion = 77;
+			productRefGroup = AA0000000000000000000052 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				AA0000000000000000000001 /* My UITests */,
+				AA0000000000000000000002 /* ObjCTests */,
+				AA0000000000000000000003 /* SwiftTestingFixtures */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXSourcesBuildPhase section */
+		AA0000000000000000000021 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		AA0000000000000000000022 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		AA0000000000000000000023 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin XCBuildConfiguration section */
+		AA0000000000000000000071 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CODE_SIGNING_ALLOWED = NO;
+				ENABLE_TESTABILITY = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				IPHONEOS_DEPLOYMENT_TARGET = 15.0;
+				MACOSX_DEPLOYMENT_TARGET = 12.0;
+				ONLY_ACTIVE_ARCH = YES;
+				SDKROOT = iphoneos;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator macosx";
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		AA0000000000000000000072 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CODE_SIGNING_ALLOWED = NO;
+				IPHONEOS_DEPLOYMENT_TARGET = 15.0;
+				MACOSX_DEPLOYMENT_TARGET = 12.0;
+				SDKROOT = iphoneos;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator macosx";
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
+		AA0000000000000000000073 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CURRENT_PROJECT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = YES;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = "sift.fixtures.space-tests";
+				PRODUCT_MODULE_NAME = My_UITests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+			};
+			name = Debug;
+		};
+		AA0000000000000000000074 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CURRENT_PROJECT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = YES;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = "sift.fixtures.space-tests";
+				PRODUCT_MODULE_NAME = My_UITests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+			};
+			name = Release;
+		};
+		AA0000000000000000000075 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CURRENT_PROJECT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = YES;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = sift.fixtures.objctests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+			};
+			name = Debug;
+		};
+		AA0000000000000000000076 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CURRENT_PROJECT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = YES;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = sift.fixtures.objctests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+			};
+			name = Release;
+		};
+		AA0000000000000000000077 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CURRENT_PROJECT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = YES;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = sift.fixtures.swifttesting;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+			};
+			name = Debug;
+		};
+		AA0000000000000000000078 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CURRENT_PROJECT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = YES;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = sift.fixtures.swifttesting;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		AA0000000000000000000011 /* Build configuration list for PBXNativeTarget "My UITests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				AA0000000000000000000073 /* Debug */,
+				AA0000000000000000000074 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		AA0000000000000000000012 /* Build configuration list for PBXNativeTarget "ObjCTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				AA0000000000000000000075 /* Debug */,
+				AA0000000000000000000076 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		AA0000000000000000000013 /* Build configuration list for PBXProject "SiftFixtures" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				AA0000000000000000000071 /* Debug */,
+				AA0000000000000000000072 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		AA0000000000000000000014 /* Build configuration list for PBXNativeTarget "SwiftTestingFixtures" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				AA0000000000000000000077 /* Debug */,
+				AA0000000000000000000078 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+/* End XCConfigurationList section */
+	};
+	rootObject = AA0000000000000000000061 /* Project object */;
+}

@@ -8,9 +8,12 @@
 import Foundation
 import Socket
 
-/// Manages an SSH session
-public class SSH: @unchecked Sendable {
-    
+/// Manages an SSH session.
+///
+/// Not thread-safe: all calls on one instance must be serialized by the caller
+/// (SiftLib confines each instance to a serial DispatchQueue).
+public class SSH {
+
     public enum PtyType: String {
         case vanilla
         case vt100
@@ -19,233 +22,155 @@ public class SSH: @unchecked Sendable {
         case ansi
         case xterm
     }
-    
-    /// Connects to a remote server and opens an SSH session
-    ///
-    /// - Parameters:
-    ///   - host: the host to connect to
-    ///   - port: the port to connect to; default 22
-    ///   - username: the username to login with
-    ///   - authMethod: the authentication method to use while logging in
-    ///   - execution: the block executed with the open, authenticated SSH session
-    /// - Throws: SSHError if the session fails at any point
-    public static func connect(host: String, port: Int32 = 22, username: String, authMethod: SSHAuthMethod, execution: (_ ssh: SSH) throws -> ()) throws {
-        let ssh = try SSH(host: host, port: port)
-        try ssh.authenticate(username: username, authMethod: authMethod)
-        try execution(ssh)
-    }
-    
+
     let session: Session
     private let sock: Socket
-    
+
     public var ptyType: PtyType? = nil
-    
+
     /// Creates a new SSH session
     ///
     /// - Parameters:
     ///   - host: the host to connect to
     ///   - port: the port to connect to; default 22
-    ///   - timeout: timeout to use (in msec); default 0
+    ///   - timeout: TCP connect timeout in msec; default 0 (none). Also installed
+    ///     as the initial libssh2 operation timeout BEFORE the handshake, so a
+    ///     server that accepts TCP but never completes the SSH handshake cannot
+    ///     hang the caller forever.
     /// - Throws: SSHError if the SSH session couldn't be created
     public init(host: String, port: Int32 = 22, timeout: UInt = 0) throws {
         self.sock = try Socket.create()
         self.session = try Session()
-        
+
         session.blocking = 1
+        if timeout > 0 {
+            session.operationTimeoutMsec = Int(timeout)
+        }
         try sock.connect(to: host, port: port, timeout: timeout)
         try session.handshake(over: sock)
     }
-    
-    /// Authenticate the session using a public/private key pair
+
+    /// Caps how long any single blocking libssh2 operation may take (0 = no limit).
+    /// Without this, a black-holed connection blocks its caller forever.
+    public func setOperationTimeout(msec: Int) {
+        session.operationTimeoutMsec = msec
+    }
+
+    /// Verifies the server's host key against an OpenSSH-format known_hosts file.
+    /// Call after init (handshake) and before any authenticate call.
     ///
     /// - Parameters:
-    ///   - username: the username to login with
-    ///   - privateKey: the path to the private key
-    ///   - publicKey: the path to the public key; defaults to private key path + ".pub"
-    ///   - passphrase: the passphrase encrypting the key; defaults to nil
-    /// - Throws: SSHError if authentication fails
+    ///   - host: hostname used to connect (as recorded in known_hosts)
+    ///   - port: port used to connect
+    ///   - addUnknown: when true, an unknown host is recorded and accepted (TOFU);
+    ///                 when false, an unknown host is an error
+    ///   - knownHostsPath: path to the known_hosts file (created when adding)
+    public func verifyHostKey(host: String, port: Int32, addUnknown: Bool, knownHostsPath: String) throws {
+        try session.verifyHostKey(host: host, port: port, addUnknown: addUnknown, knownHostsPath: knownHostsPath)
+    }
+
+    /// Authenticate the session using a public/private key pair
     public func authenticate(username: String, privateKey: String, publicKey: String? = nil, passphrase: String? = nil) throws {
         let key = SSHKey(privateKey: privateKey, publicKey: publicKey, passphrase: passphrase)
         try authenticate(username: username, authMethod: key)
     }
-    
+
     /// Authenticate the session using a password
-    ///
-    /// - Parameters:
-    ///   - username: the username to login with
-    ///   - password: the user's password
-    /// - Throws: SSHError if authentication fails
     public func authenticate(username: String, password: String) throws {
         try authenticate(username: username, authMethod: SSHPassword(password))
     }
-    
+
     /// Authenticate the session using the SSH agent
-    ///
-    /// - Parameter username: the username to login with
-    /// - Throws: SSHError if authentication fails
     public func authenticateByAgent(username: String) throws {
         try authenticate(username: username, authMethod: SSHAgent())
     }
-    
+
     /// Authenticate the session using the given authentication method
-    ///
-    /// - Parameters:
-    ///   - username: the username to login with
-    ///   - authMethod: the authentication method to use
-    /// - Throws: SSHError if authentication fails
     public func authenticate(username: String, authMethod: SSHAuthMethod) throws {
         try authMethod.authenticate(ssh: self, username: username)
     }
-    
-    
-    /// Execute a command on the remote server
-    ///
-    /// - Parameters:
-    ///   - command: the command to execute
-    ///   - silent: whether or not to execute the command silently; defaults to false
-    /// - Returns: exit code of the command
-    /// - Throws: SSHError if the command couldn't be executed
+
+    /// Execute a command on the remote server and print its output
     @discardableResult
     public func execute(_ command: String, silent: Bool = false) throws -> Int32 {
-        return try execute(command, output: { (output) in
-            if silent == false {
-                print(output, terminator: "")
-                fflush(stdout)
-            }
-        })
-    }
-    
-    /// Execute a command on the remote server and capture the output
-    ///
-    /// - Parameter command: the command to execute
-    /// - Returns: a tuple with the exit code of the command and the output of the command
-    /// - Throws: SSHError if the command couldn't be executed
-    public func capture(_ command: String) throws -> (status: Int32, output: String) {
-        var ongoing = ""
-        let status = try execute(command) { (output) in
-            ongoing += output
+        let result = try capture(command)
+        if !silent {
+            print(result.output, terminator: "")
+            fflush(stdout)
         }
-        return (status, ongoing)
-    }
-    
-    /// Execute a command on the remote server
-    ///
-    /// - Parameters:
-    ///   - command: the command to execute
-    ///   - output: block handler called every time a chunk of command output is received
-    /// - Returns: exit code of the command
-    /// - Throws: SSHError if the command couldn't be executed
-    public func execute(_ command: String, output: ((_ output: String) -> ())) throws -> Int32 {
-        let channel = try session.openCommandChannel()
-        
-        if let ptyType = ptyType {
-            try channel.requestPty(type: ptyType.rawValue)
-        }
-        
-        try channel.exec(command: command)
-        
-        var dataLeft = true
-        while dataLeft {
-            switch channel.readData() {
-            case .data(let data):
-                guard let str = String(data: data, encoding: .utf8) else {
-                    throw SSHError.genericError("SSH failed to create string using UTF8 encoding")
-                }
-                output(str)
-            case .done:
-                dataLeft = false
-            case .eagain:
-                break
-            case .error(let error):
-                throw error
-            }
-        }
-        
-        try channel.close()
-        
-        return channel.exitStatus()
-    }
-    
-    /// Execute a command on the remote server silent
-    ///
-    /// - Parameters:
-    ///   - command: the command to execute
-    /// - Returns: exit code of the command
-    /// - Throws: SSHError if the command couldn't be executed
-    @discardableResult
-    public func executeSilent(_ command: String) throws -> Int32 {
-        let channel = try session.openCommandChannel()
-        
-        if let ptyType = ptyType {
-            try channel.requestPty(type: ptyType.rawValue)
-        }
-        
-        try channel.exec(command: command)
-        try channel.close()
-        return channel.exitStatus()
+        return result.status
     }
 
-    /// Upload a file from the local device to the remote server
+    /// Execute a command on the remote server and capture the output.
     ///
-    /// - Parameters:
-    ///   - localURL: the path to the existing file on the local device
-    ///   - remotePath: the location on the remote server whether the file should be uploaded to
-    ///   - permissions: the file permissions to create the new file with; defaults to FilePermissions.default
-    /// - Throws: SSHError if local file can't be read or upload fails
-    @discardableResult
-    public func sendFile(localURL: URL, remotePath: String, permissions: FilePermissions = .default) throws -> Int32 {
-        guard let resources = try? localURL.resourceValues(forKeys: [.fileSizeKey]),
-            let fileSize = resources.fileSize,
-            let inputStream = InputStream(url: localURL) else {
-                throw SSHError.genericError("couldn't open file at \(localURL)")
+    /// Drains both stdout and stderr until EOF (a command that fills the stderr
+    /// window would otherwise deadlock), decodes each stream's bytes once at the
+    /// end (a multibyte character straddling a read boundary would otherwise fail),
+    /// and reports signal-terminated commands as failures even though libssh2
+    /// returns exit status 0 for them.
+    ///
+    /// - Parameter outputTailLimit: when set, only the LAST `outputTailLimit` bytes
+    ///   are retained in memory — a runaway remote command cannot balloon the
+    ///   controller's memory. The stream is always drained fully either way.
+    /// - Returns: a tuple with the exit code and the combined stdout+stderr output
+    public func capture(_ command: String, outputTailLimit: Int? = nil) throws -> (status: Int32, output: String) {
+        let channel = try session.openCommandChannel()
+
+        if let ptyType = ptyType {
+            try channel.requestPty(type: ptyType.rawValue)
         }
-        
-        let channel = try session.openSCPChannel(fileSize: Int64(fileSize), remotePath: remotePath, permissions: permissions)
-        
-        inputStream.open()
-        defer { inputStream.close() }
-        
-        let bufferSize = Int(Channel.packetDefaultSize)
-        var buffer = Data(capacity: bufferSize)
-        
-        while inputStream.hasBytesAvailable {
-            let bytesRead: Int  = try buffer.withUnsafeMutableBytes {
-                guard let pointer = $0.bindMemory(to: UInt8.self).baseAddress else {
-                   throw SSHError.genericError("SSH write failed to bind buffer memory")
+
+        try channel.exec(command: command)
+
+        // stderr is merged into stream 0 at exec time (see Channel.exec), so a
+        // single drain loop covers both without any window-fill deadlock.
+        var outputData = Data()
+        var streamOpen = true
+        while streamOpen {
+            switch channel.readData(stream: 0) {
+            case .data(let data):
+                outputData.append(data)
+                // Amortized trim: cut back to the tail once we exceed twice the limit.
+                if let limit = outputTailLimit, outputData.count > limit * 2 {
+                    outputData.removeFirst(outputData.count - limit)
                 }
-                return inputStream.read(pointer, maxLength: bufferSize)
-            }
-            
-            if bytesRead == 0 { break }
-            
-            var bytesSent = 0
-            while bytesSent < bytesRead {
-                let chunk = bytesSent == 0 ? buffer : buffer.advanced(by: bytesSent)
-                switch channel.write(data: chunk, length: bytesRead - bytesSent) {
-                case .written(let count):
-                    bytesSent += count
-                case .eagain:
-                    break
-                case .error(let error):
-                    throw error
-                }
+            case .done: streamOpen = false
+            case .eagain: break
+            case .error(let error): throw error
             }
         }
-        
-        try channel.sendEOF()
-        try channel.waitEOF()
+        if let limit = outputTailLimit, outputData.count > limit {
+            outputData.removeFirst(outputData.count - limit)
+        }
+
         try channel.close()
-        try channel.waitClosed()
-        
-        return channel.exitStatus()
+        try? channel.waitClosed()
+
+        let output = String(decoding: outputData, as: UTF8.self)
+
+        if let signal = channel.exitSignal() {
+            // Map to the shell convention (128 + signum) so callers can classify —
+            // e.g. TERM-killed commands report 143, matching local semantics.
+            let signalNumbers: [String: Int32] = [
+                "HUP": 1, "INT": 2, "QUIT": 3, "ABRT": 6, "KILL": 9,
+                "BUS": 10, "SEGV": 11, "PIPE": 13, "ALRM": 14, "TERM": 15,
+            ]
+            let number = signalNumbers[signal.uppercased()] ?? 15
+            return (128 + number, output + "\n[terminated by signal \(signal)]")
+        }
+        return (channel.exitStatus(), output)
     }
-    
+
+    /// Execute a command on the remote server, discarding output.
+    @discardableResult
+    public func executeSilent(_ command: String) throws -> Int32 {
+        return try capture(command).status
+    }
+
     /// Open an SFTP session with the remote server
-    ///
-    /// - Returns: the opened SFTP session
-    /// - Throws: SSHError if an SFTP session could not be opened
     public func openSftp() throws -> SFTP {
         return try session.openSftp()
     }
-    
+
 }
+

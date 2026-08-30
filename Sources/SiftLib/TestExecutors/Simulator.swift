@@ -1,130 +1,127 @@
 import Foundation
 
-struct Simulator: TestExecutor {
+/// A user-provided simulator. Sift never erases it: readiness boots it when needed
+/// (recording that fact), recovery is shutdown+boot, and `finish()` restores the
+/// boot state Sift found. Erase is reserved for Sift-owned clones (auto-provisioning).
+actor Simulator: TestExecutor {
 
-	var ssh: SSHExecutor
-	let config: Config.NodeConfig
-	let xctestrunPath: String
-	let setUpScriptPath: String?
-	let tearDownScriptPath: String?
-	var xcodebuild: Xcodebuild!
-	let type: TestExecutorType
-	let UDID: String
-	let runnerDeploymentPath: String
-	let masterDeploymentPath: String
-	let nodeName: String
-	var log: Logging?
-	var executionFailureCounter: Atomic<Int>
-	let testsExecutionTimeout: Int
-	let onlyTestConfiguration: String?
-	let skipTestConfiguration: String?
-	
-    init(
-        type: TestExecutorType,
-        UDID: String,
-        config: Config.NodeConfig,
-        xctestrunPath: String,
-        setUpScriptPath: String?,
-        tearDownScriptPath: String?,
-        runnerDeploymentPath: String,
-        masterDeploymentPath: String,
-        nodeName: String,
-        testsExecutionTimeout: Int?,
-        onlyTestConfiguration: String?,
-        skipTestConfiguration: String?,
-        log: Logging?
-    ) throws {
+    nonisolated let type: TestExecutorType = .simulator
+    nonisolated let UDID: String
+    nonisolated let nodeName: String
+    nonisolated let ssh: SSHExecutor
+    nonisolated let log: Logging?
 
-		self.log = log
-		self.log?.prefix = config.name
-		self.type = type
-		self.UDID = UDID
-		self.config = config
-		self.xctestrunPath = xctestrunPath
-		self.setUpScriptPath = setUpScriptPath
-		self.tearDownScriptPath = tearDownScriptPath
-		self.testsExecutionTimeout = testsExecutionTimeout ?? 300
-		self.onlyTestConfiguration = onlyTestConfiguration
-		self.skipTestConfiguration = skipTestConfiguration
-		log?.message(verboseMsg: "Open connection to: \"\(UDID)\"")
-		self.ssh = try SSH(host: config.host, port: config.port, arch: config.arch)
-        try self.ssh.authenticate(
-            username: self.config.username,
-            password: self.config.password,
-            privateKey: self.config.privateKey,
-            publicKey: self.config.publicKey,
-            passphrase: self.config.passphrase
+    private let config: Config.NodeConfig
+    /// True for Sift-created clones (auto-provisioning): the ONLY simulators Sift
+    /// may erase during recovery; deleted by the node when the run ends.
+    nonisolated let siftOwned: Bool
+    /// True when Sift booted this simulator (it was shut down when the run began).
+    private var bootedBySift = false
+
+    init(UDID: String, config: Config.NodeConfig, sshFactory: (Config.NodeConfig) -> SSHExecutor,
+         siftOwned: Bool = false, log: Logging?) {
+        self.UDID = UDID
+        self.config = config
+        self.nodeName = config.name
+        self.ssh = sshFactory(config)
+        self.siftOwned = siftOwned
+        self.log = log
+    }
+
+    func connect() async throws {
+        log?.message(verboseMsg: "\(executorID): opening connection")
+        try await ssh.connect(
+            username: config.usernameValue,
+            password: config.password,
+            privateKey: config.privateKey,
+            publicKey: config.publicKey,
+            passphrase: config.passphrase
         )
-		log?.message(verboseMsg: "\"\(UDID)\" connection established")
-        self.xcodebuild = Xcodebuild(
-            xcodePath: self.config.xcodePathSafe,
-            shell: self.ssh,
-            testsExecutionTimeout: self.testsExecutionTimeout,
-            onlyTestConfiguration: onlyTestConfiguration,
-            skipTestConfiguration: skipTestConfiguration
-        )
-		self.runnerDeploymentPath = runnerDeploymentPath
-		self.masterDeploymentPath = masterDeploymentPath
-		self.nodeName = nodeName
-		executionFailureCounter = .init(value: 0)
-	}
+        log?.message(verboseMsg: "\(executorID): connection established")
+    }
+
+    private nonisolated var developerDirExport: String {
+        "export DEVELOPER_DIR=\(config.developerDirPath.shellQuoted); "
+    }
+
+    private struct SimctlDeviceList: Codable {
+        struct Device: Codable {
+            let udid: String
+            let state: String
+            let isAvailable: Bool?
+        }
+        let devices: [String: [Device]]
+    }
+
+    /// The device's entry from structured `simctl list devices --json` — never a
+    /// substring match over human-readable output.
+    private func deviceEntry() async -> SimctlDeviceList.Device? {
+        guard let result = try? await ssh.run(developerDirExport + "xcrun simctl list devices --json"),
+              result.status == 0,
+              let data = result.output.data(using: .utf8),
+              let list = try? JSONDecoder().decode(SimctlDeviceList.self, from: data) else {
+            log?.error("\(executorID): `simctl list devices --json` failed")
+            return nil
+        }
+        return list.devices.values
+            .joined()
+            .first { $0.udid.caseInsensitiveCompare(UDID) == .orderedSame }
+    }
 
     func ready() async -> Bool {
-        self.log?.message(verboseMsg: "check Simulator \"\(self.UDID)\"")
-        let prefixCommand = "export DEVELOPER_DIR=\(self.config.xcodePathSafe)/Contents/Developer\n"
-        var command = [
-            prefixCommand,
-            "xcrun simctl list devices",
-            " | grep \"(Booted)\"",
-            " | grep -E -o -i \"([0-9a-f]{8}-([0-9a-f]{4}-){3}[0-9a-f]{12})\""
-        ]
+        log?.message(verboseMsg: "checking simulator \(UDID)")
+        guard let device = await deviceEntry() else {
+            log?.warning("Simulator \(UDID) not found on \(nodeName) — ignored for this run")
+            return false
+        }
+        guard device.isAvailable ?? false else {
+            log?.warning("Simulator \(UDID) on \(nodeName) is unavailable — ignored for this run")
+            return false
+        }
+        if device.state == "Booted" {
+            return true
+        }
+        log?.message("\(executorID): simulator not booted — booting")
+        return await boot(recordOwnership: true)
+    }
 
-        guard let output = try? await self.ssh.run(command.joined()).output else {
-            self.log?.message(verboseMsg: "Error: can't run \"\(command.joined())\"")
+    /// Boot (no erase) and wait for it to complete. `recordOwnership` marks the
+    /// simulator Sift-booted the moment `simctl boot` SUCCEEDS — before the
+    /// readiness wait — so a failed/interrupted bootstatus still restores the
+    /// user's original shut-down state at cleanup.
+    private func boot(recordOwnership: Bool = false) async -> Bool {
+        let quotedUDID = UDID.shellQuoted
+        guard let boot = try? await ssh.run(developerDirExport + "xcrun simctl boot \(quotedUDID)"),
+              boot.status == 0 else {
+            log?.error("\(executorID): simulator boot failed")
             return false
         }
-        
-        if output.contains(UDID + "\n") {
-            return true
-        }
-                
-        command[2] = ""
-        guard let output = try? await self.ssh.run(command.joined()).output else {
-            self.log?.message(verboseMsg: "Error: can't run \"\(command.joined())\"")
+        if recordOwnership { bootedBySift = true }
+        guard let bootstatus = try? await ssh.run(developerDirExport + "xcrun simctl bootstatus \(quotedUDID) -b"),
+              bootstatus.status == 0 else {
+            log?.error("\(executorID): simulator did not finish booting")
             return false
         }
-        
-        if output.contains(UDID + "\n") {
-            self.log?.message("Simulator \"\(UDID)\" is not booted.")
-            await reset()
-            return true
-        }
-        
-        log?.warning("Simulator: \(UDID) not found and will be ignored in test run")
-        
-        return false
+        return true
     }
-    
+
+    /// Recovery after an unhealthy chunk: shutdown + boot. A USER simulator is
+    /// never erased; a Sift-owned clone is erased for a maximally clean retry.
     @discardableResult
-    func reset() async -> Result<TestExecutor, Error> {
-        self.log?.message(verboseMsg: "Simulator: \"\(self.UDID)\") reseting...")
-        let commands = "/bin/sh -c '" +
-        "export DEVELOPER_DIR=\(self.config.xcodePathSafe)/Contents/Developer\n" +
-        "xcrun simctl shutdown \(self.UDID)\n" +
-        "xcrun simctl erase \(self.UDID)\n" +
-        "xcrun simctl boot \(self.UDID)'\n" +
-        "sleep 5"
-        
-        do {
-            try await self.ssh.run(commands)
-            self.log?.message(verboseMsg: "Simulator: \"\(self.UDID)\") reseted")
-            return .success(self)
-        } catch let err {
-            return .failure(NSError(domain: "Simulator: \(self.UDID) - \(err)", code: 1, userInfo: nil))
+    func reset() async -> Bool {
+        log?.message(verboseMsg: "\(executorID): restarting simulator")
+        _ = try? await ssh.run(developerDirExport + "xcrun simctl shutdown \(UDID.shellQuoted)")
+        if siftOwned {
+            _ = try? await ssh.run(developerDirExport + "xcrun simctl erase \(UDID.shellQuoted)")
         }
+        return await boot()
     }
-    
-    func deleteApp(bundleId: String) async {
-        _ = try? await self.ssh.run("xcrun simctl uninstall \(self.UDID) \(bundleId)")
+
+    /// Restores the boot state Sift found: shuts the simulator down only if Sift
+    /// booted it for this run.
+    func finish() async {
+        guard bootedBySift else { return }
+        log?.message(verboseMsg: "\(executorID): shutting simulator back down (Sift booted it)")
+        _ = try? await ssh.run(developerDirExport + "xcrun simctl shutdown \(UDID.shellQuoted)")
     }
 }

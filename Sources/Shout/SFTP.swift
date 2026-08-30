@@ -26,7 +26,7 @@ public class SFTP {
             guard let sftpHandle = libssh2_sftp_open_ex(
                 sftpSession,
                 remotePath,
-                UInt32(remotePath.count),
+                UInt32(remotePath.utf8.count),
                 UInt(flags),
                 Int(mode),
                 openType) else {
@@ -54,6 +54,15 @@ public class SFTP {
             case .success(let value):
                 return ReadWriteProcessor.processWrite(result: value, session: cSession)
             }
+        }
+
+        /// Zero-copy variant: writes directly from a caller-owned buffer slice.
+        func write(buffer: UnsafeRawBufferPointer) -> ReadWriteProcessor.WriteResult {
+            guard let base = buffer.baseAddress else {
+                return .error(SSHError.genericError("SFTP write failed to bind memory"))
+            }
+            let result = libssh2_sftp_write(sftpHandle, base.assumingMemoryBound(to: Int8.self), buffer.count)
+            return ReadWriteProcessor.processWrite(result: result, session: cSession)
         }
         
         func readDir(_ attrs: inout LIBSSH2_SFTP_ATTRIBUTES) -> ReadWriteProcessor.ReadResult {
@@ -88,7 +97,7 @@ public class SFTP {
     ///   - remotePath: the path to the existing file on the remote server to download
     ///   - localURL: the location on the local device whether the file should be downloaded to
     /// - Throws: SSHError if file can't be created or download fails
-    public func download(remotePath: String, localURL: URL) throws {
+    public func download(remotePath: String, localURL: URL, shouldAbort: (() -> Bool)? = nil) throws {
         let sftpHandle = try SFTPHandle(
             cSession: cSession,
             sftpSession: sftpSession,
@@ -96,19 +105,26 @@ public class SFTP {
             flags: LIBSSH2_FXF_READ,
             mode: 0
         )
-        
+
         guard FileManager.default.createFile(atPath: localURL.path, contents: nil, attributes: nil),
             let fileHandle = try? FileHandle(forWritingTo: localURL) else {
             throw SSHError.genericError("couldn't create file at \(localURL.path)")
         }
-        
-        defer { fileHandle.closeFile() }
+
+        defer { try? fileHandle.close() }
 
         var dataLeft = true
         while dataLeft {
+            if shouldAbort?() == true {
+                throw SSHError.genericError("SFTP download of \(remotePath) aborted (run cancelled)")
+            }
             switch sftpHandle.read() {
             case .data(let data):
-                fileHandle.write(data)
+                do {
+                    try fileHandle.write(contentsOf: data)
+                } catch {
+                    throw SSHError.genericError("local write failed at \(localURL.path): \(error)")
+                }
             case .done:
                 dataLeft = false
             case .eagain:
@@ -126,9 +142,58 @@ public class SFTP {
     ///   - remotePath: the location on the remote server whether the file should be uploaded to
     ///   - permissions: the file permissions to create the new file with; defaults to FilePermissions.default
     /// - Throws: SSHError if local file can't be read or upload fails
-    public func upload(localURL: URL, remotePath: String, permissions: FilePermissions = .default) throws {
-        let data = try Data(contentsOf: localURL, options: .alwaysMapped)
-        try upload(data: data, remotePath: remotePath, permissions: permissions)
+    public func upload(localURL: URL, remotePath: String, permissions: FilePermissions = .default,
+                       shouldAbort: (() -> Bool)? = nil) throws {
+        // Stream in bounded chunks: build archives can be multi-GB, and loading
+        // them into memory (or memory-mapping, which SIGBUSes if the file changes
+        // mid-upload) is not acceptable.
+        guard let fileHandle = try? FileHandle(forReadingFrom: localURL) else {
+            throw SSHError.genericError("couldn't open local file for upload: \(localURL.path)")
+        }
+        defer { try? fileHandle.close() }
+
+        let sftpHandle = try SFTPHandle(
+            cSession: cSession,
+            sftpSession: sftpSession,
+            remotePath: remotePath,
+            flags: LIBSSH2_FXF_WRITE | LIBSSH2_FXF_CREAT | LIBSSH2_FXF_TRUNC,
+            mode: LIBSSH2_SFTP_S_IFREG | permissions.rawValue
+        )
+
+        while true {
+            // Checked between chunks so a cancelled run releases the serial SSH
+            // queue within one write instead of after a multi-GB transfer.
+            if shouldAbort?() == true {
+                throw SSHError.genericError("SFTP upload to \(remotePath) aborted (run cancelled)")
+            }
+            guard let chunk = try fileHandle.read(upToCount: 512 * 1024), !chunk.isEmpty else { break }
+            // Zero-copy: every 32 KiB write reads straight from the chunk buffer —
+            // no per-write Data allocation on a multi-GB archive.
+            try chunk.withUnsafeBytes { (raw: UnsafeRawBufferPointer) in
+                var offset = 0
+                var zeroProgressCount = 0
+                while offset < raw.count {
+                    let upTo = Swift.min(offset + SFTPHandle.bufferSize, raw.count)
+                    let slice = UnsafeRawBufferPointer(rebasing: raw[offset ..< upTo])
+                    switch sftpHandle.write(buffer: slice) {
+                    case .written(let bytesSent):
+                        if bytesSent <= 0 {
+                            zeroProgressCount += 1
+                            if zeroProgressCount > 1000 {
+                                throw SSHError.genericError("SFTP upload to \(remotePath) made no progress")
+                            }
+                        } else {
+                            zeroProgressCount = 0
+                            offset += bytesSent
+                        }
+                    case .eagain:
+                        continue
+                    case .error(let error):
+                        throw error
+                    }
+                }
+            }
+        }
     }
     
     /// Upload data to a file on the remote server
@@ -153,24 +218,36 @@ public class SFTP {
     ///   - permissions: the file permissions to create the new file with; defaults to FilePermissions.default
     /// - Throws: SSHError if upload fails
     public func upload(data: Data, remotePath: String, permissions: FilePermissions = .default) throws {
+        // TRUNC: overwriting a longer pre-existing file must not leave stale tail bytes.
         let sftpHandle = try SFTPHandle(
             cSession: cSession,
             sftpSession: sftpSession,
             remotePath: remotePath,
-            flags: LIBSSH2_FXF_WRITE | LIBSSH2_FXF_CREAT,
+            flags: LIBSSH2_FXF_WRITE | LIBSSH2_FXF_CREAT | LIBSSH2_FXF_TRUNC,
             mode: LIBSSH2_SFTP_S_IFREG | permissions.rawValue
         )
-        
-        var offset = 0
-        while offset < data.count {
-            let upTo = Swift.min(offset + SFTPHandle.bufferSize, data.count)
-            let subdata = data.subdata(in: offset ..< upTo)
-            if subdata.count > 0 {
-                switch sftpHandle.write(subdata) {
+
+        // Zero-copy: 32 KiB writes read straight from the Data's buffer — same
+        // bounded-slice loop as the file-upload path, no per-write subdata copy.
+        try data.withUnsafeBytes { (raw: UnsafeRawBufferPointer) in
+            var offset = 0
+            var zeroProgressCount = 0
+            while offset < raw.count {
+                let upTo = Swift.min(offset + SFTPHandle.bufferSize, raw.count)
+                let slice = UnsafeRawBufferPointer(rebasing: raw[offset ..< upTo])
+                switch sftpHandle.write(buffer: slice) {
                 case .written(let bytesSent):
-                    offset += bytesSent
+                    if bytesSent <= 0 {
+                        zeroProgressCount += 1
+                        if zeroProgressCount > 1000 {
+                            throw SSHError.genericError("SFTP upload to \(remotePath) made no progress at offset \(offset)")
+                        }
+                    } else {
+                        zeroProgressCount = 0
+                        offset += bytesSent
+                    }
                 case .eagain:
-                    break
+                    continue
                 case .error(let error):
                     throw error
                 }
@@ -275,7 +352,9 @@ public class SFTP {
         case .written( _):
             break
         case .eagain:
-            break
+            // The session is blocking; EAGAIN here means the operation did not
+            // complete — surfacing it as success would silently skip mkdir/rm/rename.
+            throw SSHError.genericError("SFTP command returned EAGAIN on a blocking session")
         case .error(let error):
             throw error
         }

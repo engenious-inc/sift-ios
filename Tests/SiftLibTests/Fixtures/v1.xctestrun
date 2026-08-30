@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>__xctestrun_metadata__</key>
+    <dict>
+        <key>FormatVersion</key>
+        <integer>1</integer>
+    </dict>
+    <key>MyUITests</key>
+    <dict>
+        <key>ProductModuleName</key>
+        <string>MyUITests</string>
+        <key>TestHostPath</key>
+        <string>__TESTROOT__/Debug-iphonesimulator/MyUITests-Runner.app</string>
+        <key>TestBundlePath</key>
+        <string>__TESTHOST__/PlugIns/MyUITests.xctest</string>
+        <key>DependentProductPaths</key>
+        <array>
+            <string>__TESTROOT__/Debug-iphonesimulator/MyUITests-Runner.app</string>
+            <string>__TESTROOT__/Debug-iphonesimulator/MyApp.app</string>
+        </array>
+        <key>SkipTestIdentifiers</key>
+        <array>
+            <string>MyUITests/testSkipped</string>
+        </array>
+        <key>UnmodeledV1Key</key>
+        <string>v1-keep</string>
+    </dict>
+</dict>
+</plist>
