@@ -76,11 +76,22 @@ struct Xcodebuild {
             + arguments.shellQuotedJoined
         log?.message(verboseMsg: "Run command:\n" + command)
 
-        let handle = try await shell.startBackgroundProcess(
-            command: command,
-            workDirectory: workDirectory,
-            attemptID: attemptID
-        )
+        let handle: BackgroundProcessHandle
+        do {
+            handle = try await shell.startBackgroundProcess(
+                command: command,
+                workDirectory: workDirectory,
+                attemptID: attemptID
+            )
+        } catch {
+            // The launcher may have started xcodebuild before the acknowledgment
+            // was lost (SSH drop mid-launch). Best-effort termination of the
+            // deterministic handle path so a retry cannot overlap it; the run-end
+            // sweep is the backstop when the session is already gone.
+            let orphan = BackgroundProcessHandle(attemptID: attemptID, directory: "\(workDirectory)/proc/\(attemptID)")
+            await shell.terminateBackgroundProcess(orphan, marker: "sift-attempt:\(attemptID)")
+            throw error
+        }
 
         // Monotonic clock: never affected by NTP steps or wall-clock changes.
         let clock = ContinuousClock()
@@ -110,9 +121,16 @@ struct Xcodebuild {
             // Run cancelled mid-chunk: terminate with the FULL (shielded) TERM grace,
             // then read the status the wrapper may have written — xcodebuild that
             // finalized a bundle on TERM is salvageable, and the caller collects it.
-            await shell.terminateBackgroundProcess(handle, marker: "sift-attempt:\(attemptID)")
+            let termination = await shell.terminateBackgroundProcess(handle, marker: "sift-attempt:\(attemptID)")
             status = try? await shell.pollBackgroundProcess(handle)
-            endReason = .cancelled
+            // A chunk that had ALREADY exited cleanly on its own (nothing left to
+            // terminate, status 0/65 recorded) inside the poll window is a clean
+            // chunk — its passes are real and must not be demoted as "killed".
+            if termination == .notFound, let status, status == 0 || status == 65 {
+                endReason = .exited
+            } else {
+                endReason = .cancelled
+            }
         } catch {
             // A polling failure must never orphan the remote process.
             await shell.terminateBackgroundProcess(handle, marker: "sift-attempt:\(attemptID)")

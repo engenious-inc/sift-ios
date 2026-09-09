@@ -152,9 +152,17 @@ final class NodeTests: XCTestCase {
         shell.withState { $0.commandFailuresForPrefix["true"] = -1 }
         let scheduler = TestScheduler(tests: ["B/C/test1()", "B/C/test2()"], rerunLimit: 0)
         let workspace = try makeWorkspace()
-        let node = makeNode(shell: shell, scheduler: scheduler, workspace: workspace)
+        let health = HealthSink()
+        let node = makeNode(shell: shell, scheduler: scheduler, workspace: workspace, health: health)
         await node.start()
         await scheduler.drain()
-        XCTAssertGreaterThan(shell.withState { $0.connectAttempts }, 1, "recovery reconnects the transport")
+        // Baseline is TWO connects with no recovery at all (the management session
+        // + the executor's own). Cleanup ALSO reconnects when its probe fails, so a
+        // bare count cannot prove recovery: the recovered event carries the
+        // transport-reconnect detail only when the worker's recovery reconnected.
+        XCTAssertGreaterThanOrEqual(shell.withState { $0.connectAttempts }, 3, "recovery reconnects the transport")
+        let events = await health.all()
+        XCTAssertTrue(events.contains { $0.kind == .executorRecovered && $0.detail.contains("transport reconnected") },
+                      "worker recovery must reconnect before resetting: \(events)")
     }
 }

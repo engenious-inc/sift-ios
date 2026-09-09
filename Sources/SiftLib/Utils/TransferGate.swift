@@ -39,6 +39,11 @@ final class TransferGate: @unchecked Sendable {
         try Task.checkCancellation()
         try await acquire()
         defer { release() }
+        // Handoff window: `release()` dequeues the next waiter and THEN resumes it;
+        // a cancellation landing in between finds no waiter to evict, so acquire()
+        // returns normally to a cancelled task. Re-check here (the defer returns
+        // the permit) so a cancelled node never starts connecting.
+        try Task.checkCancellation()
         return try await body()
     }
 

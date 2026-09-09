@@ -119,6 +119,8 @@ class Channel {
         var signal: UnsafeMutablePointer<Int8>? = nil
         var signalLength = 0
         let code = libssh2_channel_get_exit_signal(cChannel, &signal, &signalLength, nil, nil, nil, nil)
+        // libssh2 allocates the returned buffer; the caller owns (and frees) it.
+        defer { if let signal { libssh2_free(cSession, signal) } }
         guard code == 0, let signal, signalLength > 0 else { return nil }
         return String(bytes: UnsafeRawBufferPointer(start: signal, count: signalLength), encoding: .utf8)
     }

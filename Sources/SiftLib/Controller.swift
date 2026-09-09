@@ -50,7 +50,9 @@ public struct Controller {
     private var discoveredTests: [ScheduledTest] = []
     private var selectedConfigurations: [String?] = [nil]
     private var artifactPlatform: TestPlatform?
-    private var requestedTests: [String]
+    /// nil = no explicit selection (every discovered test runs); an explicit but
+    /// EMPTY selection stays empty — it never widens to the whole suite.
+    private var requestedTests: [String]?
 
     private let allowEmptyTests: Bool
 
@@ -79,7 +81,7 @@ public struct Controller {
         self.discoveryBackend = discoveryBackend
         self.listSelectors = listSelectors
         self.dependencies = dependencies
-        self.requestedTests = tests ?? []
+        self.requestedTests = tests
         self.allowEmptyTests = allowEmptyTests
         self.log = log
     }
@@ -187,10 +189,15 @@ public struct Controller {
         // test burning infrastructure retries downstream. In a multi-configuration
         // run the same identifier is scheduled once per selected configuration.
         let selectedTests: [ScheduledTest]
-        if requestedTests.isEmpty {
-            selectedTests = discoveredTests
+        if let requestedTests {
+            // An explicit selection that names nothing (an empty --tests-path shard)
+            // selects nothing — the CLI decides whether that is an error or an
+            // empty run; it must never fall through to "run everything".
+            selectedTests = requestedTests.isEmpty
+                ? []
+                : try TestSelector.expand(rawSelectors: requestedTests, against: discoveredTests)
         } else {
-            selectedTests = try TestSelector.expand(rawSelectors: requestedTests, against: discoveredTests)
+            selectedTests = discoveredTests
         }
         let unitsForRun = selectedTests.map { TestUnit(configuration: $0.configurationName, test: $0.id) }
 
@@ -233,7 +240,11 @@ public struct Controller {
                     emptyRunAllowed: true
                 )
             }
-            throw XCTestRunError("No tests were discovered for execution. If an empty test list is expected, pass --allow-empty-tests.")
+            throw XCTestRunError(
+                requestedTests?.isEmpty == true
+                    ? "The explicit test selection is empty. If an empty run is expected, pass --allow-empty-tests."
+                    : "No tests were discovered for execution. If an empty test list is expected, pass --allow-empty-tests."
+            )
         }
 
         log?.message("Total tests for execution: \(unitsForRun.count)")
@@ -252,10 +263,28 @@ public struct Controller {
         try workspace.prepareLocal()
         // Error paths clean up here; the success path cleans up EXPLICITLY before
         // the terminal event so an incomplete cleanup reaches the health set.
+        // Once results have been collected, though, the staging directory IS the
+        // evidence (per-chunk/merged xcresult, diagnostics, retained logs) and the
+        // nodes have already removed their copies — a failure after that point
+        // (report write on a full disk, a failed publish) must PARK it next to
+        // `final/`, never delete it.
+        var evidenceCollected = false
         defer {
-            if FileManager.default.fileExists(atPath: workspace.workPath),
-               let error = workspace.cleanupLocal() {
-                log?.warning("run-scratch cleanup incomplete at \(workspace.workPath): \(error)")
+            if FileManager.default.fileExists(atPath: workspace.workPath) {
+                var scratchOnly = true
+                if evidenceCollected, FileManager.default.fileExists(atPath: workspace.stagingPath) {
+                    let parkedPath = "\(config.outputDirectoryPath)/final-incoming-\(workspace.runID)"
+                    do {
+                        try FileManager.default.moveItem(atPath: workspace.stagingPath, toPath: parkedPath)
+                        log?.error("run failed after results were collected — the staged results were preserved at \(parkedPath)")
+                    } catch {
+                        scratchOnly = false
+                        log?.error("run failed after results were collected and the staged results could not be moved (\(error)) — leaving them at \(workspace.stagingPath)")
+                    }
+                }
+                if scratchOnly, let error = workspace.cleanupLocal() {
+                    log?.warning("run-scratch cleanup incomplete at \(workspace.workPath): \(error)")
+                }
             }
         }
         let buildZipPath = try await zipBuild()
@@ -314,6 +343,8 @@ public struct Controller {
         }
         // All workers exited — release anything still waiting (e.g. all executors dead).
         await scheduler.drain()
+        // From here on the staging directory holds the run's only copy of the results.
+        evidenceCollected = true
 
         let snapshot = await scheduler.snapshot()
         // The scheduler stamps the moment it drained — node teardown (simulator

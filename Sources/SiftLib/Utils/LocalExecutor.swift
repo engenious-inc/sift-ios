@@ -40,9 +40,12 @@ final class LocalExecutor: SSHExecutor, @unchecked Sendable {
         // Direct argv (no extra quoting layer): the command string IS the sh script.
         let executable = arch == nil ? "/bin/sh" : "/usr/bin/arch"
         let arguments = arch.map { ["-\($0.rawValue)", "/bin/sh", "-c", command] } ?? ["-c", command]
+        // 1 MiB tail, same cap as the SSH transport: a noisy setup script cannot
+        // balloon controller memory (every byte is still drained).
         let result = try await CommandLineExecutor.launch(
             executable: executable, arguments: arguments,
-            onCancellation: .runToCompletion, timeout: timeout
+            onCancellation: .runToCompletion, timeout: timeout,
+            outputTailLimit: 1_048_576
         )
         return (result.status, result.stdout)
     }

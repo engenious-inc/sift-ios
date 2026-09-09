@@ -60,6 +60,9 @@ EOF
   done
   nc -z 127.0.0.1 "$PORT" || { echo "FAIL: throwaway sshd never came up"; cat "$SSHD_DIR/sshd.log"; exit 1; }
   export SIFT_TEST_SSH_PORT=$PORT SIFT_TEST_SSH_USER="$(whoami)" SIFT_TEST_SSH_KEY="$SSHD_DIR/client_key"
+  # Throwaway trust store: the disposable host key must never land in the real
+  # ~/.sift/known_hosts (a reused random port would then fail with a mismatch).
+  export SIFT_KNOWN_HOSTS="$SSHD_DIR/known_hosts"
 fi
 
 echo "==> Running tests"

@@ -21,8 +21,12 @@ final class SSH: SSHExecutor, @unchecked Sendable {
     private static let commandTimeoutMsec = 60_000
     /// User scripts and remote zips can legitimately run long.
     private static let longCommandTimeoutMsec = 15 * 60 * 1000
-    /// Bulk SFTP transfers (multi-GB build archives).
-    private static let transferTimeoutMsec = 15 * 60 * 1000
+    /// Bulk SFTP transfers (multi-GB build archives). This bounds ONE blocking
+    /// libssh2 call (a 32 KiB write/read, an open, a close), not the whole
+    /// transfer — two minutes is ample stall detection on any real link, whereas
+    /// 15 minutes per call let a black-holed node hold an upload permit (and a
+    /// cancelled run's shutdown) for the better part of an hour.
+    private static let transferTimeoutMsec = 2 * 60 * 1000
 
     init(
         host: String,
@@ -77,6 +81,28 @@ final class SSH: SSHExecutor, @unchecked Sendable {
     /// each other's trusted entries.
     private static let knownHostsLock = NSLock()
 
+    /// In-process lock PLUS an interprocess `flock` on a sidecar: two Sift runs
+    /// under one account (different output directories) enrolling different
+    /// nodes at the same time each rewrite the whole file from their own snapshot
+    /// — without the file lock the last writer silently drops the other's entry.
+    /// `verifyHostKey` re-reads the file inside the lock, so it always merges
+    /// into the latest contents.
+    private static func withKnownHostsLock<T>(_ body: (_ knownHostsPath: String) throws -> T) throws -> T {
+        knownHostsLock.lock()
+        defer { knownHostsLock.unlock() }
+        let path = try knownHostsPath()
+        let lockDescriptor = open(path + ".lock", O_CREAT | O_RDWR, 0o600)
+        guard lockDescriptor >= 0 else {
+            throw SSHError.genericError("cannot open \(path).lock: \(String(cString: strerror(errno)))")
+        }
+        defer { close(lockDescriptor) }
+        guard flock(lockDescriptor, LOCK_EX) == 0 else {
+            throw SSHError.genericError("cannot lock \(path).lock: \(String(cString: strerror(errno)))")
+        }
+        defer { flock(lockDescriptor, LOCK_UN) }
+        return try body(path)
+    }
+
     func connect(
         username: String,
         password: String?,
@@ -92,13 +118,13 @@ final class SSH: SSHExecutor, @unchecked Sendable {
             case .off:
                 break
             case .strict:
-                SSH.knownHostsLock.lock()
-                defer { SSH.knownHostsLock.unlock() }
-                try session.verifyHostKey(host: host, port: port, addUnknown: false, knownHostsPath: SSH.knownHostsPath())
+                try SSH.withKnownHostsLock { path in
+                    try session.verifyHostKey(host: host, port: port, addUnknown: false, knownHostsPath: path)
+                }
             case .acceptNew:
-                SSH.knownHostsLock.lock()
-                defer { SSH.knownHostsLock.unlock() }
-                try session.verifyHostKey(host: host, port: port, addUnknown: true, knownHostsPath: SSH.knownHostsPath())
+                try SSH.withKnownHostsLock { path in
+                    try session.verifyHostKey(host: host, port: port, addUnknown: true, knownHostsPath: path)
+                }
             }
             if let password {
                 try session.authenticate(username: username, password: password)
@@ -115,7 +141,16 @@ final class SSH: SSHExecutor, @unchecked Sendable {
         }
     }
 
+    /// `~/.sift/known_hosts`, or `$SIFT_KNOWN_HOSTS` (absolute path) when set —
+    /// the integration suite points that at a throwaway file so disposable sshd
+    /// keys never pollute the real trust store (and a reused random port never
+    /// fails a later run with a spurious mismatch).
     private static func knownHostsPath() throws -> String {
+        if let override = ProcessInfo.processInfo.environment["SIFT_KNOWN_HOSTS"], override.hasPrefix("/") {
+            try FileManager.default.createDirectory(atPath: (override as NSString).deletingLastPathComponent,
+                                                    withIntermediateDirectories: true)
+            return override
+        }
         let directory = NSHomeDirectory() + "/.sift"
         try FileManager.default.createDirectory(atPath: directory, withIntermediateDirectories: true)
         return directory + "/known_hosts"
@@ -186,11 +221,18 @@ final class SSH: SSHExecutor, @unchecked Sendable {
             do {
                 return try body(try sftpSession())
             } catch {
+                // Dropping the channel sends a blocking SFTP shutdown round-trip:
+                // bound it by the short command timeout, not the transfer one —
+                // on a dead link this teardown otherwise stalls the queue for the
+                // full transfer budget before the error even surfaces.
+                session.setOperationTimeout(msec: SSH.commandTimeoutMsec)
                 cachedSftp = nil
                 guard usedCachedChannel else { throw error }
+                session.setOperationTimeout(msec: SSH.transferTimeoutMsec)
                 do {
                     return try body(try sftpSession())
                 } catch {
+                    session.setOperationTimeout(msec: SSH.commandTimeoutMsec)
                     cachedSftp = nil
                     throw error
                 }
@@ -264,14 +306,15 @@ final class SSH: SSHExecutor, @unchecked Sendable {
         // Shared owned-process contract — see ProcessScripts for the full rationale
         // (marker-in-argv identity, HUP shield, atomic status write, channel-safe &).
         let launcher = ProcessScripts.launcher(handle: handle, command: command)
-        let result = try await runFast(launcher)
-        guard result.status == 0 else {
-            throw SSHError.genericError("failed to start background process (status \(result.status)): \(result.output)")
-        }
-        // From here the wrapper may already be running: any failure below must
-        // terminate it before rethrowing, or a cancellation/drop during this wait
-        // orphans a launched xcodebuild.
+        // From the moment the launcher is SUBMITTED the wrapper may be running
+        // (an SSH drop can lose the acknowledgment after the process started):
+        // any failure below must attempt termination before rethrowing, or a
+        // retry on the same executor overlaps an orphaned xcodebuild.
         do {
+            let result = try await runFast(launcher)
+            guard result.status == 0 else {
+                throw SSHError.genericError("failed to start background process (status \(result.status)): \(result.output)")
+            }
             // Wait for the pid file: its presence proves the wrapper is running with
             // its HUP trap installed (the write happens after the trap), so later
             // channel-close HUPs cannot kill it. The sleep is uncancellable so a

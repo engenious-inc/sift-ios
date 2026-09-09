@@ -16,7 +16,7 @@ public actor EventBus {
     public typealias Consumer = @Sendable (RunEvent) -> Void
 
     private var fileHandle: FileHandle?
-    private let echoToStdout: Bool
+    private var echoToStdout: Bool
     private let consumers: [Consumer]
     private let encoder: JSONEncoder
 
@@ -31,17 +31,42 @@ public actor EventBus {
             FileManager.default.createFile(atPath: ndjsonPath, contents: Data(),
                                            attributes: [.posixPermissions: 0o600])
             self.fileHandle = FileHandle(forWritingAtPath: ndjsonPath)
+            if fileHandle == nil {
+                // Never silent: a CI dashboard waiting on this stream gets nothing.
+                Self.warn("cannot open --events-path \(ndjsonPath) for writing — no events will be recorded")
+            }
         }
     }
 
+    /// Diagnostics go to stderr, never stdout (which the NDJSON stream may own).
+    private static func warn(_ message: String) {
+        try? FileHandle.standardError.write(contentsOf: Data(("\n ⚠️   " + message + "\n").utf8))
+    }
+
+    /// Throwing writes only: the legacy `write(_:)` raises an uncatchable ObjC
+    /// exception on ENOSPC/EPIPE and would abort the whole run. A sink that fails
+    /// is reported once and disabled — events must never fail or stall a run.
     public func emit(_ kind: String, _ data: [String: String] = [:]) {
         let event = RunEvent(version: 1, timestamp: Date(), kind: kind, data: data)
         if fileHandle != nil || echoToStdout, let encoded = try? encoder.encode(event) {
             var line = encoded
             line.append(0x0A)
-            fileHandle?.write(line)
+            if let fileHandle {
+                do {
+                    try fileHandle.write(contentsOf: line)
+                } catch {
+                    Self.warn("event stream write failed (\(error)) — disabling --events-path output")
+                    try? fileHandle.close()
+                    self.fileHandle = nil
+                }
+            }
             if echoToStdout {
-                FileHandle.standardOutput.write(line)
+                do {
+                    try FileHandle.standardOutput.write(contentsOf: line)
+                } catch {
+                    Self.warn("stdout event stream write failed (\(error)) — disabling --events-stdout output")
+                    echoToStdout = false
+                }
             }
         }
         for consumer in consumers {
@@ -119,7 +144,8 @@ public final class ProgressReporter: @unchecked Sendable {
         let line = "\r⏳ \(finished.count)/\(total) done · \(pending) pending · \(inFlight) running in \(activeChunks) chunk(s) · \(failed) failed · \(elapsed)s   "
         lock.unlock()
         if total > 0 {
-            FileHandle.standardOutput.write(Data(line.utf8))
+            // A closed stdout (EPIPE) is not a reason to abort the run.
+            try? FileHandle.standardOutput.write(contentsOf: Data(line.utf8))
         }
     }
 }

@@ -77,7 +77,13 @@ public struct TestTimings: Codable, Sendable {
                 log?.warning("cannot write timings store at \(temporary)")
                 return
             }
-            _ = try FileManager.default.replaceItemAt(URL(fileURLWithPath: path), withItemAt: URL(fileURLWithPath: temporary))
+            do {
+                _ = try FileManager.default.replaceItemAt(URL(fileURLWithPath: path), withItemAt: URL(fileURLWithPath: temporary))
+            } catch {
+                // A failed replace must not leave a stray temp file per run.
+                try? FileManager.default.removeItem(atPath: temporary)
+                throw error
+            }
         } catch {
             log?.warning("cannot save timings store: \(error)")
         }

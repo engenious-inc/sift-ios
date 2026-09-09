@@ -61,6 +61,7 @@ final class ControllerTests: XCTestCase {
         try "stub".write(toFile: "\(source)/r.xcresult/Info.plist", atomically: true, encoding: .utf8)
         addTeardownBlock { try? FileManager.default.removeItem(atPath: source) }
         let zipPath = "\(source).zip"
+        addTeardownBlock { try? FileManager.default.removeItem(atPath: zipPath) }
         let zip = Process()
         zip.executableURL = URL(fileURLWithPath: "/usr/bin/zip")
         zip.currentDirectoryURL = URL(fileURLWithPath: source)

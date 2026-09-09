@@ -43,11 +43,17 @@ public struct Run: ShellExecutor {
 
     /// Runs an executable directly (no shell). Returns the result without status checking.
     @discardableResult
-    public func runUnchecked(_ executable: String, _ arguments: [String], currentDirectory: String? = nil) async throws -> CommandResult {
+    public func runUnchecked(
+        _ executable: String,
+        _ arguments: [String],
+        currentDirectory: String? = nil,
+        timeout: TimeInterval? = nil
+    ) async throws -> CommandResult {
         try await CommandLineExecutor.launch(
             executable: executable,
             arguments: arguments,
-            currentDirectory: currentDirectory
+            currentDirectory: currentDirectory,
+            timeout: timeout
         )
     }
 }

@@ -137,8 +137,10 @@ public struct XCTestRunV1: XCTestRun {
         let basename = bundlePath.components(separatedBy: "/").last ?? module.productModuleName
         let executableName = (basename as NSString).deletingPathExtension
 
-        let dyld = dyldPaths(of: module.testingEnvironmentVariables)
-        if dyld.contains("MacOSX.platform") || dyld.contains("/MacOS") {
+        // Same platform derivation as `platform()` (host path OR DYLD metadata).
+        let platform = TestPlatform.derive(testHostPath: module.testHostPath,
+                                           dyldPaths: dyldPaths(of: module.testingEnvironmentVariables))
+        if platform == .macOS {
             return "\(bundlePath)/Contents/MacOS/\(executableName)"
         }
         return "\(bundlePath)/\(executableName)"

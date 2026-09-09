@@ -116,10 +116,20 @@ public struct Doctor {
         } else {
             report(false, "\(label) deploymentPath", "cannot create \(probeDirectory)")
         }
-        if let tools = try? await executor.run("command -v zip unzip xcrun >/dev/null && echo ok"), tools.output.contains("ok") {
+        // One `command -v` per tool: with several names in one invocation the
+        // shell's exit status can be 0 when only SOME resolve (verified on macOS
+        // /bin/sh), which reported a missing zip as present.
+        var missingTools: [String] = []
+        for tool in ["zip", "unzip", "xcrun"] {
+            if let probe = try? await executor.run("command -v \(tool) >/dev/null 2>&1 && echo ok"), probe.output.contains("ok") {
+                continue
+            }
+            missingTools.append(tool)
+        }
+        if missingTools.isEmpty {
             report(true, "\(label) tools", "zip/unzip/xcrun present")
         } else {
-            report(false, "\(label) tools", "zip, unzip, or xcrun missing from PATH")
+            report(false, "\(label) tools", "missing from PATH: \(missingTools.joined(separator: ", "))")
         }
         // EVERY probe reports: a probe that cannot run or parse is a FAILED check,
         // never a silently missing line.

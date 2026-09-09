@@ -55,8 +55,13 @@ actor Simulator: TestExecutor {
 
     /// The device's entry from structured `simctl list devices --json` — never a
     /// substring match over human-readable output.
+    /// Bounded probes/boot commands throughout: a wedged CoreSimulator or a dead
+    /// transport must surface in minutes, never after the 15-minute long-command
+    /// budget (three strikes of which would idle an executor for 45 minutes).
+    private static let simctlTimeoutSeconds = 300
+
     private func deviceEntry() async -> SimctlDeviceList.Device? {
-        guard let result = try? await ssh.run(developerDirExport + "xcrun simctl list devices --json"),
+        guard let result = try? await ssh.runFast(developerDirExport + "xcrun simctl list devices --json"),
               result.status == 0,
               let data = result.output.data(using: .utf8),
               let list = try? JSONDecoder().decode(SimctlDeviceList.self, from: data) else {
@@ -91,13 +96,13 @@ actor Simulator: TestExecutor {
     /// user's original shut-down state at cleanup.
     private func boot(recordOwnership: Bool = false) async -> Bool {
         let quotedUDID = UDID.shellQuoted
-        guard let boot = try? await ssh.run(developerDirExport + "xcrun simctl boot \(quotedUDID)"),
+        guard let boot = try? await ssh.runBounded(developerDirExport + "xcrun simctl boot \(quotedUDID)", timeoutSeconds: Self.simctlTimeoutSeconds),
               boot.status == 0 else {
             log?.error("\(executorID): simulator boot failed")
             return false
         }
         if recordOwnership { bootedBySift = true }
-        guard let bootstatus = try? await ssh.run(developerDirExport + "xcrun simctl bootstatus \(quotedUDID) -b"),
+        guard let bootstatus = try? await ssh.runBounded(developerDirExport + "xcrun simctl bootstatus \(quotedUDID) -b", timeoutSeconds: Self.simctlTimeoutSeconds),
               bootstatus.status == 0 else {
             log?.error("\(executorID): simulator did not finish booting")
             return false
@@ -110,9 +115,9 @@ actor Simulator: TestExecutor {
     @discardableResult
     func reset() async -> Bool {
         log?.message(verboseMsg: "\(executorID): restarting simulator")
-        _ = try? await ssh.run(developerDirExport + "xcrun simctl shutdown \(UDID.shellQuoted)")
+        _ = try? await ssh.runBounded(developerDirExport + "xcrun simctl shutdown \(UDID.shellQuoted)", timeoutSeconds: Self.simctlTimeoutSeconds)
         if siftOwned {
-            _ = try? await ssh.run(developerDirExport + "xcrun simctl erase \(UDID.shellQuoted)")
+            _ = try? await ssh.runBounded(developerDirExport + "xcrun simctl erase \(UDID.shellQuoted)", timeoutSeconds: Self.simctlTimeoutSeconds)
         }
         return await boot()
     }
@@ -122,6 +127,6 @@ actor Simulator: TestExecutor {
     func finish() async {
         guard bootedBySift else { return }
         log?.message(verboseMsg: "\(executorID): shutting simulator back down (Sift booted it)")
-        _ = try? await ssh.run(developerDirExport + "xcrun simctl shutdown \(UDID.shellQuoted)")
+        _ = try? await ssh.runBounded(developerDirExport + "xcrun simctl shutdown \(UDID.shellQuoted)", timeoutSeconds: Self.simctlTimeoutSeconds)
     }
 }

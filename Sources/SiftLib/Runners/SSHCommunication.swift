@@ -40,8 +40,23 @@ struct SSHCommunication {
     func uploadBuild(buildPath: String) async throws {
         log?.message(verboseMsg: "Uploading build to \(nodeName)...")
         // umask 077 + explicit chmod: on a shared Mac, other users must not be able
-        // to read proprietary bundles, logs, or results.
-        let mkdir = try await ssh.run("umask 077; mkdir -p \(remoteWorkPath.shellQuoted) && chmod -R 700 \(remoteWorkPath.shellQuoted)")
+        // to read proprietary bundles, logs, or results. The `.sift` and
+        // `.sift/runs` ancestors must be ours and real directories: a symlink or
+        // a foreign-writable ancestor would let another local user redirect this
+        // run's `rm -rf` (cleanup) somewhere else.
+        let siftDirectory = "\(config.deploymentPath)/.sift"
+        let runsDirectory = "\(siftDirectory)/runs"
+        // Each ancestor is created WITHOUT -p and validated before the next level
+        // is touched: `mkdir -p` would silently follow a pre-planted symlink and
+        // create (then, on rejection, remove) directories at its target.
+        let mkdir = try await ssh.runFast(
+            "umask 077; mkdir -p \(config.deploymentPath.shellQuoted) || exit 2; "
+            + "for d in \(siftDirectory.shellQuoted) \(runsDirectory.shellQuoted); do "
+            + "mkdir \"$d\" 2>/dev/null; "
+            + "if [ -L \"$d\" ] || [ ! -d \"$d\" ] || [ ! -O \"$d\" ]; then echo \"refusing $d: not a directory owned by $(id -un) (symlink or foreign owner)\"; exit 2; fi; "
+            + "chmod 700 \"$d\" || exit 2; done; "
+            + "mkdir -p \(remoteWorkPath.shellQuoted) && chmod -R 700 \(remoteWorkPath.shellQuoted)"
+        )
         guard mkdir.status == 0 else {
             throw NSError(domain: "\(nodeName): cannot create remote work directory \(remoteWorkPath): \(mkdir.output)", code: 1)
         }
@@ -108,8 +123,22 @@ struct SSHCommunication {
         // full long-command timeout would wedge shutdown. 5 minutes is roomy for
         // a genuinely large deletion; the no-removal warning below is the honest
         // outcome for a node whose session is gone.
+        // The run-ID parent is removed too once it is empty (rmdir refuses a
+        // non-empty one — a sibling node entry on the same host may still use it);
+        // otherwise every run leaves one empty directory behind on every node.
+        // The `.sift` / `.sift/runs` ancestors are re-checked right before the
+        // deletion (same rule as uploadBuild): a symlink planted there since would
+        // otherwise redirect this `rm -rf` to its target.
+        let runDirectory = (remoteWorkPath as NSString).deletingLastPathComponent
+        let runsDirectory = (runDirectory as NSString).deletingLastPathComponent
+        let siftDirectory = (runsDirectory as NSString).deletingLastPathComponent
         let removal = sessionUsable
-            ? (try? await ssh.runBounded("rm -rf \(remoteWorkPath.shellQuoted)", timeoutSeconds: 300))
+            ? (try? await ssh.runBounded(
+                "for d in \(siftDirectory.shellQuoted) \(runsDirectory.shellQuoted) \(runDirectory.shellQuoted); do "
+                + "if [ -L \"$d\" ]; then echo \"refusing cleanup: $d is a symlink\"; exit 2; fi; done; "
+                + "rm -rf \(remoteWorkPath.shellQuoted); status=$?; rmdir \(runDirectory.shellQuoted) 2>/dev/null; exit $status",
+                timeoutSeconds: 300
+            ))
             : nil
         if removal == nil || removal?.status != 0 {
             log?.warning("\(nodeName): remote cleanup incomplete — \(remoteWorkPath) may remain on the node")

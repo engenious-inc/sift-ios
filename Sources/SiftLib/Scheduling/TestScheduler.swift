@@ -45,7 +45,7 @@ public actor TestScheduler {
     /// the true end of test execution, before any node teardown runs.
     private var exhaustedAt: Double?
 
-    private var waiters: [(executorID: String, maxCount: Int, continuation: CheckedContinuation<TestLease?, Never>)] = []
+    private var waiters: [(id: UUID, executorID: String, maxCount: Int, continuation: CheckedContinuation<TestLease?, Never>)] = []
 
     public init(units: [TestUnit], rerunLimit: Int, infrastructureRetryLimit: Int = 1,
                 estimates: [TestUnit: Double] = [:], log: Logging? = nil,
@@ -81,7 +81,8 @@ public actor TestScheduler {
                 name: unit.reportName(multiConfiguration: multiConfiguration),
                 state: .unexecuted, launchCounter: 0,
                 infrastructureAttempts: 0, duration: 0, message: "",
-                configuration: unit.configuration
+                configuration: unit.configuration,
+                identifier: unit.test
             )
         }
     }
@@ -100,18 +101,43 @@ public actor TestScheduler {
 
     // MARK: - Leasing
 
+    /// Cancellation-aware: a cancelled worker gets nil immediately (no lease is
+    /// handed to a task that would only abandon it), and a worker cancelled WHILE
+    /// waiting is released with nil instead of sitting behind another executor's
+    /// in-flight lease — its simulator restore and node teardown must not wait
+    /// for someone else's salvage.
     public func lease(maxCount: Int, executorID: String) async -> TestLease? {
         activeExecutors.insert(executorID)
         let amount = max(1, maxCount)
+        if Task.isCancelled {
+            return nil
+        }
         if let lease = makeLease(maxCount: amount, executorID: executorID) {
             return lease
         }
         if inFlight.isEmpty {
             return nil
         }
-        return await withCheckedContinuation { continuation in
-            waiters.append((executorID, amount, continuation))
+        let waiterID = UUID()
+        return await withTaskCancellationHandler {
+            await withCheckedContinuation { (continuation: CheckedContinuation<TestLease?, Never>) in
+                // The cancellation handler may already have run (nothing to evict):
+                // decide under actor isolation, where the handler's hop lands after us.
+                if Task.isCancelled {
+                    continuation.resume(returning: nil)
+                    return
+                }
+                waiters.append((waiterID, executorID, amount, continuation))
+            }
+        } onCancel: {
+            Task { await self.releaseWaiter(waiterID) }
         }
+    }
+
+    private func releaseWaiter(_ id: UUID) {
+        guard let index = waiters.firstIndex(where: { $0.id == id }) else { return }
+        let waiter = waiters.remove(at: index)
+        waiter.continuation.resume(returning: nil)
     }
 
     /// Pulls up to `maxCount` units of ONE configuration (the first candidate's),
@@ -288,7 +314,7 @@ public actor TestScheduler {
     /// Wakes waiting workers: hands out new leases while work exists; when the scheduler
     /// is fully exhausted, resumes everyone with nil.
     private func pump() {
-        var remaining: [(executorID: String, maxCount: Int, continuation: CheckedContinuation<TestLease?, Never>)] = []
+        var remaining: [(id: UUID, executorID: String, maxCount: Int, continuation: CheckedContinuation<TestLease?, Never>)] = []
         var waitersToServe = waiters
         waiters = []
         while !waitersToServe.isEmpty {

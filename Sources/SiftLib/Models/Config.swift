@@ -139,7 +139,10 @@ public struct Config: Codable, Sendable {
             result += remainder[..<prefixEnd]
             let afterStart = remainder[start.upperBound...]
             guard let end = afterStart.firstIndex(of: "}") else {
-                problems.append("unterminated '${' in config value '\(string)' — close it with '}' or escape it as '$${'")
+                // Never echo the value: it may be a password or passphrase, and the
+                // CLI prints this error into CI logs.
+                let offset = string.distance(from: string.startIndex, to: start.lowerBound)
+                problems.append("unterminated '${' at offset \(offset) of a \(string.count)-character config value — close it with '}' or escape it as '$${'")
                 return result + remainder[start.lowerBound...]
             }
             let name = String(afterStart[..<end])
@@ -227,7 +230,10 @@ public struct Config: Codable, Sendable {
                     violations.append("\(label): username contains whitespace ('\(username)')")
                 }
             }
-            let endpointHost = node.transport == .local ? "local" : "\(node.hostValue):\(node.portValue)"
+            // Identity for duplicate detection is NORMALIZED the way execution will
+            // resolve it: host names case-folded, deployment paths standardized —
+            // `/x/y` and `/x/y/` are the same remote workspace.
+            let endpointHost = node.transport == .local ? "local" : "\(node.hostValue.lowercased()):\(node.portValue)"
             if node.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 violations.append("node at \(endpointHost): name must not be empty")
             }
@@ -277,7 +283,7 @@ public struct Config: Codable, Sendable {
             if !seenNames.insert(node.name).inserted {
                 violations.append("duplicate node name '\(node.name)' — node names must be unique")
             }
-            let endpoint = "\(endpointHost)|\(node.deploymentPath)"
+            let endpoint = "\(endpointHost)|\((node.deploymentPath as NSString).standardizingPath)"
             if !seenEndpoints.insert(endpoint).inserted {
                 violations.append("\(label): duplicate endpoint (\(endpointHost), deploymentPath \(node.deploymentPath)) — merge the UDID lists into one node entry")
             }

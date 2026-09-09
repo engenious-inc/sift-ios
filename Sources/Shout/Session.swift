@@ -16,6 +16,11 @@ class Session {
 
     private let cSession: OpaquePointer
     private var agent: Agent?
+    /// The transport this session handshook over. Owned here so the descriptor
+    /// outlives every Channel/SFTP that retains the Session: a session torn down
+    /// AFTER its socket was closed would write its disconnect (and any SFTP
+    /// shutdown) to a closed — or, worse, recycled — descriptor.
+    private var socket: Socket?
 
     var blocking: Int32 {
         get {
@@ -45,6 +50,7 @@ class Session {
     }
 
     func handshake(over socket: Socket) throws {
+        self.socket = socket
         let code = libssh2_session_handshake(cSession, socket.socketfd)
         try SSHError.check(code: code, session: cSession)
     }
@@ -145,6 +151,20 @@ class Session {
                 "remove the stale entry from \(knownHostsPath)."
             )
         case LIBSSH2_KNOWNHOST_CHECK_NOTFOUND:
+            // libssh2 compares only entries of the OFFERED key type: a host already
+            // trusted under another algorithm comes back NOTFOUND, and enrolling
+            // here would let an impersonator that offers only, say, RSA replace an
+            // Ed25519 trust anchor. Any existing entry for this host:port makes
+            // NOTFOUND a key change — refused under acceptNew exactly like a
+            // mismatch. (Only plain-name entries are inspectable; Sift writes
+            // nothing else to its own known_hosts.)
+            if Self.hasEntry(in: knownHosts, host: host, port: port) {
+                throw SSHError.genericError(
+                    "HOST KEY TYPE CHANGED for \(host):\(port) — \(knownHostsPath) already trusts this host under a " +
+                    "different key algorithm, and the server now offers another one. This may indicate a " +
+                    "man-in-the-middle attack. If the host's keys legitimately changed, remove the stale entry from \(knownHostsPath)."
+                )
+            }
             guard addUnknown else {
                 throw SSHError.genericError(
                     "unknown host key for \(host):\(port) (strict verification). " +
@@ -180,9 +200,29 @@ class Session {
         }
     }
 
+    /// True when the known-hosts set already holds a plain-name entry for exactly
+    /// this host (and port, in OpenSSH's "[host]:port" form for non-22 ports).
+    private static func hasEntry(in knownHosts: OpaquePointer, host: String, port: Int32) -> Bool {
+        let names: Set<String> = port == 22 ? [host, "[\(host)]:22"] : ["[\(host)]:\(port)"]
+        var previous: UnsafeMutablePointer<libssh2_knownhost>? = nil
+        while true {
+            var current: UnsafeMutablePointer<libssh2_knownhost>? = nil
+            // 0 = entry returned, 1 = end of list, <0 = error (treated as "no entry").
+            guard libssh2_knownhost_get(knownHosts, &current, previous) == 0, let node = current else {
+                return false
+            }
+            if let namePointer = node.pointee.name, names.contains(String(cString: namePointer)) {
+                return true
+            }
+            previous = node
+        }
+    }
+
     deinit {
         // The agent belongs to this session: disconnect and release it before the
-        // session itself is freed (reverse order avoids a use-after-free).
+        // session itself is freed (reverse order avoids a use-after-free). The
+        // socket (a stored property) is released after this body — i.e. after the
+        // disconnect went out.
         agent = nil
         libssh2_session_disconnect_ex(cSession, SSH_DISCONNECT_BY_APPLICATION, "disconnect", "")
         libssh2_session_free(cSession)
