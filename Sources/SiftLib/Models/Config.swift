@@ -23,6 +23,11 @@ public struct Config: Codable, Sendable {
     /// zip compression level 0-9 for the build archive (default 0 = store).
     /// Level 1 is usually a net win for remote farms; 0 minimizes controller CPU.
     public var transferCompressionLevel: Int?
+    /// Upper bound on nodes receiving the build archive at the same time (default:
+    /// unlimited). Uploads share one uplink, so N parallel transfers all finish at
+    /// ~N× the single-transfer time; a cap lets the first nodes finish and start
+    /// testing while the rest wait their turn.
+    public var maxConcurrentUploads: Int?
     public var nodes: [NodeConfig]
     public var tests: [String]?
 
@@ -50,6 +55,7 @@ public struct Config: Codable, Sendable {
         self.skipTestConfiguration = try container.decodeIfPresent(String.self, forKey: .skipTestConfiguration)
         self.allowXcodebuildParallelTesting = try container.decodeIfPresent(Bool.self, forKey: .allowXcodebuildParallelTesting)
         self.transferCompressionLevel = try container.decodeIfPresent(Int.self, forKey: .transferCompressionLevel)
+        self.maxConcurrentUploads = try container.decodeIfPresent(Int.self, forKey: .maxConcurrentUploads)
         self.nodes = try container.decodeIfPresent([NodeConfig].self, forKey: .nodes) ?? []
         self.tests = try container.decodeIfPresent([String].self, forKey: .tests)
     }
@@ -183,6 +189,9 @@ public struct Config: Codable, Sendable {
         }
         if let level = transferCompressionLevel, !(0...9).contains(level) {
             violations.append("transferCompressionLevel must be in 0...9 (got \(level))")
+        }
+        if let cap = maxConcurrentUploads, cap < 1 {
+            violations.append("maxConcurrentUploads must be >= 1 (got \(cap))")
         }
         if nodes.isEmpty {
             violations.append("at least one node is required")

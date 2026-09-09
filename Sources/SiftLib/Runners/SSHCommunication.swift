@@ -31,9 +31,14 @@ struct SSHCommunication {
         log?.message(verboseMsg: "\(nodeName): connection established")
     }
 
-    func getBuildOnRunner(buildPath: String) async throws {
+    private var remoteZipPath: String { "\(remoteWorkPath)/build.zip" }
+
+    /// Creates the run's remote directory and streams the build archive into it.
+    /// Deliberately separate from `unpackBuild`: an upload-concurrency permit
+    /// (`maxConcurrentUploads`) must cover only the transfer — extraction needs
+    /// no uplink, so the next node's upload should overlap it.
+    func uploadBuild(buildPath: String) async throws {
         log?.message(verboseMsg: "Uploading build to \(nodeName)...")
-        let remoteZipPath = "\(remoteWorkPath)/build.zip"
         // umask 077 + explicit chmod: on a shared Mac, other users must not be able
         // to read proprietary bundles, logs, or results.
         let mkdir = try await ssh.run("umask 077; mkdir -p \(remoteWorkPath.shellQuoted) && chmod -R 700 \(remoteWorkPath.shellQuoted)")
@@ -49,6 +54,10 @@ struct SSHCommunication {
         let sizeMB = sizeBytes.map { Double($0) / 1_048_576 } ?? 0
         log?.message(verboseMsg: String(format: "%@: build upload %.1f MB in %.1fs (%.1f MB/s)",
                                         nodeName, sizeMB, uploadSeconds, uploadSeconds > 0 ? sizeMB / uploadSeconds : 0))
+    }
+
+    /// Unpacks the uploaded archive in place and removes it.
+    func unpackBuild() async throws {
         let unzip = try await ssh.run("umask 077; unzip -o -q \(remoteZipPath.shellQuoted) -d \(remoteWorkPath.shellQuoted)")
         guard unzip.status == 0 else {
             throw NSError(domain: "\(nodeName): unzip of uploaded build failed: \(unzip.output)", code: 1)

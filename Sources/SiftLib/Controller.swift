@@ -282,6 +282,10 @@ public struct Controller {
         let workspace = self.workspace
         let globalConfig = self.config
         let log = self.log
+        let transferGate = TransferGate(limit: config.maxConcurrentUploads)
+        if let cap = config.maxConcurrentUploads {
+            log?.message(verboseMsg: "Build uploads capped at \(cap) concurrent node(s)")
+        }
 
         let nodes = config.nodes.map { nodeConfig in
             Node(
@@ -295,6 +299,7 @@ public struct Controller {
                 sshFactory: dependencies.sshFactory,
                 health: health,
                 events: events,
+                transferGate: transferGate,
                 log: log
             )
         }

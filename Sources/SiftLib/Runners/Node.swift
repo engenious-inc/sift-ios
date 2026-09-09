@@ -22,6 +22,7 @@ struct Node: Sendable {
     private let buildZipPath: String
     private let health: HealthSink
     private let events: EventBus?
+    private let transferGate: TransferGate
     private let log: Logging?
 
     /// Consecutive infrastructure failures before an executor is retired.
@@ -38,6 +39,7 @@ struct Node: Sendable {
         sshFactory: @escaping @Sendable (Config.NodeConfig) -> SSHExecutor,
         health: HealthSink = HealthSink(),
         events: EventBus? = nil,
+        transferGate: TransferGate = TransferGate(limit: nil),
         log: Logging?
     ) {
         self.config = config
@@ -57,6 +59,7 @@ struct Node: Sendable {
         self.sshFactory = sshFactory
         self.health = health
         self.events = events
+        self.transferGate = transferGate
         self.log = log
         // Node-specific remote workspace: two node entries sharing host+deploymentPath
         // must never share upload/results/DerivedData/proc directories.
@@ -78,9 +81,18 @@ struct Node: Sendable {
 
     func start() async {
         var provisionedUDIDs: [String] = []
+        var deploymentStarted = false
         do {
-            try await communication.connect()
-            try await communication.getBuildOnRunner(buildPath: buildZipPath)
+            // Connect INSIDE the permit region: a session opened minutes before its
+            // upload turn could be dropped by an idle timeout while it waits.
+            try await transferGate.withPermit {
+                deploymentStarted = true
+                try await communication.connect()
+                try await communication.uploadBuild(buildPath: buildZipPath)
+            }
+            // Extraction runs OUTSIDE the permit: the uplink is idle during a remote
+            // unzip, so the next node's transfer must not wait for it.
+            try await communication.unpackBuild()
             var xctestrun = try xctestrunProvider()
             xctestrun.addEnvironmentVariables(config.environmentVariables)
             xctestrun.add(timeout: testsExecutionTimeout)
@@ -105,6 +117,13 @@ struct Node: Sendable {
             await communication.cleanup()
             log?.message(verboseMsg: "\(name): finished")
         } catch {
+            if !deploymentStarted, error is CancellationError {
+                // Cancelled while queued for an upload permit: nothing was ever opened
+                // on the node — no failure to report, and a "cleanup" would only open
+                // a connection to tear down nothing.
+                log?.message(verboseMsg: "\(name): run cancelled before deployment started")
+                return
+            }
             log?.error("\(name): \(error)")
             await health.record(RunHealthEvent(kind: .nodeFailed, source: name, detail: "\(error)"))
             await deleteProvisionedSimulators(provisionedUDIDs)

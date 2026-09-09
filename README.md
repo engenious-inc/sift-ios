@@ -75,6 +75,8 @@ Config reference:
 | `nodes[].privateKey` / `password` | Exactly ONE of key-based (recommended) or password SSH auth may be set — both is a config error; with neither, ssh-agent is used. A missing `.pub` sidecar is fine (derived from the private key). Sift never prompts interactively. |
 | `nodes[].deploymentPath` | Absolute node-side working directory. Each run uses an isolated, 0700 `deploymentPath/.sift/runs/<run-id>/<node>/` and removes only that. Duplicate host+deploymentPath node entries are rejected. |
 | `allowXcodebuildParallelTesting` | Opt back in to xcodebuild's own parallel testing inside a chunk (default: disabled — Sift passes `-parallel-testing-enabled NO`). |
+| `transferCompressionLevel` | zip level 0-9 for the build archive sent to the nodes (default 0 = store, minimal controller CPU; 1 is usually a net win over slow links). |
+| `maxConcurrentUploads` | How many nodes receive the build archive at the same time (default: all at once). Uploads share one uplink, so with N in flight every node finishes at ~N× the single-upload time; a cap lets the first nodes start testing while the rest wait. |
 | `nodes[].transport` | `"ssh"` (default) or `"local"` (this machine: no host/credentials, login-session context). |
 | `nodes[].UDID` | `simulators`, `devices`, or `mac` UDIDs matching the artifact's platform — all run concurrently. |
 | `nodes[].provisionSimulators` | `{"deviceType": "iPhone 17", "runtime": "iOS 26.0"?, "count": N, "deleteAfterRun": true?}` — Sift creates N owned clones for the run (the only simulators it will ever erase) and deletes them afterwards. |

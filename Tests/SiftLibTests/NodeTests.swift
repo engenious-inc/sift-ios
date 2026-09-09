@@ -9,7 +9,9 @@ final class NodeTests: XCTestCase {
         shell: FakeSSHExecutor,
         scheduler: TestScheduler,
         workspace: RunWorkspace,
-        rerun: Int = 0
+        rerun: Int = 0,
+        health: HealthSink = HealthSink(),
+        transferGate: TransferGate = TransferGate(limit: nil)
     ) -> Node {
         let nodeConfig = try! JSONDecoder().decode(Config.NodeConfig.self, from: Data("""
         {"name": "fake", "host": "h", "port": 22, "username": "u",
@@ -36,8 +38,24 @@ final class NodeTests: XCTestCase {
             buildZipPath: "/tmp/fake-build.zip",
             xctestrunProvider: { try XCTestRunFactory.create(path: fixturePath, log: nil) },
             sshFactory: { _ in shell },
+            health: health,
+            transferGate: transferGate,
             log: nil
         )
+    }
+
+    private actor Signal {
+        private var fired = false
+        private var waiters: [CheckedContinuation<Void, Never>] = []
+        func fire() {
+            fired = true
+            waiters.forEach { $0.resume() }
+            waiters.removeAll()
+        }
+        func wait() async {
+            if fired { return }
+            await withCheckedContinuation { waiters.append($0) }
+        }
     }
 
     private func makeWorkspace() throws -> RunWorkspace {
@@ -91,6 +109,40 @@ final class NodeTests: XCTestCase {
         let snapshot = await scheduler.snapshot()
         // Whatever was in flight is not green.
         XCTAssertEqual(snapshot.passed.count, 0)
+    }
+
+    /// A node cancelled while queued for an upload permit never touched its machine:
+    /// no nodeFailed health event, and no connection opened just to "clean up".
+    func testCancellationWhileQueuedForUploadIsQuiet() async throws {
+        let shell = FakeSSHExecutor()
+        let scheduler = TestScheduler(tests: ["B/C/test1()"], rerunLimit: 0)
+        let workspace = try makeWorkspace()
+        let health = HealthSink()
+        let gate = TransferGate(limit: 1)
+        // Occupy the only permit so the node has to queue.
+        let holderInside = Signal()
+        let releaseHolder = Signal()
+        let holder = Task {
+            try await gate.withPermit {
+                await holderInside.fire()
+                await releaseHolder.wait()
+            }
+        }
+        await holderInside.wait()
+
+        let node = makeNode(shell: shell, scheduler: scheduler, workspace: workspace, health: health, transferGate: gate)
+        let run = Task { await node.start() }
+        try await TransferGateTests.waitUntil { gate.waitingCount == 1 }
+        run.cancel()
+        await run.value
+        await releaseHolder.fire()
+        try await holder.value
+
+        XCTAssertEqual(shell.withState { $0.connectAttempts }, 0, "no connection is opened for a node that never deployed")
+        XCTAssertTrue(shell.commandLog.isEmpty, "no remote commands for a node that never deployed: \(shell.commandLog)")
+        let events = await health.all()
+        XCTAssertTrue(events.isEmpty, "queued cancellation is not a node failure: \(events)")
+        XCTAssertEqual(gate.activeCount, 0)
     }
 
     func testTransportLossReconnectsBeforeReset() async throws {
