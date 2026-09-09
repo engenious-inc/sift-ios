@@ -204,7 +204,6 @@ extension Sift {
             let cancel: @Sendable (Int32) -> Void = { code in
                 if cancellationCode.get() != nil {
                     forcedExit.now(code: code, reason: "second signal")
-                    return
                 }
                 cancellationCode.set(code)
                 runTask.cancel()
