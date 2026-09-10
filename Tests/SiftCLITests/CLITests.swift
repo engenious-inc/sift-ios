@@ -142,6 +142,25 @@ final class CLITests: XCTestCase {
         XCTAssertTrue(result.stderr.contains("--combine-test-selectors"), result.stderr)
     }
 
+    /// An explicit selection that names nothing (an empty CI shard file) must be a
+    /// configuration error, never a silent fall-through to "run the whole suite".
+    func testEmptyTestsPathIsAnErrorNotTheWholeSuite() throws {
+        try requireBinary()
+        let listFile = NSTemporaryDirectory() + "sift-cli-empty-\(UUID().uuidString).txt"
+        try "\n   \n".write(toFile: listFile, atomically: true, encoding: .utf8)
+        addTeardownBlock { try? FileManager.default.removeItem(atPath: listFile) }
+        let config = try writeTempConfig("""
+        {"xctestrunPath": "\(fixtureXctestrun)", "outputDirectoryPath": "/tmp/sift-cli-out",
+         "rerunFailedTest": 0, "testsBucket": 1,
+         "nodes": [{"name": "n", "host": "127.0.0.1", "port": 22, "username": "u",
+                    "deploymentPath": "/tmp/d", "UDID": {"simulators": ["A"]},
+                    "xcodePath": "/Applications/Xcode.app"}]}
+        """)
+        let result = try runCLI(["run", "-c", config, "--tests-path", listFile])
+        XCTAssertEqual(result.status, 64, result.stderr)
+        XCTAssertTrue(result.stderr.contains("selects no tests"), result.stderr)
+    }
+
     func testListRequiresConfigOrXctestrun() throws {
         try requireBinary()
         let result = try runCLI(["list"])

@@ -36,21 +36,105 @@ public enum CancellationBehavior: Sendable {
 
 enum CommandLineExecutor {
 
-    /// Collects one pipe's bytes on the FileHandle's own dispatch queue.
-    /// The readabilityHandler serializes invocations per handle, so ordering is preserved
-    /// and no Swift-concurrency cooperative thread is ever blocked.
+    /// Collects one pipe's bytes. With `tailLimit` set only the LAST `tailLimit`
+    /// bytes are retained (amortized trim at 2×), so a runaway child — a setup
+    /// script in a logging loop — cannot balloon the controller's memory; the
+    /// stream is always drained fully either way.
     private final class PipeCollector: @unchecked Sendable {
         private let lock = NSLock()
         private var buffer = Data()
+        private let tailLimit: Int?
+
+        init(tailLimit: Int? = nil) {
+            self.tailLimit = tailLimit
+        }
 
         func append(_ data: Data) {
             lock.lock(); defer { lock.unlock() }
             buffer.append(data)
+            if let tailLimit, buffer.count > tailLimit * 2 {
+                buffer.removeFirst(buffer.count - tailLimit)
+            }
         }
 
         func take() -> Data {
             lock.lock(); defer { lock.unlock() }
+            if let tailLimit, buffer.count > tailLimit {
+                buffer.removeFirst(buffer.count - tailLimit)
+            }
             return buffer
+        }
+    }
+
+    /// Drains one pipe read end into a collector through a dispatch read source,
+    /// and can be ENDED early by `end()`.
+    ///
+    /// Not `FileHandle.readabilityHandler`: on Darwin, closing a handle while its
+    /// handler is installed cancels the underlying read source WITHOUT a final
+    /// handler call, so "close the read end to force EOF" leaves the waiter
+    /// suspended forever (a leaked continuation). A read source's cancel handler
+    /// runs after any in-flight event handler, on the same queue — closing the
+    /// descriptor and resuming the waiter there is the one race-free ordering.
+    private final class PipeDrain: @unchecked Sendable {
+        private static let queue = DispatchQueue(label: "sift.process.drain", attributes: .concurrent)
+        private let lock = NSLock()
+        private var continuation: CheckedContinuation<Void, Never>?
+        private var finished = false
+        private let source: DispatchSourceRead
+
+        init(handle: FileHandle, collector: PipeCollector) {
+            let descriptor = handle.fileDescriptor
+            _ = fcntl(descriptor, F_SETFL, fcntl(descriptor, F_GETFL) | O_NONBLOCK)
+            let source = DispatchSource.makeReadSource(fileDescriptor: descriptor, queue: Self.queue)
+            self.source = source
+            source.setEventHandler { [collector] in
+                var buffer = [UInt8](repeating: 0, count: 65536)
+                while true {
+                    let count = buffer.withUnsafeMutableBytes { read(descriptor, $0.baseAddress, $0.count) }
+                    if count > 0 {
+                        collector.append(Data(buffer[0..<count]))
+                        continue
+                    }
+                    if count < 0 && errno == EINTR { continue }
+                    if count < 0 && errno == EAGAIN { return }   // drained for now; wait for the next event
+                    source.cancel()                                // EOF (0) or a hard read error
+                    return
+                }
+            }
+            source.setCancelHandler { [weak self] in
+                try? handle.close()
+                self?.finish()
+            }
+            source.resume()
+        }
+
+        private func finish() {
+            lock.lock()
+            let continuation = self.continuation
+            self.continuation = nil
+            finished = true
+            lock.unlock()
+            continuation?.resume()
+        }
+
+        /// Resumes on EOF, on a read error, or once `end()` has run.
+        func wait() async {
+            await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+                lock.lock()
+                if finished {
+                    lock.unlock()
+                    continuation.resume()
+                    return
+                }
+                self.continuation = continuation
+                lock.unlock()
+            }
+        }
+
+        /// Ends the drain now (idempotent): the descriptor closes and `wait()`
+        /// returns even if a leaked writer still holds the pipe open.
+        func end() {
+            source.cancel()
         }
     }
 
@@ -91,20 +175,6 @@ enum CommandLineExecutor {
         }
     }
 
-    private static func drain(_ handle: FileHandle, into collector: PipeCollector) async {
-        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
-            handle.readabilityHandler = { h in
-                let data = h.availableData
-                if data.isEmpty {
-                    h.readabilityHandler = nil
-                    continuation.resume()
-                } else {
-                    collector.append(data)
-                }
-            }
-        }
-    }
-
     /// Waits for `seconds` regardless of task cancellation (a cancelled `Task.sleep`
     /// returns immediately, which would collapse grace periods and salvage timeouts).
     static func uncancellableSleep(seconds: TimeInterval) async {
@@ -115,18 +185,22 @@ enum CommandLineExecutor {
         }
     }
 
+    /// `outputTailLimit`: retain only the last N bytes of each stream (nil = all).
+    /// Callers that parse the output (xcresulttool JSON, nm) leave it nil; the
+    /// local transport caps user scripts exactly like the SSH transport does.
     @discardableResult
     static func launch(
         executable: String,
         arguments: [String],
         currentDirectory: String? = nil,
         onCancellation: CancellationBehavior = .terminateProcess,
-        timeout: TimeInterval? = nil
+        timeout: TimeInterval? = nil,
+        outputTailLimit: Int? = nil
     ) async throws -> CommandResult {
         let stdoutPipe = Pipe()
         let stderrPipe = Pipe()
-        let stdoutCollector = PipeCollector()
-        let stderrCollector = PipeCollector()
+        let stdoutCollector = PipeCollector(tailLimit: outputTailLimit)
+        let stderrCollector = PipeCollector(tailLimit: outputTailLimit)
 
         // posix_spawn (not Foundation.Process) so the child starts as the LEADER OF
         // ITS OWN PROCESS GROUP: termination signals the group and therefore the
@@ -144,7 +218,24 @@ enum CommandLineExecutor {
         var attributes: posix_spawnattr_t?
         posix_spawnattr_init(&attributes)
         defer { posix_spawnattr_destroy(&attributes) }
-        posix_spawnattr_setflags(&attributes, Int16(POSIX_SPAWN_SETPGROUP | POSIX_SPAWN_CLOEXEC_DEFAULT))
+        // The CLI ignores SIGINT/SIGTERM (dispatch signal sources) and SIGPIPE, and
+        // ignored dispositions SURVIVE exec: without SETSIGDEF every local child —
+        // zip, xcresulttool, the /bin/sh wrappers, user scripts, xcodebuild — would
+        // start with TERM ignored, turning the TERM→KILL grace into KILL-only and
+        // making a non-interactive sh unable to trap TERM at all. Restore the
+        // defaults and an empty mask in the child.
+        var defaultSignals = sigset_t()
+        sigemptyset(&defaultSignals)
+        for signalNumber in [SIGINT, SIGTERM, SIGHUP, SIGPIPE] {
+            sigaddset(&defaultSignals, signalNumber)
+        }
+        posix_spawnattr_setsigdefault(&attributes, &defaultSignals)
+        var emptyMask = sigset_t()
+        sigemptyset(&emptyMask)
+        posix_spawnattr_setsigmask(&attributes, &emptyMask)
+        posix_spawnattr_setflags(&attributes, Int16(
+            POSIX_SPAWN_SETPGROUP | POSIX_SPAWN_CLOEXEC_DEFAULT | POSIX_SPAWN_SETSIGDEF | POSIX_SPAWN_SETSIGMASK
+        ))
         posix_spawnattr_setpgroup(&attributes, 0)
 
         var pid: pid_t = 0
@@ -191,18 +282,20 @@ enum CommandLineExecutor {
         // ourselves once the child exits.
         var watchdog: Task<Void, Never>?
         if let timeout {
+            // Public API: a negative, NaN, or absurd interval must not trap in the
+            // UInt64 conversion — clamp to [0, 10 years].
+            let bounded = timeout.isFinite ? min(max(timeout, 0), 315_360_000) : 315_360_000
             watchdog = Task.detached {
-                try? await Task.sleep(nanoseconds: UInt64(timeout * 1_000_000_000))
+                try? await Task.sleep(nanoseconds: UInt64(bounded * 1_000_000_000))
                 guard !Task.isCancelled else { return }
                 latch.begin(grace: 2)
             }
         }
 
-        // Plain Tasks (not async let): their handles are captured by the
-        // cancellation-handler closure below, and the drains themselves resume on
-        // EOF regardless of cancellation.
-        let stdoutDrain = Task { await drain(stdoutPipe.fileHandleForReading, into: stdoutCollector) }
-        let stderrDrain = Task { await drain(stderrPipe.fileHandleForReading, into: stderrCollector) }
+        // Drains start immediately (the read sources are live from init), so a
+        // child that fills a pipe before we get here can never block.
+        let stdoutDrain = PipeDrain(handle: stdoutPipe.fileHandleForReading, collector: stdoutCollector)
+        let stderrDrain = PipeDrain(handle: stderrPipe.fileHandleForReading, collector: stderrCollector)
 
         switch onCancellation {
         case .terminateProcess:
@@ -217,28 +310,29 @@ enum CommandLineExecutor {
         watchdog?.cancel()
 
         // The child exited; EOF normally follows when the write ends close. A detached
-        // grandchild could keep a pipe open — bound the wait and force-close our read
-        // ends so a leaked writer can never wedge the caller (closing makes the
-        // readability handler observe EOF/error and resume).
+        // grandchild (a setup script's `helper &` without a redirect) can keep a
+        // pipe open indefinitely — bound the wait and END the drains ourselves so a
+        // leaked writer can never wedge the caller. (Closing the read handle does
+        // NOT do that: see PipeDrain.)
         let drainGuard = Task.detached {
             try? await Task.sleep(nanoseconds: 5_000_000_000)
             guard !Task.isCancelled else { return }
-            try? stdoutPipe.fileHandleForReading.close()
-            try? stderrPipe.fileHandleForReading.close()
+            stdoutDrain.end()
+            stderrDrain.end()
         }
         switch onCancellation {
         case .terminateProcess:
             // Cancellation arriving DURING the drain (child already exited, a
             // descendant still holds a pipe) must still signal the group.
             await withTaskCancellationHandler {
-                await stdoutDrain.value
-                await stderrDrain.value
+                await stdoutDrain.wait()
+                await stderrDrain.wait()
             } onCancel: {
                 latch.begin(grace: 2)
             }
         case .runToCompletion:
-            await stdoutDrain.value
-            await stderrDrain.value
+            await stdoutDrain.wait()
+            await stderrDrain.wait()
         }
         drainGuard.cancel()
 

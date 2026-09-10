@@ -45,12 +45,39 @@ public struct RunWorkspace: Sendable {
         "\(deploymentPath)/.sift/runs/\(runID)/\(nodeSlug)"
     }
 
-    /// Sanitizes a node name into a safe remote path component.
+    /// Sanitizes a node name into a safe remote path component. Sanitization is
+    /// lossy ("worker/a" and "worker?a" both map to "worker_a"), so whenever it
+    /// changed the name a stable digest of the ORIGINAL is appended: two distinct
+    /// node names can never share a remote workspace — one node's cleanup must
+    /// never delete another's active build.
     public static func nodeSlug(for nodeName: String) -> String {
         let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-_."))
         let mapped = nodeName.unicodeScalars.map { allowed.contains($0) ? Character($0) : "_" }
-        let slug = String(mapped)
-        return Self.isSafePathComponent(slug) ? slug : "node"
+        var slug = String(mapped)
+        if !Self.isSafePathComponent(slug) { slug = "node" }
+        // A clean name that already LOOKS digest-suffixed ("worker_a-97f35aab")
+        // gets a digest too — otherwise it could equal a sanitized name's slug.
+        if slug != nodeName || Self.looksDigestSuffixed(slug) {
+            slug += "-" + String(format: "%08x", Self.fnv1a(nodeName))
+        }
+        return slug
+    }
+
+    private static func looksDigestSuffixed(_ slug: String) -> Bool {
+        let scalars = Array(slug.unicodeScalars)
+        guard scalars.count >= 9, scalars[scalars.count - 9] == "-" else { return false }
+        return scalars.suffix(8).allSatisfy { ("0"..."9").contains($0) || ("a"..."f").contains($0) }
+    }
+
+    /// Process-independent 32-bit FNV-1a (Swift's Hasher is randomly seeded per
+    /// process, which would make remote paths differ between controller runs).
+    private static func fnv1a(_ text: String) -> UInt32 {
+        var hash: UInt32 = 0x811C9DC5
+        for byte in text.utf8 {
+            hash ^= UInt32(byte)
+            hash = hash &* 0x01000193
+        }
+        return hash
     }
 
     public func prepareLocal() throws {
@@ -114,6 +141,7 @@ public struct RunWorkspace: Sendable {
     /// Advisory exclusive lock on the output directory, auto-released if the process
     /// dies (flock semantics). `release()` (or deinit) unlocks.
     public final class RunLock: @unchecked Sendable {
+        private let lock = NSLock()
         private var descriptor: Int32
         private let path: String
 
@@ -122,11 +150,16 @@ public struct RunWorkspace: Sendable {
             self.path = path
         }
 
+        /// Idempotent and safe under concurrent callers: exactly one release
+        /// closes the descriptor (a second close could hit a recycled fd).
         public func release() {
-            guard descriptor >= 0 else { return }
-            flock(descriptor, LOCK_UN)
-            close(descriptor)
+            lock.lock()
+            let taken = descriptor
             descriptor = -1
+            lock.unlock()
+            guard taken >= 0 else { return }
+            flock(taken, LOCK_UN)
+            close(taken)
         }
 
         deinit { release() }

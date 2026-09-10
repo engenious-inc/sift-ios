@@ -50,12 +50,25 @@ enum ProcessScripts {
     }
 
     /// Signals only pids whose recorded start time still matches (a recycled pid is
-    /// never touched). Signal "0" probes aliveness.
+    /// never touched). Signal "0" probes aliveness. The KILL pass re-walks each
+    /// still-matching member's CURRENT descendants: a TERM handler that spawned a
+    /// cleanup helper, or a worker that respawned a subprocess during the grace,
+    /// is absent from the TERM-time snapshot and must not outlive the run.
     static func signal(_ signalName: String, identities: [(pid: String, start: String)]) -> String {
-        var lines = ["ALIVE=0"]
+        var lines = [
+            "collect_tree() {",
+            "    echo \"$1\"",
+            "    for child in $(pgrep -P \"$1\" 2>/dev/null); do collect_tree \"$child\"; done",
+            "}",
+            "ALIVE=0",
+        ]
         for identity in identities {
             lines.append("START=$(ps -p \(identity.pid) -o lstart= 2>/dev/null)")
-            lines.append("if [ \"$START\" = \(identity.start.shellQuoted) ]; then ALIVE=1; kill -\(signalName) \(identity.pid) 2>/dev/null; fi")
+            if signalName == "KILL" {
+                lines.append("if [ \"$START\" = \(identity.start.shellQuoted) ]; then ALIVE=1; for member in $(collect_tree \(identity.pid)); do kill -KILL \"$member\" 2>/dev/null; done; fi")
+            } else {
+                lines.append("if [ \"$START\" = \(identity.start.shellQuoted) ]; then ALIVE=1; kill -\(signalName) \(identity.pid) 2>/dev/null; fi")
+            }
         }
         lines.append("echo \"alive=$ALIVE\"")
         return lines.joined(separator: "\n")

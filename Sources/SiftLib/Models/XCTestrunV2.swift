@@ -56,11 +56,15 @@ public struct XCTestRunV2: XCTestRun {
                 throw XCTestRunError("xctestrun V2 configuration has no TestTargets array: \(path)")
             }
             let targets = try rawTargets.map { rawTarget -> Target in
-                guard let productModuleName = rawTarget["ProductModuleName"] as? String,
-                      let testBundlePath = rawTarget["TestBundlePath"] as? String,
+                guard let testBundlePath = rawTarget["TestBundlePath"] as? String,
                       let testHostPath = rawTarget["TestHostPath"] as? String else {
-                    throw XCTestRunError("xctestrun V2 target is missing ProductModuleName/TestBundlePath/TestHostPath: \(path)")
+                    throw XCTestRunError("xctestrun V2 target is missing TestBundlePath/TestHostPath: \(path)")
                 }
+                // ProductModuleName is optional per xctestrun(5); the bundle basename
+                // (the identifier namespace) is what discovery actually needs.
+                let productModuleName = rawTarget["ProductModuleName"] as? String
+                    ?? rawTarget["BlueprintName"] as? String
+                    ?? TestBundleDescriptor.bundleName(fromBundlePath: testBundlePath)
                 return Target(
                     blueprintName: rawTarget["BlueprintName"] as? String,
                     productModuleName: productModuleName,
@@ -208,7 +212,12 @@ public struct XCTestRunV2: XCTestRun {
         let basename = bundlePath.components(separatedBy: "/").last ?? target.productModuleName
         let executableName = (basename as NSString).deletingPathExtension
 
-        if dyldPaths(of: target.testingEnvironmentVariables).contains("MacOSX.platform") {
+        // Same platform derivation as `platform()`: a macOS artifact recognized by
+        // its host path alone (no DYLD metadata) must still resolve the
+        // Contents/MacOS layout, or Doctor reports its executable missing.
+        let platform = TestPlatform.derive(testHostPath: target.testHostPath,
+                                           dyldPaths: dyldPaths(of: target.testingEnvironmentVariables))
+        if platform == .macOS {
             return "\(bundlePath)/Contents/MacOS/\(executableName)"
         }
         return "\(bundlePath)/\(executableName)"

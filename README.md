@@ -70,15 +70,17 @@ Config reference:
 | `rerunFailedTest` | How many times a failed test is retried (default 0). |
 | `testsBucket` | Number of tests handed to an executor per `xcodebuild` invocation (required for `run`). |
 | `testsExecutionTimeout` | Wall-clock seconds allowed for one bucket; the remote `xcodebuild` is terminated (TERM→KILL) on expiry. Also injected as the per-test time allowance. |
-| `setUpScriptPath` / `tearDownScriptPath` | Optional scripts run on the node before/after each bucket. Uploaded as 0700 files and executed directly — the shebang is honored. Env: `TEST_NAME`, `TEST_MANIFEST` (path to a newline-delimited test list), `UDID`, plus your `environmentVariables` (`TEST_NAMES` is deprecated, kept one release). A nonzero setup exit returns the bucket to the queue; a nonzero teardown is reported as a health event. |
+| `setUpScriptPath` / `tearDownScriptPath` | Optional scripts run on the node before/after each bucket. Uploaded as 0700 files and executed directly — the shebang is honored. Env: `TEST_NAME`, `TEST_MANIFEST` (path to a newline-delimited test list), `UDID`, plus your `environmentVariables` (`TEST_NAMES` is deprecated, kept one release). A nonzero setup exit returns the bucket to the queue; a nonzero teardown is reported as a health event. Each script runs as a Sift-owned process bounded by `testsExecutionTimeout` (terminated on expiry, status 143), and a setup script is terminated when the run is cancelled; a helper a script leaves running in the background must redirect its output (`helper >/dev/null 2>&1 &`). |
 | `onlyTestConfiguration` / `skipTestConfiguration` | Test-plan configuration selection (FormatVersion 2 only): `selected = enabled ∩ (only ?? all) ∖ {skip}`. Unknown names and empty selections are errors. With several selected configurations, every test runs once per configuration and report names are qualified (`test() [Config B]`). |
-| `nodes[].privateKey` / `password` | Exactly ONE of key-based (recommended) or password SSH auth may be set — both is a config error; with neither, ssh-agent is used. A missing `.pub` sidecar is fine (derived from the private key). Sift never prompts interactively. |
+| `nodes[].privateKey` / `password` | Exactly ONE of key-based (recommended) or password SSH auth may be set — both is a config error; with neither, ssh-agent is used. A missing `.pub` sidecar is fine (derived from the private key). Sift never prompts interactively. ssh-agent authentication cannot be timed out (libssh2 blocks on the agent socket), so an agent that waits for an interactive confirmation would hang the connect — CI should use `privateKey`. |
 | `nodes[].deploymentPath` | Absolute node-side working directory. Each run uses an isolated, 0700 `deploymentPath/.sift/runs/<run-id>/<node>/` and removes only that. Duplicate host+deploymentPath node entries are rejected. |
 | `allowXcodebuildParallelTesting` | Opt back in to xcodebuild's own parallel testing inside a chunk (default: disabled — Sift passes `-parallel-testing-enabled NO`). |
+| `transferCompressionLevel` | zip level 0-9 for the build archive sent to the nodes (default 0 = store, minimal controller CPU; 1 is usually a net win over slow links). |
+| `maxConcurrentUploads` | How many nodes receive the build archive at the same time (default: all at once). Uploads share one uplink, so with N in flight every node finishes at ~N× the single-upload time; a cap lets the first nodes start testing while the rest wait. |
 | `nodes[].transport` | `"ssh"` (default) or `"local"` (this machine: no host/credentials, login-session context). |
 | `nodes[].UDID` | `simulators`, `devices`, or `mac` UDIDs matching the artifact's platform — all run concurrently. |
 | `nodes[].provisionSimulators` | `{"deviceType": "iPhone 17", "runtime": "iOS 26.0"?, "count": N, "deleteAfterRun": true?}` — Sift creates N owned clones for the run (the only simulators it will ever erase) and deletes them afterwards. |
-| `nodes[].hostKeyVerification` | `strict` (must be in `~/.sift/known_hosts`), `acceptNew` (default, trust-on-first-use), or `off`. |
+| `nodes[].hostKeyVerification` | `strict` (must be in `~/.sift/known_hosts`), `acceptNew` (default, trust-on-first-use), or `off`. A host already trusted under one key algorithm that later offers a different one is refused like a mismatch (remove the stale entry to re-trust it). `SIFT_KNOWN_HOSTS=/abs/path` overrides the trust store location. |
 | `nodes[].arch` | Optional `arch -<value>` prefix for remote commands (`arm64`, `x86_64`). |
 
 Values support `${ENV_VAR}` substitution; unresolved or unterminated placeholders are an
@@ -98,6 +100,13 @@ Sift list --xctestrun path/to/T.xctestrun               # list without any confi
 Sift doctor --config config.json         # preflight: tooling, artifact, output, every node/executor
 Sift run --config config.json --events-path run.ndjson  # machine-readable event stream (v1)
 ```
+
+Ctrl-C (SIGINT, exit 130), SIGTERM (143) and SIGHUP (129) cancel the run gracefully: remote
+processes are terminated, partial results are collected and `final/` is still published. A
+second signal, or a graceful teardown that stalls for 10 minutes (after `--timeout`: 20% of
+the timeout, at least 10 minutes), forces the process out — remote run directories may then
+be left behind on the nodes. An empty `--tests-path` file is a configuration error (exit 64)
+unless `--allow-empty-tests` is given; it never falls through to running the whole suite.
 
 On a TTY, `run` shows a live progress line (done/pending/in-flight counts, failures,
 active chunks, elapsed time); off a TTY the per-test result lines serve as the

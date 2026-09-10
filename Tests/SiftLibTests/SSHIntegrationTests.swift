@@ -54,6 +54,87 @@ final class SSHIntegrationTests: XCTestCase {
         _ = try await ssh.run("rm -f \(remotePath.shellQuoted)")
     }
 
+    /// Regression: the upload loop used to pin every chunk in the serial queue's
+    /// undrained autorelease pool, so controller RSS grew by the archive size per
+    /// in-flight node (a 6 GiB build fanned out to 11 nodes got the controller
+    /// SIGKILLed by the kernel). The footprint must stay flat regardless of size.
+    func testLargeUploadKeepsControllerFootprintFlat() async throws {
+        let ssh = try await makeConnectedSSH()
+        let remotePath = "/tmp/sift-footprint-\(UUID().uuidString)"
+        addTeardownBlock { _ = try? await ssh.run("rm -f \(remotePath.shellQuoted)") }
+        // Sparse 1 GiB file: reads return zeros without touching the disk.
+        let payloadBytes: UInt64 = 1024 * 1024 * 1024
+        let payloadPath = NSTemporaryDirectory() + "sift-footprint-\(UUID().uuidString).bin"
+        XCTAssertTrue(FileManager.default.createFile(atPath: payloadPath, contents: nil))
+        let handle = try FileHandle(forWritingTo: URL(fileURLWithPath: payloadPath))
+        try handle.truncate(atOffset: payloadBytes)
+        try handle.close()
+        addTeardownBlock { try? FileManager.default.removeItem(atPath: payloadPath) }
+
+        let before = try XCTUnwrap(Self.residentMB(), "resident-size query failed before the upload")
+        let sampler = PeakSampler()
+        let sampling = Task.detached { await sampler.run() }
+        // The sampler stops on every exit path (an upload error must not leave a
+        // detached task sampling for the rest of the test process).
+        let upload: Result<Void, any Error>
+        do {
+            try await ssh.uploadFile(localPath: payloadPath, remotePath: remotePath)
+            upload = .success(())
+        } catch {
+            upload = .failure(error)
+        }
+        sampler.stop()
+        await sampling.value
+        try upload.get()
+        let peak = try XCTUnwrap(sampler.peakMB, "no valid resident-size sample was taken during the upload")
+        XCTAssertGreaterThan(sampler.sampleCount, 5, "the upload should be long enough to sample repeatedly")
+        let growth = peak - before
+        print("[footprint] 1 GiB SFTP upload: RSS before \(before) MB, peak \(peak) MB over \(sampler.sampleCount) samples, growth \(growth) MB")
+        XCTAssertLessThan(growth, 256, "controller RSS grew by \(growth) MB during a 1 GiB upload — chunks are being retained")
+
+        let size = try await ssh.run("wc -c < \(remotePath.shellQuoted)")
+        XCTAssertEqual(size.output.trimmingCharacters(in: .whitespacesAndNewlines), "\(payloadBytes)")
+    }
+
+    /// This process's resident size in MB, or nil when the kernel query fails —
+    /// a failed measurement must never masquerade as a small one.
+    private static func residentMB() -> Int? {
+        var info = mach_task_basic_info()
+        var count = mach_msg_type_number_t(MemoryLayout<mach_task_basic_info>.size / MemoryLayout<natural_t>.size)
+        let status = withUnsafeMutablePointer(to: &info) {
+            $0.withMemoryRebound(to: integer_t.self, capacity: Int(count)) {
+                task_info(mach_task_self_, task_flavor_t(MACH_TASK_BASIC_INFO), $0, &count)
+            }
+        }
+        return status == KERN_SUCCESS ? Int(info.resident_size) / 1_048_576 : nil
+    }
+
+    /// Samples this process's resident size every 100 ms until stopped; failed
+    /// queries are not counted.
+    private final class PeakSampler: @unchecked Sendable {
+        private let lock = NSLock()
+        private var stopped = false
+        private var peak: Int?
+        private var samples = 0
+        var peakMB: Int? { lock.lock(); defer { lock.unlock() }; return peak }
+        var sampleCount: Int { lock.lock(); defer { lock.unlock() }; return samples }
+        func stop() { lock.lock(); stopped = true; lock.unlock() }
+        /// Records one sample; returns true once `stop()` was called.
+        private func record(_ now: Int?) -> Bool {
+            lock.lock(); defer { lock.unlock() }
+            if let now {
+                peak = max(peak ?? 0, now)
+                samples += 1
+            }
+            return stopped
+        }
+        func run() async {
+            while !record(SSHIntegrationTests.residentMB()) {
+                try? await Task.sleep(nanoseconds: 100_000_000)
+            }
+        }
+    }
+
     func testTransferBenchmarkSessionReuseAndReconnect() async throws {
         let ssh = try await makeConnectedSSH()
         let remotePath = "/tmp/sift-bench-\(UUID().uuidString)"

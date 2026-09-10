@@ -22,6 +22,7 @@ struct Node: Sendable {
     private let buildZipPath: String
     private let health: HealthSink
     private let events: EventBus?
+    private let transferGate: TransferGate
     private let log: Logging?
 
     /// Consecutive infrastructure failures before an executor is retired.
@@ -38,6 +39,7 @@ struct Node: Sendable {
         sshFactory: @escaping @Sendable (Config.NodeConfig) -> SSHExecutor,
         health: HealthSink = HealthSink(),
         events: EventBus? = nil,
+        transferGate: TransferGate = TransferGate(limit: nil),
         log: Logging?
     ) {
         self.config = config
@@ -57,6 +59,7 @@ struct Node: Sendable {
         self.sshFactory = sshFactory
         self.health = health
         self.events = events
+        self.transferGate = transferGate
         self.log = log
         // Node-specific remote workspace: two node entries sharing host+deploymentPath
         // must never share upload/results/DerivedData/proc directories.
@@ -78,19 +81,37 @@ struct Node: Sendable {
 
     func start() async {
         var provisionedUDIDs: [String] = []
+        var deploymentStarted = false
         do {
-            try await communication.connect()
-            try await communication.getBuildOnRunner(buildPath: buildZipPath)
+            // Connect INSIDE the permit region: a session opened minutes before its
+            // upload turn could be dropped by an idle timeout while it waits.
+            try await transferGate.withPermit {
+                deploymentStarted = true
+                try await communication.connect()
+                try await communication.uploadBuild(buildPath: buildZipPath)
+            }
+            // A run cancelled during the upload must not spend minutes unpacking,
+            // provisioning clones, and booting simulators it will never use — the
+            // SSH calls below are not cancellation-aware, so check between them.
+            try Task.checkCancellation()
+            // Extraction runs OUTSIDE the permit: the uplink is idle during a remote
+            // unzip, so the next node's transfer must not wait for it.
+            try await communication.unpackBuild()
             var xctestrun = try xctestrunProvider()
             xctestrun.addEnvironmentVariables(config.environmentVariables)
             xctestrun.add(timeout: testsExecutionTimeout)
             let xctestrunPath = try await communication.saveOnRunner(xctestrun: xctestrun)
+            try Task.checkCancellation()
 
             provisionedUDIDs = await provisionSimulators()
             let executors = createExecutors(provisionedUDIDs: provisionedUDIDs)
             guard !executors.isEmpty else {
+                // The build is already deployed: every post-deployment exit must
+                // remove the run directory, or a provisioning-only node whose clones
+                // all failed to create leaves a multi-GB workspace behind per run.
                 log?.warning("\(name): no executors configured — node contributes nothing to this run")
                 await deleteProvisionedSimulators(provisionedUDIDs)
+                await communication.cleanup()
                 return
             }
 
@@ -105,6 +126,22 @@ struct Node: Sendable {
             await communication.cleanup()
             log?.message(verboseMsg: "\(name): finished")
         } catch {
+            if !deploymentStarted, error is CancellationError {
+                // Cancelled while queued for an upload permit: nothing was ever opened
+                // on the node — no failure to report, and a "cleanup" would only open
+                // a connection to tear down nothing.
+                log?.message(verboseMsg: "\(name): run cancelled before deployment started")
+                return
+            }
+            if error is CancellationError || Task.isCancelled {
+                // Cancelled mid-deployment (an aborted upload surfaces as an SSHError,
+                // not CancellationError): worker control, never a node failure —
+                // tear down whatever was deployed, quietly.
+                log?.message(verboseMsg: "\(name): run cancelled during deployment — cleaning up")
+                await deleteProvisionedSimulators(provisionedUDIDs)
+                await communication.cleanup()
+                return
+            }
             log?.error("\(name): \(error)")
             await health.record(RunHealthEvent(kind: .nodeFailed, source: name, detail: "\(error)"))
             await deleteProvisionedSimulators(provisionedUDIDs)
@@ -140,14 +177,54 @@ struct Node: Sendable {
         return udids
     }
 
+    /// Deletes the clones this node created. The management session sat idle for
+    /// the whole test run (workers use their own connections) and may have been
+    /// dropped: a failed deletion gets ONE reconnect + retry, and whatever still
+    /// remains is a `cleanupIncomplete` health event naming the UDIDs — a leaked
+    /// clone must never be logged as "deleted".
     private func deleteProvisionedSimulators(_ udids: [String]) async {
         guard !udids.isEmpty, config.provisionSimulators?.deleteAfterRun ?? true else { return }
-        let developerDir = "export DEVELOPER_DIR=\(config.developerDirPath.shellQuoted); "
+        var remaining: [String] = []
         for udid in udids {
-            _ = try? await communication.ssh.run(developerDir + "xcrun simctl shutdown \(udid.shellQuoted)")
-            _ = try? await communication.ssh.run(developerDir + "xcrun simctl delete \(udid.shellQuoted)")
-            log?.message(verboseMsg: "\(name): deleted provisioned simulator \(udid)")
+            if await deleteSimulator(udid) {
+                log?.message(verboseMsg: "\(name): deleted provisioned simulator \(udid)")
+            } else {
+                remaining.append(udid)
+            }
         }
+        if !remaining.isEmpty {
+            log?.warning("\(name): \(remaining.count) provisioned simulator(s) not deleted — reconnecting to retry")
+            if (try? await communication.connect()) != nil {
+                var stillRemaining: [String] = []
+                for udid in remaining {
+                    if await deleteSimulator(udid) {
+                        log?.message(verboseMsg: "\(name): deleted provisioned simulator \(udid) after reconnect")
+                    } else {
+                        stillRemaining.append(udid)
+                    }
+                }
+                remaining = stillRemaining
+            }
+        }
+        for udid in remaining {
+            log?.error("\(name): provisioned simulator \(udid) could not be deleted — it may remain on the node")
+            await health.record(RunHealthEvent(
+                kind: .cleanupIncomplete, source: name,
+                detail: "provisioned simulator \(udid) may remain on the node (simctl delete failed)"
+            ))
+        }
+    }
+
+    /// shutdown (best effort) + delete (verified). Bounded: simctl on a wedged
+    /// CoreSimulator must not hold teardown for the 15-minute command budget.
+    private func deleteSimulator(_ udid: String) async -> Bool {
+        let developerDir = "export DEVELOPER_DIR=\(config.developerDirPath.shellQuoted); "
+        _ = try? await communication.ssh.runBounded(developerDir + "xcrun simctl shutdown \(udid.shellQuoted)", timeoutSeconds: 300)
+        guard let result = try? await communication.ssh.runBounded(developerDir + "xcrun simctl delete \(udid.shellQuoted)", timeoutSeconds: 300),
+              result.status == 0 else {
+            return false
+        }
+        return true
     }
 
     /// All three categories aggregate — a node may drive simulators AND devices AND its own macOS.
@@ -180,6 +257,9 @@ struct Node: Sendable {
     }
 
     private func runWorkerLoop(executor: TestExecutor, xctestrunPath: String) async {
+        // A cancelled run must not open a connection and boot a simulator just to
+        // take a lease it will abandon.
+        guard !Task.isCancelled else { return }
         do {
             try await executor.connect()
         } catch {
@@ -187,6 +267,7 @@ struct Node: Sendable {
             await health.record(RunHealthEvent(kind: .executorUnavailable, source: executor.executorID, detail: "connection failed: \(error)"))
             return
         }
+        guard !Task.isCancelled else { return }
         guard await executor.ready() else {
             await health.record(RunHealthEvent(kind: .executorUnavailable, source: executor.executorID, detail: "failed readiness check"))
             return
@@ -279,7 +360,9 @@ struct Node: Sendable {
     /// self-healed must not look identical to one that never degraded.
     private func recover(executor: TestExecutor) async -> Bool {
         var probeFailed = false
-        do { _ = try await executor.ssh.run("true") } catch { probeFailed = true }
+        // runFast: the probe that DETECTS a dead transport must fail within a
+        // minute, not after the 15-minute long-command budget (× 3 strikes).
+        do { _ = try await executor.ssh.runFast("true") } catch { probeFailed = true }
         if probeFailed {
             log?.warning("\(executor.executorID): transport lost — reconnecting")
             do { try await executor.connect() } catch {
@@ -312,10 +395,9 @@ struct Node: Sendable {
     private func runChunk(lease: TestLease, executor: TestExecutor, xcodebuild: Xcodebuild, xctestrunPath: String) async -> ChunkOutcome {
         // Setup script: nonzero exit means "don't run this chunk here".
         do {
-            let setupStatus = try await runScript(path: setUpScriptPath, executor: executor, tests: lease.tests)
-            // Script execution runs to completion even under cancellation (both
-            // transports), so a Ctrl-C during setup usually RETURNS normally —
-            // check the flag before interpreting the status: the chunk must not
+            let setupStatus = try await runScript(path: setUpScriptPath, executor: executor, tests: lease.tests, cancellable: true)
+            // A Ctrl-C during setup terminates the script (CancellationError below)
+            // or lands just after it returned — either way the chunk must not
             // launch xcodebuild, and a nonzero exit must not blame the executor.
             if Task.isCancelled {
                 return .cancelled([], "run cancelled during chunk setup")
@@ -334,11 +416,13 @@ struct Node: Sendable {
 
         log?.message(verboseMsg: "\(executor.executorID): running \(lease.tests.count) tests:\n\t- " + lease.tests.joined(separator: "\n\t- "))
         let outcome = await executeAndCollect(lease: lease, executor: executor, xcodebuild: xcodebuild, xctestrunPath: xctestrunPath)
-        // Teardown always runs, in its own error boundary — a teardown failure can
-        // never discard the results of a chunk that already ran, but it is surfaced
-        // (a broken teardown can contaminate later chunks) rather than swallowed.
+        // Teardown always runs (to completion even under cancellation — it restores
+        // state — but bounded by the chunk budget), in its own error boundary: a
+        // teardown failure can never discard the results of a chunk that already
+        // ran, but it is surfaced (a broken teardown can contaminate later chunks)
+        // rather than swallowed.
         do {
-            if let status = try await runScript(path: tearDownScriptPath, executor: executor, tests: lease.tests), status != 0 {
+            if let status = try await runScript(path: tearDownScriptPath, executor: executor, tests: lease.tests, cancellable: false), status != 0 {
                 log?.warning("\(executor.executorID): teardown script exited with status \(status)")
                 // A teardown disturbed by the cancellation itself is not a failure.
                 if !Task.isCancelled {
@@ -402,8 +486,12 @@ struct Node: Sendable {
 
         // Try to collect results even for unexpected statuses — partial results beat none.
         do {
-            let localZip = try await downloadResults(executor: executor, remoteBundlePath: chunkResult.resultBundlePath)
-            let outcomes = try await collector.ingest(zipPath: localZip)
+            let download = try await downloadResults(executor: executor, remoteBundlePath: chunkResult.resultBundlePath)
+            let outcomes = try await collector.ingest(zipPath: download.localZipPath)
+            // The remote originals go only once the local copy has been validated
+            // and staged — a corrupt download must never destroy the only copy.
+            // (The run-end cleanup removes them anyway if this never runs.)
+            _ = try? await executor.ssh.runFast("rm -rf \(download.remoteZipPath.shellQuoted) \(chunkResult.resultBundlePath.shellQuoted)")
             // A result bundle that covers none of the leased tests is not a completed
             // chunk regardless of xcodebuild's exit status — treating it as one would
             // let a corrupt-result producer drain the queue with its health counter
@@ -488,7 +576,7 @@ struct Node: Sendable {
         return description
     }
 
-    private func downloadResults(executor: TestExecutor, remoteBundlePath: String) async throws -> String {
+    private func downloadResults(executor: TestExecutor, remoteBundlePath: String) async throws -> (localZipPath: String, remoteZipPath: String) {
         let zipName = "\(UUID().uuidString).zip"
         let remoteZipPath = "\(remoteWorkPath)/\(zipName)"
         let bundleDirectory = (remoteBundlePath as NSString).deletingLastPathComponent
@@ -502,8 +590,7 @@ struct Node: Sendable {
         let localZipPath = "\(workspace.workPath)/\(zipName)"
         // Salvage mode: after Ctrl-C this download IS the partial report.
         try await executor.ssh.downloadFile(remotePath: remoteZipPath, localPath: localZipPath, abortOnCancellation: false)
-        _ = try? await executor.ssh.run("rm -rf \(remoteZipPath.shellQuoted) \(remoteBundlePath.shellQuoted)")
-        return localZipPath
+        return (localZipPath, remoteZipPath)
     }
 
     private func reportOutcomes(_ outcomes: [TestOutcome], executor: TestExecutor) {
@@ -523,7 +610,16 @@ struct Node: Sendable {
     /// validated at config time. Tests are handed over via a newline-delimited
     /// manifest file (TEST_MANIFEST); TEST_NAMES stays for one release of
     /// backward compatibility.
-    private func runScript(path: String?, executor: TestExecutor, tests: [String]) async throws -> Int32? {
+    ///
+    /// The script runs as an OWNED background process (same pid/status/log contract
+    /// as xcodebuild) polled against a wall-clock deadline of `testsExecutionTimeout`
+    /// — a plain `ssh.run` has only a per-read idle timeout, so a script that keeps
+    /// printing (or a hung one, under local transport) could hold the worker, and
+    /// with it the whole run, forever with no way to cancel. `cancellable` (setup)
+    /// terminates the script on run cancellation; teardown runs to completion
+    /// within the bound because it restores node state. A deadline expiry
+    /// terminates the process tree and reports status 143.
+    private func runScript(path: String?, executor: TestExecutor, tests: [String], cancellable: Bool) async throws -> Int32? {
         guard let path else { return nil }
         log?.message(verboseMsg: "\(executor.executorID): executing script \(path)")
         let script = try Data(contentsOf: URL(fileURLWithPath: path))
@@ -531,12 +627,12 @@ struct Node: Sendable {
         let scriptsDirectory = "\(remoteWorkPath)/scripts"
         let remoteScript = "\(scriptsDirectory)/\(scriptID).script"
         let remoteManifest = "\(scriptsDirectory)/\(scriptID).tests"
-        _ = try await executor.ssh.run("umask 077; mkdir -p \(scriptsDirectory.shellQuoted)")
+        _ = try await executor.ssh.runFast("umask 077; mkdir -p \(scriptsDirectory.shellQuoted)")
         try await executor.ssh.uploadFile(data: script, remotePath: remoteScript)
         // POSIX text file: every line newline-TERMINATED (so `wc -l`/`while read` see
         // the last test too).
         try await executor.ssh.uploadFile(data: Data(tests.map { $0 + "\n" }.joined().utf8), remotePath: remoteManifest)
-        _ = try await executor.ssh.run("chmod 700 \(remoteScript.shellQuoted)")
+        _ = try await executor.ssh.runFast("chmod 700 \(remoteScript.shellQuoted)")
 
         var environment = [
             "TEST_NAME=\((tests.first ?? "").shellQuoted)",
@@ -548,9 +644,68 @@ struct Node: Sendable {
             environment.append("\(key)=\(value.shellQuoted)")
         }
         let prologue = environment.map { "export \($0)" }.joined(separator: "\n")
-        let result = try await executor.ssh.run(prologue + "\n" + remoteScript.shellQuoted)
-        _ = try? await executor.ssh.run("rm -f \(remoteScript.shellQuoted) \(remoteManifest.shellQuoted)")
-        log?.message(verboseMsg: "\(executor.executorID): script exited \(result.status)\n\(result.output)")
-        return result.status
+        let attemptID = "script-\(scriptID)"
+        let handle = try await executor.ssh.startBackgroundProcess(
+            command: prologue + "\n" + remoteScript.shellQuoted,
+            workDirectory: remoteWorkPath,
+            attemptID: attemptID
+        )
+
+        let clock = ContinuousClock()
+        let deadline = clock.now.advanced(by: .seconds(testsExecutionTimeout))
+        var status: Int32?
+        var cancelled = false
+        var timedOut = false
+        do {
+            while true {
+                status = try await executor.ssh.pollBackgroundProcess(handle)
+                if status != nil { break }
+                if cancellable && Task.isCancelled {
+                    cancelled = true
+                    break
+                }
+                let remaining = clock.now.duration(to: deadline)
+                if remaining <= .zero {
+                    log?.error("\(executor.executorID): script \(path) exceeded \(testsExecutionTimeout)s — terminating")
+                    timedOut = true
+                    break
+                }
+                // Uncancellable: teardown polling must not be cut short by a Ctrl-C
+                // (setup checks the flag explicitly above).
+                let remainingSeconds = Double(remaining.components.seconds) + Double(remaining.components.attoseconds) / 1e18
+                await CommandLineExecutor.uncancellableSleep(seconds: min(1, max(0.05, remainingSeconds)))
+            }
+        } catch {
+            // A polling failure must never orphan the script: the same rule as an
+            // xcodebuild attempt (a retry or recovery would otherwise overlap it).
+            await executor.ssh.terminateBackgroundProcess(handle, marker: "sift-attempt:\(attemptID)")
+            throw error
+        }
+        // The process bookkeeping is removed only once the process is KNOWN gone:
+        // an unverified termination keeps its handle so the run-end sweep can
+        // still find (and report) it.
+        var processGone = status != nil
+        if status == nil {
+            switch await executor.ssh.terminateBackgroundProcess(handle, marker: "sift-attempt:\(attemptID)") {
+            case .confirmedDead, .notFound:
+                processGone = true
+            case .unverified(let reason):
+                processGone = false
+                log?.warning("\(executor.executorID): could not verify the script died (\(reason)) — left for the run-end sweep")
+            }
+            // A deadline expiry is a failure even when the script traps TERM and
+            // exits 0 during the grace: a setup that did not finish in time must
+            // not let the chunk proceed, and a teardown that did not is reported.
+            status = timedOut ? 143 : ((try? await executor.ssh.pollBackgroundProcess(handle)) ?? 143)
+        }
+        let tail = (try? await executor.ssh.runFast("tail -c 4000 \(handle.logPath.shellQuoted)").output) ?? ""
+        var removals = [remoteScript, remoteManifest]
+        if processGone { removals.append(handle.directory) }
+        _ = try? await executor.ssh.runFast("rm -rf " + removals.map(\.shellQuoted).joined(separator: " "))
+        if cancelled {
+            throw CancellationError()
+        }
+        log?.message(verboseMsg: "\(executor.executorID): script exited \(status ?? 143)\n\(tail)")
+        return status ?? 143
     }
 }

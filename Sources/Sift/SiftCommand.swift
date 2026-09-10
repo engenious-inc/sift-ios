@@ -11,6 +11,12 @@ struct SiftMain {
         // exec), macOS auto-reaps children and waitpid can only fail — restore the
         // default before the first subprocess is spawned.
         signal(SIGCHLD, SIG_DFL)
+        // A consumer of stdout/--events-stdout that exits early (`| head`, a dead
+        // tee) must not kill the controller with SIGPIPE mid-run — that would skip
+        // remote process termination and cleanup on every node. Writes fail with
+        // EPIPE instead and the sinks handle it. Children get the default back
+        // (CommandLineExecutor resets dispositions at spawn).
+        signal(SIGPIPE, SIG_IGN)
         await Sift.main()
     }
 }
@@ -132,7 +138,10 @@ extension Sift {
             // Test-source precedence: --only-testing and --tests-path are mutually
             // exclusive unless --combine-test-selectors unions them; the config's
             // `tests` array is a deprecated fallback only when neither is given.
-            var tests: [String] = onlyTesting
+            // `nil` = no explicit selection (run everything discovered); an EXPLICIT
+            // selection that names nothing stays empty — a CI shard handed an
+            // empty --tests-path file must never silently run the whole suite.
+            var tests: [String]? = nil
             if let testsPath {
                 let fileTests: [String]
                 do {
@@ -149,10 +158,15 @@ extension Sift {
                     throw ExitCode(64)
                 }
                 tests = onlyTesting + fileTests
-            }
-            if tests.isEmpty, let configTests = config.tests, !configTests.isEmpty {
+            } else if !onlyTesting.isEmpty {
+                tests = onlyTesting
+            } else if let configTests = config.tests, !configTests.isEmpty {
                 log.warning("the config 'tests' field is deprecated and will be removed — use --only-testing or --tests-path (using it as a fallback for this run)")
                 tests = configTests
+            }
+            if let tests, tests.isEmpty, !allowEmptyTests {
+                log.error("--tests-path \(testsPath ?? "") selects no tests — fix the list, or pass --allow-empty-tests to publish an empty run")
+                throw ExitCode(64)
             }
 
             // Live progress on a TTY (suppressed in verbose mode — the line would
@@ -179,21 +193,29 @@ extension Sift {
                 return try await controller.run()
             }
 
-            // SIGINT/SIGTERM cancel the run instead of killing the process outright,
-            // so remote processes are terminated and partial reports still land.
-            // 124 = timeout, 130 = SIGINT, 143 = SIGTERM (standard shell semantics).
+            // SIGINT/SIGTERM/SIGHUP cancel the run instead of killing the process
+            // outright, so remote processes are terminated and partial reports still
+            // land. 124 = timeout, 129 = SIGHUP, 130 = SIGINT, 143 = SIGTERM
+            // (standard shell semantics). Graceful teardown is bounded: a SECOND
+            // signal, or the hard deadline armed with the first cancellation, forces
+            // the process out (remote state may then be unclean — the log says so).
             let cancellationCode = CancellationCode()
-            let sigintSource = Self.installSignalHandler(SIGINT) {
-                cancellationCode.set(130)
+            let forcedExit = ForcedExit(log: log)
+            let cancel: @Sendable (Int32) -> Void = { code in
+                if cancellationCode.get() != nil {
+                    forcedExit.now(code: code, reason: "second signal")
+                }
+                cancellationCode.set(code)
                 runTask.cancel()
+                forcedExit.arm(after: ForcedExit.signalGraceSeconds, code: code, reason: "graceful teardown did not finish")
             }
-            let sigtermSource = Self.installSignalHandler(SIGTERM) {
-                cancellationCode.set(143)
-                runTask.cancel()
-            }
+            let sigintSource = Self.installSignalHandler(SIGINT) { cancel(130) }
+            let sigtermSource = Self.installSignalHandler(SIGTERM) { cancel(143) }
+            let sighupSource = Self.installSignalHandler(SIGHUP) { cancel(129) }
             defer {
                 sigintSource.cancel()
                 sigtermSource.cancel()
+                sighupSource.cancel()
             }
 
             var timeoutTask: Task<Void, Never>?
@@ -204,12 +226,17 @@ extension Sift {
                     log.error("Global timeout (\(timeout)s) reached — cancelling run")
                     cancellationCode.set(124)
                     runTask.cancel()
+                    // Salvage (terminate, download partial results, merge) is
+                    // sequential per worker and each step is bounded, but a silently
+                    // dead node can stretch it to hours — a watchdog must expire.
+                    forcedExit.arm(after: max(600, Double(timeout) / 5), code: 124, reason: "salvage after the global timeout did not finish")
                 }
             }
 
             do {
                 let outcome = try await runTask.value
                 timeoutTask?.cancel()
+                forcedExit.disarm()
                 if let code = cancellationCode.get() {
                     throw ExitCode(code)
                 }
@@ -218,8 +245,43 @@ extension Sift {
                 throw exit
             } catch {
                 timeoutTask?.cancel()
+                forcedExit.disarm()
                 log.error("\(error)")
                 throw ExitCode(cancellationCode.get() ?? 1)
+            }
+        }
+
+        /// Hard exit after graceful cancellation stalls. One-shot and idempotent;
+        /// `disarm()` once the run has returned normally.
+        private final class ForcedExit: @unchecked Sendable {
+            static let signalGraceSeconds: Double = 600
+            private let lock = NSLock()
+            private var timer: DispatchWorkItem?
+            private var fired = false
+            private let log: Log
+
+            init(log: Log) { self.log = log }
+
+            func arm(after seconds: Double, code: Int32, reason: String) {
+                lock.lock(); defer { lock.unlock() }
+                guard timer == nil, !fired else { return }
+                let item = DispatchWorkItem { [self] in now(code: code, reason: reason) }
+                timer = item
+                DispatchQueue.global().asyncAfter(deadline: .now() + seconds, execute: item)
+            }
+
+            func disarm() {
+                lock.lock(); defer { lock.unlock() }
+                timer?.cancel()
+                timer = nil
+            }
+
+            func now(code: Int32, reason: String) -> Never {
+                lock.lock()
+                fired = true
+                lock.unlock()
+                log.error("Forced exit (\(reason)) — remote processes and run directories may be left behind on the nodes")
+                Darwin.exit(code)
             }
         }
 

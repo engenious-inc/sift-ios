@@ -18,7 +18,9 @@ struct JUnit {
 
         var suites: [String: Suite] = [:]
         for test in tests.cases {
-            var components = test.name.components(separatedBy: "/")
+            // Structural identity (never the display name: a configuration
+            // qualifier like "[iOS/Debug]" must not be split as path components).
+            var components = test.structuralIdentifier.components(separatedBy: "/")
             if components.count > 1 { components.removeLast() }
             let suiteName = components.joined(separator: ".")
             var suite = suites[suiteName, default: Suite()]
@@ -52,25 +54,34 @@ struct JUnit {
             "timestamp": timestampString,
         ])
 
+        // Attributes are escaped by XMLElement but NOT filtered: an XML-illegal
+        // control character in a name or hostname makes the document unparsable
+        // for CI consumers, exactly like one in a message would.
         for suiteName in suites.keys.sorted() {
             guard let suite = suites[suiteName] else { continue }
             let suiteElement = XMLElement(name: "testsuite")
             suiteElement.setAttributesWith([
-                "name": suiteName,
+                "name": xmlSanitized(suiteName),
                 "tests": String(suite.tests),
                 "failures": String(suite.failures),
                 "errors": String(suite.errors),
                 "skipped": String(suite.skipped),
                 "time": String(format: "%.3f", suite.time),
-                "hostname": hostname,
+                "hostname": xmlSanitized(hostname),
                 "timestamp": timestampString,
             ])
             for test in suite.cases.sorted(by: { $0.name < $1.name }) {
                 let caseElement = XMLElement(name: "testcase")
-                let testMethod = test.name.components(separatedBy: "/").last ?? test.name
+                // Method = last structural component + the display qualifier
+                // (" [Config]") the display name carries — same "test() [Config]"
+                // shape as before, but a "/" inside the configuration name can no
+                // longer be mistaken for a path separator.
+                let structural = test.structuralIdentifier
+                let qualifier = test.name.hasPrefix(structural) ? String(test.name.dropFirst(structural.count)) : ""
+                let testMethod = (structural.components(separatedBy: "/").last ?? structural) + qualifier
                 caseElement.setAttributesWith([
-                    "classname": suiteName,
-                    "name": testMethod,
+                    "classname": xmlSanitized(suiteName),
+                    "name": xmlSanitized(testMethod),
                     "time": String(format: "%.3f", test.duration),
                 ])
                 switch test.state {

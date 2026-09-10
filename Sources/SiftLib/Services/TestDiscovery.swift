@@ -78,19 +78,31 @@ public struct TestDiscovery: Sendable {
     ) async throws -> [ScheduledTest] {
         // One bounded retry: enumeration briefly launches the test runner on the
         // destination, and a busy simulator (e.g. another process enumerating at the
-        // same moment) can kill it transiently.
+        // same moment) can kill it transiently. A nonzero xcodebuild exit with an
+        // otherwise clean document counts as a failed FIRST attempt (it feeds the
+        // retry); on the retry it is accepted with a warning rather than failing a
+        // run over an exit status xcodebuild does not document.
         do {
-            return try await enumerationAttempt(xctestrun: xctestrun, configuration: configuration, descriptors: descriptors)
+            return try await enumerationAttempt(xctestrun: xctestrun, configuration: configuration, descriptors: descriptors, strictExitStatus: true)
+        } catch is CancellationError {
+            throw CancellationError()
         } catch {
             log?.warning("test enumeration failed, retrying once: \(error)")
-            return try await enumerationAttempt(xctestrun: xctestrun, configuration: configuration, descriptors: descriptors)
+            return try await enumerationAttempt(xctestrun: xctestrun, configuration: configuration, descriptors: descriptors, strictExitStatus: false)
         }
     }
+
+    /// Enumeration boots a simulator and launches the runner: bounded so a wedged
+    /// CoreSimulator cannot hang `sift list` or a run's discovery phase forever.
+    static let enumerationTimeoutSeconds: TimeInterval = 900
+    static let probeTimeoutSeconds: TimeInterval = 120
+    static let symbolToolTimeoutSeconds: TimeInterval = 300
 
     private func enumerationAttempt(
         xctestrun: XCTestRun,
         configuration: String?,
-        descriptors: [TestBundleDescriptor]
+        descriptors: [TestBundleDescriptor],
+        strictExitStatus: Bool
     ) async throws -> [ScheduledTest] {
         let platform = try xctestrun.platform()
         let destination = try await enumerationDestination(for: platform)
@@ -110,7 +122,8 @@ public struct TestDiscovery: Sendable {
             arguments += ["-only-test-configuration", configuration]
         }
         log?.message(verboseMsg: "Enumerating tests: xcrun " + arguments.joined(separator: " "))
-        let result = try await shell.runUnchecked("/usr/bin/xcrun", arguments)
+        let result = try await shell.runUnchecked("/usr/bin/xcrun", arguments, timeout: Self.enumerationTimeoutSeconds)
+        try Task.checkCancellation()
         guard let data = FileManager.default.contents(atPath: outputPath) else {
             throw XCTestRunError(
                 "test enumeration produced no output (xcodebuild status \(result.status)): "
@@ -129,6 +142,14 @@ public struct TestDiscovery: Sendable {
                 "test enumeration failed:\n" + document.errors.map { "  - \($0)" }.joined(separator: "\n")
             )
         }
+        if result.status != 0 {
+            let detail = "xcodebuild -enumerate-tests exited \(result.status) but wrote a clean enumeration document: "
+                + String((result.stderr.isEmpty ? result.stdout : result.stderr).suffix(1000))
+            // A signalled death (crash, kill) is never trusted, even on the retry:
+            // the document may predate the part of the enumeration that died.
+            guard !strictExitStatus, result.terminationReason == .exit else { throw XCTestRunError(detail) }
+            log?.warning(detail + " — accepting the document")
+        }
         return try Self.scheduledTests(
             fromEnumeration: document,
             configuration: configuration,
@@ -144,7 +165,18 @@ public struct TestDiscovery: Sendable {
         descriptors: [TestBundleDescriptor],
         log: Logging?
     ) throws -> [ScheduledTest] {
-        let byBundle = Dictionary(uniqueKeysWithValues: descriptors.map { ($0.bundleName, $0) })
+        // Two enabled targets producing the same `.xctest` basename would share one
+        // `-only-testing:` namespace: an error, never a Dictionary trap.
+        var byBundle: [String: TestBundleDescriptor] = [:]
+        for descriptor in descriptors {
+            if let existing = byBundle[descriptor.bundleName], existing != descriptor {
+                throw XCTestRunError(
+                    "two test targets share the bundle name '\(descriptor.bundleName)' "
+                    + "(targets '\(existing.targetKey)' and '\(descriptor.targetKey)') — xcodebuild cannot address their tests separately; rename one product"
+                )
+            }
+            byBundle[descriptor.bundleName] = descriptor
+        }
         var seen = Set<String>()
         var duplicates = Set<String>()
         var tests: [ScheduledTest] = []
@@ -235,15 +267,22 @@ public struct TestDiscovery: Sendable {
         let devices: [String: [Device]]
     }
 
+    /// Numeric runtime ordering: "iOS-18-0" must rank above "iOS-9-0" (and below
+    /// "iOS-26-0") — a lexicographic sort of the identifier gets that wrong.
+    static func runtimeVersion(ofIdentifier identifier: String) -> [Int] {
+        let tail = identifier.components(separatedBy: "SimRuntime.iOS-").last ?? ""
+        return tail.split(separator: "-").compactMap { Int($0) }
+    }
+
     private func localSimulatorUDID() async throws -> String {
-        let result = try await shell.runChecked("/usr/bin/xcrun", ["simctl", "list", "devices", "--json"])
+        let result = try await shell.runChecked("/usr/bin/xcrun", ["simctl", "list", "devices", "--json"], timeout: Self.probeTimeoutSeconds)
         guard let data = result.stdout.data(using: .utf8),
               let list = try? JSONDecoder().decode(SimctlList.self, from: data) else {
             throw XCTestRunError("cannot parse `simctl list devices --json` output")
         }
         let iosRuntimes = list.devices
             .filter { $0.key.contains("SimRuntime.iOS") }
-            .sorted { $0.key > $1.key } // newest runtime first
+            .sorted { Self.runtimeVersion(ofIdentifier: $1.key).lexicographicallyPrecedes(Self.runtimeVersion(ofIdentifier: $0.key)) } // newest runtime first
         let available = iosRuntimes.flatMap { $0.value }.filter { $0.isAvailable ?? false }
         if let booted = available.first(where: { $0.state == "Booted" }) {
             return booted.udid
@@ -258,7 +297,7 @@ public struct TestDiscovery: Sendable {
     }
 
     private func localPhysicalDeviceUDID() async throws -> String? {
-        guard let result = try? await shell.runChecked("/usr/bin/xcrun", ["xcdevice", "list"]) else { return nil }
+        guard let result = try? await shell.runChecked("/usr/bin/xcrun", ["xcdevice", "list"], timeout: Self.probeTimeoutSeconds) else { return nil }
         // xcdevice may prefix warnings that themselves contain "[" (e.g. "[MT] …"):
         // try every candidate array start until one parses — same as `Device`'s parser.
         var entries: [[String: Any]]?
@@ -320,7 +359,7 @@ public struct TestDiscovery: Sendable {
     /// is the caller-provided prefix (the bundle name — the mangled Swift module name
     /// is intentionally not used for the identifier namespace).
     func dump(binaryPath: String, moduleName: String) async throws -> [String] {
-        let nm = try await shell.runChecked("/usr/bin/nm", ["-gU", binaryPath])
+        let nm = try await shell.runChecked("/usr/bin/nm", ["-gU", binaryPath], timeout: Self.symbolToolTimeoutSeconds)
         let symbols = nm.stdout
             .components(separatedBy: "\n")
             .compactMap { $0.components(separatedBy: " ").last }
@@ -329,15 +368,35 @@ public struct TestDiscovery: Sendable {
         guard !symbols.isEmpty else { return [] }
 
         var tests: [String] = []
-        // Demangle in batches to stay under argv limits for large bundles.
-        for batch in stride(from: 0, to: symbols.count, by: 2000).map({ Array(symbols[$0..<min($0 + 2000, symbols.count)]) }) {
-            let demangled = try await shell.runChecked("/usr/bin/xcrun", ["swift-demangle", "-compact"] + batch)
+        // Demangle in batches bounded by BYTES (not count): generic-heavy test
+        // code mangles to hundreds of bytes per symbol, and 2000 of those exceed
+        // macOS's 1 MiB ARG_MAX (E2BIG at spawn).
+        for batch in Self.batches(of: symbols, maxBytes: 256 * 1024) {
+            let demangled = try await shell.runChecked("/usr/bin/xcrun", ["swift-demangle", "-compact"] + batch, timeout: Self.symbolToolTimeoutSeconds)
             for line in demangled.stdout.components(separatedBy: "\n") {
                 guard let identifier = testIdentifier(fromDemangled: line, moduleName: moduleName) else { continue }
                 tests.append(identifier)
             }
         }
         return TestName.canonicalList(tests)
+    }
+
+    static func batches(of symbols: [String], maxBytes: Int) -> [[String]] {
+        var result: [[String]] = []
+        var current: [String] = []
+        var currentBytes = 0
+        for symbol in symbols {
+            let cost = symbol.utf8.count + 1
+            if !current.isEmpty, currentBytes + cost > maxBytes {
+                result.append(current)
+                current = []
+                currentBytes = 0
+            }
+            current.append(symbol)
+            currentBytes += cost
+        }
+        if !current.isEmpty { result.append(current) }
+        return result
     }
 
     /// Matches "Module.Class.testSomething() -> ()" and variants; XCTest discovers

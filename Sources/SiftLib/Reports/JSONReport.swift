@@ -15,7 +15,8 @@ enum JSONReport {
     static func generate(tests: TestCasesSnapshot, context: ReportContext) -> JSONReportModel {
         let testsBySuite: [SuiteKey: [TestCase]] = tests.cases
             .reduce(into: [:]) { result, testCase in
-                let suiteName = testCase.name.components(separatedBy: "/").dropLast().joined(separator: "/")
+                // Structural identity, never the (configuration-qualified) display name.
+                let suiteName = testCase.structuralIdentifier.components(separatedBy: "/").dropLast().joined(separator: "/")
                 result[SuiteKey(suite: suiteName, configuration: testCase.configuration), default: []].append(testCase)
             }
 

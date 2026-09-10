@@ -22,6 +22,14 @@ public struct TestCase: Hashable, Sendable {
     /// durations feed the timings store (a timed-out/degraded chunk's numbers would
     /// pollute scheduling history).
     public var timingEligible: Bool = false
+    /// Canonical "Bundle/Class/test()" identifier, WITHOUT the configuration
+    /// qualifier `name` may carry — reports derive suite/class/method from this,
+    /// never by re-splitting a display name (a configuration named "iOS/Debug"
+    /// would otherwise be parsed as path components).
+    public var identifier: String = ""
+
+    /// The identity to split into bundle/class/method components.
+    var structuralIdentifier: String { identifier.isEmpty ? name : identifier }
 }
 
 /// One test's result from one executed chunk.

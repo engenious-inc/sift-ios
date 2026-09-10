@@ -46,6 +46,17 @@ final class ConfigValidationTests: XCTestCase {
         XCTAssertNoThrow(try Config(data: makeConfigJSON()))
     }
 
+    /// `maxConcurrentUploads` caps the build fan-out; 0 would deadlock every node.
+    func testMaxConcurrentUploadsMustBePositive() throws {
+        let zero = makeConfigJSON().replacingFirst(of: #""testsBucket": 4,"#, with: #""testsBucket": 4, "maxConcurrentUploads": 0,"#)
+        XCTAssertThrowsError(try Config(data: zero)) { error in
+            XCTAssertTrue("\(error)".contains("maxConcurrentUploads must be >= 1"), "\(error)")
+        }
+        let one = makeConfigJSON().replacingFirst(of: #""testsBucket": 4,"#, with: #""testsBucket": 4, "maxConcurrentUploads": 1,"#)
+        XCTAssertEqual(try Config(data: one).maxConcurrentUploads, 1)
+        XCTAssertNil(try Config(data: makeConfigJSON()).maxConcurrentUploads)
+    }
+
     /// A copied ssh entry whose transport was flipped to "local" must be rejected,
     /// not silently run the whole load on the controller machine.
     func testLocalNodeWithSSHFieldsRejected() {

@@ -9,7 +9,9 @@ final class NodeTests: XCTestCase {
         shell: FakeSSHExecutor,
         scheduler: TestScheduler,
         workspace: RunWorkspace,
-        rerun: Int = 0
+        rerun: Int = 0,
+        health: HealthSink = HealthSink(),
+        transferGate: TransferGate = TransferGate(limit: nil)
     ) -> Node {
         let nodeConfig = try! JSONDecoder().decode(Config.NodeConfig.self, from: Data("""
         {"name": "fake", "host": "h", "port": 22, "username": "u",
@@ -36,8 +38,24 @@ final class NodeTests: XCTestCase {
             buildZipPath: "/tmp/fake-build.zip",
             xctestrunProvider: { try XCTestRunFactory.create(path: fixturePath, log: nil) },
             sshFactory: { _ in shell },
+            health: health,
+            transferGate: transferGate,
             log: nil
         )
+    }
+
+    private actor Signal {
+        private var fired = false
+        private var waiters: [CheckedContinuation<Void, Never>] = []
+        func fire() {
+            fired = true
+            waiters.forEach { $0.resume() }
+            waiters.removeAll()
+        }
+        func wait() async {
+            if fired { return }
+            await withCheckedContinuation { waiters.append($0) }
+        }
     }
 
     private func makeWorkspace() throws -> RunWorkspace {
@@ -93,6 +111,40 @@ final class NodeTests: XCTestCase {
         XCTAssertEqual(snapshot.passed.count, 0)
     }
 
+    /// A node cancelled while queued for an upload permit never touched its machine:
+    /// no nodeFailed health event, and no connection opened just to "clean up".
+    func testCancellationWhileQueuedForUploadIsQuiet() async throws {
+        let shell = FakeSSHExecutor()
+        let scheduler = TestScheduler(tests: ["B/C/test1()"], rerunLimit: 0)
+        let workspace = try makeWorkspace()
+        let health = HealthSink()
+        let gate = TransferGate(limit: 1)
+        // Occupy the only permit so the node has to queue.
+        let holderInside = Signal()
+        let releaseHolder = Signal()
+        let holder = Task {
+            try await gate.withPermit {
+                await holderInside.fire()
+                await releaseHolder.wait()
+            }
+        }
+        await holderInside.wait()
+
+        let node = makeNode(shell: shell, scheduler: scheduler, workspace: workspace, health: health, transferGate: gate)
+        let run = Task { await node.start() }
+        try await TransferGateTests.waitUntil { gate.waitingCount == 1 }
+        run.cancel()
+        await run.value
+        await releaseHolder.fire()
+        try await holder.value
+
+        XCTAssertEqual(shell.withState { $0.connectAttempts }, 0, "no connection is opened for a node that never deployed")
+        XCTAssertTrue(shell.commandLog.isEmpty, "no remote commands for a node that never deployed: \(shell.commandLog)")
+        let events = await health.all()
+        XCTAssertTrue(events.isEmpty, "queued cancellation is not a node failure: \(events)")
+        XCTAssertEqual(gate.activeCount, 0)
+    }
+
     func testTransportLossReconnectsBeforeReset() async throws {
         let shell = FakeSSHExecutor()
         // First chunk fails infrastructure-wise AND the transport probe fails once:
@@ -100,9 +152,17 @@ final class NodeTests: XCTestCase {
         shell.withState { $0.commandFailuresForPrefix["true"] = -1 }
         let scheduler = TestScheduler(tests: ["B/C/test1()", "B/C/test2()"], rerunLimit: 0)
         let workspace = try makeWorkspace()
-        let node = makeNode(shell: shell, scheduler: scheduler, workspace: workspace)
+        let health = HealthSink()
+        let node = makeNode(shell: shell, scheduler: scheduler, workspace: workspace, health: health)
         await node.start()
         await scheduler.drain()
-        XCTAssertGreaterThan(shell.withState { $0.connectAttempts }, 1, "recovery reconnects the transport")
+        // Baseline is TWO connects with no recovery at all (the management session
+        // + the executor's own). Cleanup ALSO reconnects when its probe fails, so a
+        // bare count cannot prove recovery: the recovered event carries the
+        // transport-reconnect detail only when the worker's recovery reconnected.
+        XCTAssertGreaterThanOrEqual(shell.withState { $0.connectAttempts }, 3, "recovery reconnects the transport")
+        let events = await health.all()
+        XCTAssertTrue(events.contains { $0.kind == .executorRecovered && $0.detail.contains("transport reconnected") },
+                      "worker recovery must reconnect before resetting: \(events)")
     }
 }

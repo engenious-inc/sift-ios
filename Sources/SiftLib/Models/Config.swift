@@ -23,6 +23,11 @@ public struct Config: Codable, Sendable {
     /// zip compression level 0-9 for the build archive (default 0 = store).
     /// Level 1 is usually a net win for remote farms; 0 minimizes controller CPU.
     public var transferCompressionLevel: Int?
+    /// Upper bound on nodes receiving the build archive at the same time (default:
+    /// unlimited). Uploads share one uplink, so N parallel transfers all finish at
+    /// ~N× the single-transfer time; a cap lets the first nodes finish and start
+    /// testing while the rest wait their turn.
+    public var maxConcurrentUploads: Int?
     public var nodes: [NodeConfig]
     public var tests: [String]?
 
@@ -50,6 +55,7 @@ public struct Config: Codable, Sendable {
         self.skipTestConfiguration = try container.decodeIfPresent(String.self, forKey: .skipTestConfiguration)
         self.allowXcodebuildParallelTesting = try container.decodeIfPresent(Bool.self, forKey: .allowXcodebuildParallelTesting)
         self.transferCompressionLevel = try container.decodeIfPresent(Int.self, forKey: .transferCompressionLevel)
+        self.maxConcurrentUploads = try container.decodeIfPresent(Int.self, forKey: .maxConcurrentUploads)
         self.nodes = try container.decodeIfPresent([NodeConfig].self, forKey: .nodes) ?? []
         self.tests = try container.decodeIfPresent([String].self, forKey: .tests)
     }
@@ -133,7 +139,10 @@ public struct Config: Codable, Sendable {
             result += remainder[..<prefixEnd]
             let afterStart = remainder[start.upperBound...]
             guard let end = afterStart.firstIndex(of: "}") else {
-                problems.append("unterminated '${' in config value '\(string)' — close it with '}' or escape it as '$${'")
+                // Never echo the value: it may be a password or passphrase, and the
+                // CLI prints this error into CI logs.
+                let offset = string.distance(from: string.startIndex, to: start.lowerBound)
+                problems.append("unterminated '${' at offset \(offset) of a \(string.count)-character config value — close it with '}' or escape it as '$${'")
                 return result + remainder[start.lowerBound...]
             }
             let name = String(afterStart[..<end])
@@ -184,6 +193,9 @@ public struct Config: Codable, Sendable {
         if let level = transferCompressionLevel, !(0...9).contains(level) {
             violations.append("transferCompressionLevel must be in 0...9 (got \(level))")
         }
+        if let cap = maxConcurrentUploads, cap < 1 {
+            violations.append("maxConcurrentUploads must be >= 1 (got \(cap))")
+        }
         if nodes.isEmpty {
             violations.append("at least one node is required")
         }
@@ -218,7 +230,10 @@ public struct Config: Codable, Sendable {
                     violations.append("\(label): username contains whitespace ('\(username)')")
                 }
             }
-            let endpointHost = node.transport == .local ? "local" : "\(node.hostValue):\(node.portValue)"
+            // Identity for duplicate detection is NORMALIZED the way execution will
+            // resolve it: host names case-folded, deployment paths standardized —
+            // `/x/y` and `/x/y/` are the same remote workspace.
+            let endpointHost = node.transport == .local ? "local" : "\(node.hostValue.lowercased()):\(node.portValue)"
             if node.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 violations.append("node at \(endpointHost): name must not be empty")
             }
@@ -268,7 +283,7 @@ public struct Config: Codable, Sendable {
             if !seenNames.insert(node.name).inserted {
                 violations.append("duplicate node name '\(node.name)' — node names must be unique")
             }
-            let endpoint = "\(endpointHost)|\(node.deploymentPath)"
+            let endpoint = "\(endpointHost)|\((node.deploymentPath as NSString).standardizingPath)"
             if !seenEndpoints.insert(endpoint).inserted {
                 violations.append("\(label): duplicate endpoint (\(endpointHost), deploymentPath \(node.deploymentPath)) — merge the UDID lists into one node entry")
             }

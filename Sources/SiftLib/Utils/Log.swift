@@ -33,7 +33,9 @@ private func sanitized(_ text: String) -> String {
 /// `sift list | …` pipelines never see diagnostics.
 private func emit(_ line: String, toStandardError: Bool) {
     if toStandardError {
-        FileHandle.standardError.write(Data((line + "\n").utf8))
+        // Throwing variant: the legacy write(_:) raises an uncatchable ObjC
+        // exception on a closed pipe; diagnostics must never abort a run.
+        try? FileHandle.standardError.write(contentsOf: Data((line + "\n").utf8))
     } else {
         print(line)
     }

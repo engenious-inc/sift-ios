@@ -166,7 +166,10 @@ final class UtilityTests: XCTestCase {
 
     func testNodeSlugSanitizesAndRemoteWorkPathsDiffer() throws {
         XCTAssertEqual(RunWorkspace.nodeSlug(for: "mac-mini-1"), "mac-mini-1")
-        XCTAssertEqual(RunWorkspace.nodeSlug(for: "weird name/../x"), "weird_name_.._x")
+        // Lossy sanitization gets a digest suffix so distinct names never collide.
+        let weird = RunWorkspace.nodeSlug(for: "weird name/../x")
+        XCTAssertTrue(weird.hasPrefix("weird_name_.._x-"), weird)
+        XCTAssertTrue(RunWorkspace.isSafePathComponent(weird))
         let workspace = RunWorkspace(outputDirectoryPath: "/tmp/out")
         let a = workspace.remoteWorkPath(deploymentPath: "/deploy", nodeSlug: "node-a")
         let b = workspace.remoteWorkPath(deploymentPath: "/deploy", nodeSlug: "node-b")

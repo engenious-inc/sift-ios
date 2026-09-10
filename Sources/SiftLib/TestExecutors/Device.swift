@@ -37,7 +37,9 @@ struct Device: TestExecutor {
         // Preflight: the device must be visible and available to Xcode's device
         // stack. A failed check is a failed check — never "assume available".
         let command = "export DEVELOPER_DIR=\(config.developerDirPath.shellQuoted); xcrun xcdevice list"
-        guard let result = try? await ssh.run(command), result.status == 0 else {
+        // Bounded: a probe must fail in minutes on a dead transport, not after the
+        // 15-minute long-command budget.
+        guard let result = try? await ssh.runBounded(command, timeoutSeconds: 120), result.status == 0 else {
             log?.warning("\(executorID): xcdevice list failed — device ignored for this run")
             return false
         }
@@ -56,7 +58,7 @@ struct Device: TestExecutor {
     /// macOS destinations get a light preflight too — the node must be a reachable
     /// Mac with a working shell, never "assume available".
     private func macReady() async -> Bool {
-        guard let result = try? await ssh.run("sw_vers -productVersion"), result.status == 0 else {
+        guard let result = try? await ssh.runFast("sw_vers -productVersion"), result.status == 0 else {
             log?.warning("\(executorID): macOS preflight failed (sw_vers) — ignored for this run")
             return false
         }

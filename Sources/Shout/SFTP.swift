@@ -118,19 +118,25 @@ public class SFTP {
             if shouldAbort?() == true {
                 throw SSHError.genericError("SFTP download of \(remotePath) aborted (run cancelled)")
             }
-            switch sftpHandle.read() {
-            case .data(let data):
-                do {
-                    try fileHandle.write(contentsOf: data)
-                } catch {
-                    throw SSHError.genericError("local write failed at \(localURL.path): \(error)")
+            // Same per-iteration pool as the upload loop: `write(contentsOf:)` is an
+            // ObjC-bridged call inside one long work item. Measured flat today, but
+            // the lifetime hazard is structural, so it is bounded explicitly.
+            dataLeft = try autoreleasepool { () throws -> Bool in
+                switch sftpHandle.read() {
+                case .data(let data):
+                    do {
+                        try fileHandle.write(contentsOf: data)
+                    } catch {
+                        throw SSHError.genericError("local write failed at \(localURL.path): \(error)")
+                    }
+                    return true
+                case .done:
+                    return false
+                case .eagain:
+                    return true
+                case .error(let error):
+                    throw error
                 }
-            case .done:
-                dataLeft = false
-            case .eagain:
-                break
-            case .error(let error):
-                throw error
             }
         }
     }
@@ -166,33 +172,45 @@ public class SFTP {
             if shouldAbort?() == true {
                 throw SSHError.genericError("SFTP upload to \(remotePath) aborted (run cancelled)")
             }
-            guard let chunk = try fileHandle.read(upToCount: 512 * 1024), !chunk.isEmpty else { break }
-            // Zero-copy: every 32 KiB write reads straight from the chunk buffer —
-            // no per-write Data allocation on a multi-GB archive.
-            try chunk.withUnsafeBytes { (raw: UnsafeRawBufferPointer) in
-                var offset = 0
-                var zeroProgressCount = 0
-                while offset < raw.count {
-                    let upTo = Swift.min(offset + SFTPHandle.bufferSize, raw.count)
-                    let slice = UnsafeRawBufferPointer(rebasing: raw[offset ..< upTo])
-                    switch sftpHandle.write(buffer: slice) {
-                    case .written(let bytesSent):
-                        if bytesSent <= 0 {
-                            zeroProgressCount += 1
-                            if zeroProgressCount > 1000 {
-                                throw SSHError.genericError("SFTP upload to \(remotePath) made no progress")
+            // The whole upload is ONE work item on the caller's serial queue, and
+            // libdispatch drains that queue's autorelease pool only when the work
+            // item ends. `read(upToCount:)` hands back a bridged, autoreleased NSData
+            // per chunk — without a pool per iteration every chunk stays resident
+            // until the transfer completes, so the controller's footprint grows by
+            // the archive size per in-flight upload (a 6 GiB build fanned out to 11
+            // nodes at once got the controller SIGKILLed by the kernel). Nothing
+            // from the chunk may escape this pool.
+            let reachedEOF = try autoreleasepool { () throws -> Bool in
+                guard let chunk = try fileHandle.read(upToCount: 512 * 1024), !chunk.isEmpty else { return true }
+                // Zero-copy: every 32 KiB write reads straight from the chunk buffer —
+                // no per-write Data allocation on a multi-GB archive.
+                try chunk.withUnsafeBytes { (raw: UnsafeRawBufferPointer) in
+                    var offset = 0
+                    var zeroProgressCount = 0
+                    while offset < raw.count {
+                        let upTo = Swift.min(offset + SFTPHandle.bufferSize, raw.count)
+                        let slice = UnsafeRawBufferPointer(rebasing: raw[offset ..< upTo])
+                        switch sftpHandle.write(buffer: slice) {
+                        case .written(let bytesSent):
+                            if bytesSent <= 0 {
+                                zeroProgressCount += 1
+                                if zeroProgressCount > 1000 {
+                                    throw SSHError.genericError("SFTP upload to \(remotePath) made no progress")
+                                }
+                            } else {
+                                zeroProgressCount = 0
+                                offset += bytesSent
                             }
-                        } else {
-                            zeroProgressCount = 0
-                            offset += bytesSent
+                        case .eagain:
+                            continue
+                        case .error(let error):
+                            throw error
                         }
-                    case .eagain:
-                        continue
-                    case .error(let error):
-                        throw error
                     }
                 }
+                return false
             }
+            if reachedEOF { break }
         }
     }
     
