@@ -4,8 +4,10 @@ struct Xcodebuild {
 
     let xcodePath: String
     let shell: SSHExecutor
-    /// Wall-clock budget for one chunk of tests, in seconds.
-    let testsExecutionTimeout: Int
+    /// Wall-clock budget policy for one chunk — derived from the per-test
+    /// allowance so that XCTest's own per-test timeout normally fires first for
+    /// every leased test (see `ChunkBudget`).
+    let budget: ChunkBudget
     let onlyTestConfiguration: String?
     let skipTestConfiguration: String?
     /// Recorded xctestruns can carry ParallelizationEnabled=true; unless the user
@@ -47,6 +49,11 @@ struct Xcodebuild {
                  log: Logging?) async throws -> ChunkResult {
         let attemptID = UUID().uuidString
         let resultBundlePath = "\(workDirectory)/results/\(UDID)/\(attemptID).xcresult"
+        // Sized for THIS lease: every leased test may legitimately consume its full
+        // (minute-rounded) allowance in sequence, plus startup, runner-restart and
+        // bundle-finalization headroom. A conservative estimate, not a guarantee:
+        // overheads that outgrow it still end in a kill.
+        let budgetSeconds = budget.seconds(testCount: tests.count)
 
         var arguments: [String] = [
             "xcodebuild",
@@ -75,6 +82,7 @@ struct Xcodebuild {
         let command = "export DEVELOPER_DIR=\((xcodePath + "/Contents/Developer").shellQuoted); "
             + arguments.shellQuotedJoined
         log?.message(verboseMsg: "Run command:\n" + command)
+        log?.message(verboseMsg: "Chunk budget on \(UDID): \(budget.describe(testCount: tests.count))")
 
         let handle: BackgroundProcessHandle
         do {
@@ -95,7 +103,7 @@ struct Xcodebuild {
 
         // Monotonic clock: never affected by NTP steps or wall-clock changes.
         let clock = ContinuousClock()
-        let deadline = clock.now.advanced(by: .seconds(testsExecutionTimeout))
+        let deadline = clock.now.advanced(by: .seconds(budgetSeconds))
         let pollInterval: Duration = .seconds(3)
         var status: Int32?
         var endReason: ChunkResult.EndReason = .exited
@@ -109,7 +117,8 @@ struct Xcodebuild {
                 if remaining <= .zero {
                     // The poll above was the deadline-edge check: a completed status
                     // is a completed chunk even at the edge (its verdicts are real).
-                    log?.error("xcodebuild chunk timed out after \(testsExecutionTimeout)s on \(UDID) — terminating")
+                    log?.error("xcodebuild chunk timed out after \(budgetSeconds)s on \(UDID) "
+                               + "(budget \(budget.describe(testCount: tests.count))) — terminating")
                     await shell.terminateBackgroundProcess(handle, marker: "sift-attempt:\(attemptID)")
                     status = 143
                     endReason = .timedOut

@@ -11,7 +11,8 @@ final class NodeTests: XCTestCase {
         workspace: RunWorkspace,
         rerun: Int = 0,
         health: HealthSink = HealthSink(),
-        transferGate: TransferGate = TransferGate(limit: nil)
+        transferGate: TransferGate = TransferGate(limit: nil),
+        resultTool: XCResultParsing = XCResultTool()
     ) -> Node {
         let nodeConfig = try! JSONDecoder().decode(Config.NodeConfig.self, from: Data("""
         {"name": "fake", "host": "h", "port": 22, "username": "u",
@@ -34,7 +35,7 @@ final class NodeTests: XCTestCase {
             globalConfig: fullConfig,
             workspace: workspace,
             scheduler: scheduler,
-            collector: ResultCollector(workspace: workspace, log: nil),
+            collector: ResultCollector(workspace: workspace, tool: resultTool, log: nil),
             buildZipPath: "/tmp/fake-build.zip",
             xctestrunProvider: { try XCTestRunFactory.create(path: fixturePath, log: nil) },
             sshFactory: { _ in shell },
@@ -69,8 +70,12 @@ final class NodeTests: XCTestCase {
 
     func testInfrastructureFailuresRetireExecutorWithoutErase() async throws {
         let shell = FakeSSHExecutor()
-        // Every chunk: no polls → timeout kill → download OK → ingest fails (empty
-        // zip is unreadable) → infrastructure failure ×3 → retirement.
+        // Every chunk: xcodebuild exits 1 at once (crash-style, not a clean 0/65)
+        // → download OK → ingest fails (empty zip is unreadable) → infrastructure
+        // failure ×3 → retirement. (The chunk deadline is derived from the
+        // allowance and is minutes long even for `testsExecutionTimeout: 1`, so the
+        // failures are scripted rather than waited for.)
+        shell.withState { $0.pollResults = Array(repeating: 1, count: 6) }
         let scheduler = TestScheduler(tests: (1...12).map { "B/C/test\($0)()" }, rerunLimit: 0)
         let workspace = try makeWorkspace()
         let node = makeNode(shell: shell, scheduler: scheduler, workspace: workspace)
@@ -147,9 +152,13 @@ final class NodeTests: XCTestCase {
 
     func testTransportLossReconnectsBeforeReset() async throws {
         let shell = FakeSSHExecutor()
-        // First chunk fails infrastructure-wise AND the transport probe fails once:
-        // the worker must reconnect (connectAttempts grows) instead of retiring.
-        shell.withState { $0.commandFailuresForPrefix["true"] = -1 }
+        // Every chunk fails infrastructure-wise (xcodebuild exits 1, results
+        // unreadable) AND the transport probe fails: the worker must reconnect
+        // (connectAttempts grows) instead of retiring.
+        shell.withState {
+            $0.pollResults = [1, 1]
+            $0.commandFailuresForPrefix["true"] = -1
+        }
         let scheduler = TestScheduler(tests: ["B/C/test1()", "B/C/test2()"], rerunLimit: 0)
         let workspace = try makeWorkspace()
         let health = HealthSink()
@@ -164,5 +173,62 @@ final class NodeTests: XCTestCase {
         let events = await health.all()
         XCTAssertTrue(events.contains { $0.kind == .executorRecovered && $0.detail.contains("transport reconnected") },
                       "worker recovery must reconnect before resetting: \(events)")
+    }
+
+    // MARK: - Chunk budget vs. per-test allowance
+
+    private struct FakeResultParsing: XCResultParsing {
+        let outcomes: [TestOutcome]
+        func testOutcomes(xcresultPath: String) async throws -> [TestOutcome] { outcomes }
+        func merge(inputPaths: [String], outputPath: String) async throws -> Bool { true }
+    }
+
+    /// A valid zip whose single entry is a dummy .xcresult directory.
+    private func makeResultsZipPayload() throws -> Data {
+        let source = NSTemporaryDirectory() + "sift-node-zip-\(UUID().uuidString)"
+        try FileManager.default.createDirectory(atPath: "\(source)/r.xcresult", withIntermediateDirectories: true)
+        try "stub".write(toFile: "\(source)/r.xcresult/Info.plist", atomically: true, encoding: .utf8)
+        addTeardownBlock { try? FileManager.default.removeItem(atPath: source) }
+        let zipPath = "\(source).zip"
+        addTeardownBlock { try? FileManager.default.removeItem(atPath: zipPath) }
+        let zip = Process()
+        zip.executableURL = URL(fileURLWithPath: "/usr/bin/zip")
+        zip.currentDirectoryURL = URL(fileURLWithPath: source)
+        zip.arguments = ["-r", "-q", zipPath, "r.xcresult"]
+        try zip.run(); zip.waitUntilExit()
+        return try Data(contentsOf: URL(fileURLWithPath: zipPath))
+    }
+
+    /// Regression (Jenkins, 2026-09-10): the chunk deadline used to be the raw
+    /// `testsExecutionTimeout` — the very value XCTest enforces PER TEST — measured
+    /// from xcodebuild launch for the WHOLE bucket. A test that finished close to
+    /// its allowance had its chunk killed during the runner restart / bundle
+    /// finalization, the bundle came back unreadable, and its verdict was lost as
+    /// "not executed" (with the executor blamed). A chunk that runs past the raw
+    /// value (1s here; the fake's process takes 2s of wall clock, then exits 0)
+    /// must complete cleanly with its verdicts committed as-is — not killed, not
+    /// demoted, not requeued.
+    func testChunkOutlivingTheRawTimeoutKeepsItsVerdicts() async throws {
+        let shell = FakeSSHExecutor()
+        let tests = ["B/C/test1()", "B/C/test2()"]
+        let payload = try makeResultsZipPayload()
+        shell.withState {
+            $0.timedCompletion = (after: .seconds(2), status: 0)
+            $0.downloadPayload = payload
+        }
+        let scheduler = TestScheduler(tests: tests, rerunLimit: 0)
+        let workspace = try makeWorkspace()
+        let passes = tests.map { TestOutcome(test: $0, kind: .pass, duration: 1, message: "") }
+        let node = makeNode(shell: shell, scheduler: scheduler, workspace: workspace,
+                            resultTool: FakeResultParsing(outcomes: passes))
+        await node.start()
+        await scheduler.drain()
+
+        XCTAssertTrue(shell.withState { $0.terminations.isEmpty },
+                      "a chunk inside its derived budget is never terminated at the raw timeout")
+        let snapshot = await scheduler.snapshot()
+        XCTAssertEqual(snapshot.passed.count, 2,
+                       "clean-chunk verdicts are committed as-is: \(snapshot.cases.map { "\($0.name)=\($0.state)" })")
+        XCTAssertEqual(snapshot.attempts.count, 2, "exactly one attempt per test — nothing was requeued")
     }
 }
