@@ -194,7 +194,7 @@ final class NodeTests: XCTestCase {
         let zip = Process()
         zip.executableURL = URL(fileURLWithPath: "/usr/bin/zip")
         zip.currentDirectoryURL = URL(fileURLWithPath: source)
-        zip.arguments = ["-r", "-q", zipPath, "r.xcresult"]
+        zip.arguments = ["-r", "-y", "-q", zipPath, "r.xcresult"]
         try zip.run(); zip.waitUntilExit()
         return try Data(contentsOf: URL(fileURLWithPath: zipPath))
     }
