@@ -26,7 +26,7 @@ final class ResultCollectorTests: XCTestCase {
         let zip = Process()
         zip.executableURL = URL(fileURLWithPath: "/usr/bin/zip")
         zip.currentDirectoryURL = URL(fileURLWithPath: sourceDirectory)
-        zip.arguments = ["-r", "-q", zipPath] + entries.keys.map { $0.components(separatedBy: "/").first! }.uniqued()
+        zip.arguments = ["-r", "-y", "-q", zipPath] + entries.keys.map { $0.components(separatedBy: "/").first! }.uniqued()
         try zip.run(); zip.waitUntilExit()
         return zipPath
     }
