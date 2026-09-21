@@ -512,7 +512,7 @@ public struct Controller {
         // parsed as a zip flag.
         try await dependencies.localShell.runChecked(
             "/usr/bin/zip",
-            ["-r", "-X", "-q", "-\(compressionLevel)", zipPath, "--"] + filesToZip.sorted(),
+            ["-r", "-y", "-X", "-q", "-\(compressionLevel)", zipPath, "--"] + filesToZip.sorted(),
             currentDirectory: testRootPath
         )
         let zipSeconds = dependencies.now() - zipStart

@@ -582,7 +582,7 @@ struct Node: Sendable {
         let bundleDirectory = (remoteBundlePath as NSString).deletingLastPathComponent
         let bundleName = (remoteBundlePath as NSString).lastPathComponent
         let zip = try await executor.ssh.run(
-            "cd \(bundleDirectory.shellQuoted) && zip -r -X -q -0 \(remoteZipPath.shellQuoted) \(bundleName.shellQuoted)"
+            "cd \(bundleDirectory.shellQuoted) && zip -r -y -X -q -0 \(remoteZipPath.shellQuoted) \(bundleName.shellQuoted)"
         )
         guard zip.status == 0 else {
             throw NSError(domain: "zipping result bundle failed on \(executor.executorID): \(zip.output)", code: 1)
