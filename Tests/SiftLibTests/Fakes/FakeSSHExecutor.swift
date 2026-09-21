@@ -8,6 +8,12 @@ final class FakeSSHExecutor: SSHExecutor, @unchecked Sendable {
     struct State {
         var commandLog: [String] = []
         var pollResults: [Int32?] = []
+        /// A background process that completes on the CLOCK rather than on the
+        /// Nth poll: polls return nil until `after` has elapsed since the
+        /// most recent `startBackgroundProcess`, then `status`. Takes precedence
+        /// over `pollResults`; a terminate still wins (see `terminated`).
+        var timedCompletion: (after: Duration, status: Int32)?
+        var processStartedAt: ContinuousClock.Instant?
         /// Status the wrapper "wrote" after a terminate (nil = no status file).
         var postTerminateStatus: Int32?
         var terminations: [(handle: BackgroundProcessHandle, marker: String)] = []
@@ -81,13 +87,19 @@ final class FakeSSHExecutor: SSHExecutor, @unchecked Sendable {
     }
 
     func startBackgroundProcess(command: String, workDirectory: String, attemptID: String) async throws -> BackgroundProcessHandle {
-        withState { $0.commandLog.append("START-BG \(attemptID)") }
+        withState { state in
+            state.commandLog.append("START-BG \(attemptID)")
+            state.processStartedAt = ContinuousClock().now
+        }
         return BackgroundProcessHandle(attemptID: attemptID, directory: "\(workDirectory)/proc/\(attemptID)")
     }
 
     func pollBackgroundProcess(_ handle: BackgroundProcessHandle) async throws -> Int32? {
         withState { state in
             if state.terminated { return state.postTerminateStatus }
+            if let timed = state.timedCompletion, let startedAt = state.processStartedAt {
+                return startedAt.duration(to: ContinuousClock().now) >= timed.after ? timed.status : nil
+            }
             guard !state.pollResults.isEmpty else { return nil }
             return state.pollResults.removeFirst()
         }

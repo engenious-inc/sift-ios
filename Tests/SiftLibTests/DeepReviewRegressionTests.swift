@@ -172,11 +172,11 @@ final class DeepReviewRegressionTests: XCTestCase {
         XCTAssertFalse(events.contains { $0.kind == .nodeFailed }, "a provisioning miss is not a node failure: \(events)")
     }
 
-    /// A setup script is an OWNED process bounded by the chunk budget: one that
+    /// A setup script is an OWNED process bounded by `testsExecutionTimeout`: one that
     /// never exits (or keeps streaming) is terminated and the chunk returned as an
     /// infrastructure failure, instead of holding the worker — and the whole run —
     /// forever with no way to cancel.
-    func testSetupScriptExceedingChunkBudgetIsTerminated() async throws {
+    func testSetupScriptExceedingTestsExecutionTimeoutIsTerminated() async throws {
         let scriptPath = NSTemporaryDirectory() + "sift-review-setup-\(UUID().uuidString).sh"
         try "#!/bin/sh\nsleep 300\n".write(toFile: scriptPath, atomically: true, encoding: .utf8)
         addTeardownBlock { try? FileManager.default.removeItem(atPath: scriptPath) }

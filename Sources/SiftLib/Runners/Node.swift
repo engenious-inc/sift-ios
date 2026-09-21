@@ -99,6 +99,9 @@ struct Node: Sendable {
             try await communication.unpackBuild()
             var xctestrun = try xctestrunProvider()
             xctestrun.addEnvironmentVariables(config.environmentVariables)
+            // XCTest's PER-TEST execution time allowance (XCTest rounds it up to
+            // whole minutes). The chunk's wall-clock budget is derived from it in
+            // ChunkBudget; scripts are bounded by the raw value.
             xctestrun.add(timeout: testsExecutionTimeout)
             let xctestrunPath = try await communication.saveOnRunner(xctestrun: xctestrun)
             try Task.checkCancellation()
@@ -276,7 +279,9 @@ struct Node: Sendable {
         let xcodebuild = Xcodebuild(
             xcodePath: config.xcodePathRaw,
             shell: executor.ssh,
-            testsExecutionTimeout: testsExecutionTimeout,
+            // The chunk deadline is DERIVED from the per-test allowance injected
+            // into the xctestrun — never equal to it (see ChunkBudget).
+            budget: ChunkBudget(perTestAllowance: testsExecutionTimeout),
             onlyTestConfiguration: onlyTestConfiguration,
             skipTestConfiguration: skipTestConfiguration,
             allowXcodebuildParallelTesting: allowXcodebuildParallelTesting
@@ -417,7 +422,7 @@ struct Node: Sendable {
         log?.message(verboseMsg: "\(executor.executorID): running \(lease.tests.count) tests:\n\t- " + lease.tests.joined(separator: "\n\t- "))
         let outcome = await executeAndCollect(lease: lease, executor: executor, xcodebuild: xcodebuild, xctestrunPath: xctestrunPath)
         // Teardown always runs (to completion even under cancellation — it restores
-        // state — but bounded by the chunk budget), in its own error boundary: a
+        // state — but bounded by `testsExecutionTimeout`), in its own error boundary: a
         // teardown failure can never discard the results of a chunk that already
         // ran, but it is surfaced (a broken teardown can contaminate later chunks)
         // rather than swallowed.
